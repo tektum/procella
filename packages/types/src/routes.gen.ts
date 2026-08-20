@@ -1,5 +1,5 @@
 // Auto-generated from pulumi/pulumi pkg/backend/httpstate/client/api_endpoints.go
-// Pulumi SDK v3.251.0 — do not edit manually.
+// Pulumi SDK v3.259.0 — do not edit manually.
 // Regenerate: bun run packages/types/tygo/generate-routes.ts
 
 type Method = "GET" | "POST" | "PATCH" | "DELETE";
