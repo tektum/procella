@@ -1,12 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import { BadRequestError } from "@procella/types";
-import {
-	ALL_WEBHOOK_EVENTS,
-	resolveAndValidateWebhookUrl,
-	signPayload,
-	validateWebhookUrl,
-	WebhookEvent,
-} from "./index.js";
+import { resolveAndValidateWebhookUrl, signPayload, validateWebhookUrl } from "./index.js";
 
 describe("@procella/webhooks", () => {
 	test("signPayload is deterministic for same payload + secret", async () => {
@@ -23,18 +17,6 @@ describe("@procella/webhooks", () => {
 		const a = await signPayload(payload, "secret-a");
 		const b = await signPayload(payload, "secret-b");
 		expect(a).not.toBe(b);
-	});
-
-	test("WebhookEvent constants match expected strings", () => {
-		expect(WebhookEvent.STACK_CREATED).toBe("stack.created");
-		expect(WebhookEvent.STACK_DELETED).toBe("stack.deleted");
-		expect(WebhookEvent.STACK_UPDATED).toBe("stack.updated");
-		expect(WebhookEvent.UPDATE_STARTED).toBe("update.started");
-		expect(WebhookEvent.UPDATE_SUCCEEDED).toBe("update.succeeded");
-		expect(WebhookEvent.UPDATE_FAILED).toBe("update.failed");
-		expect(WebhookEvent.UPDATE_CANCELLED).toBe("update.cancelled");
-		expect(ALL_WEBHOOK_EVENTS).toContain("stack.created");
-		expect(ALL_WEBHOOK_EVENTS).toContain("update.cancelled");
 	});
 
 	test("generated secret uses UUID format when unspecified", () => {

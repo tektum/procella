@@ -6,7 +6,7 @@
 // depend on the preload'd beforeAll in ./setup.ts having spawned Postgres.
 
 import { describe, expect, test } from "bun:test";
-import { type Fetcher, warmupServer } from "./warmup.js";
+import { type Fetcher, warmupServer } from "../e2e/warmup.js";
 
 function makeResponse(status: number, onCancel?: () => void): Response {
 	const stream = new ReadableStream({
