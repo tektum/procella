@@ -9,7 +9,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
-	"github.com/procella-dev/procella/esc-eval/providers/internal/awsutil"
+	"github.com/tektum/procella/esc-eval/providers/internal/awsutil"
 	"github.com/pulumi/esc"
 )
 

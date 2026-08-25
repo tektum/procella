@@ -1,4 +1,4 @@
-module github.com/procella-dev/procella/esc-eval
+module github.com/tektum/procella/esc-eval
 
 go 1.25.8
 

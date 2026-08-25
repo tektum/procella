@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/procella-dev/procella/esc-eval/providers/awslogin"
-	"github.com/procella-dev/procella/esc-eval/providers/awsparameters"
-	"github.com/procella-dev/procella/esc-eval/providers/awssecrets"
-	"github.com/procella-dev/procella/esc-eval/providers/vaultsecrets"
+	"github.com/tektum/procella/esc-eval/providers/awslogin"
+	"github.com/tektum/procella/esc-eval/providers/awsparameters"
+	"github.com/tektum/procella/esc-eval/providers/awssecrets"
+	"github.com/tektum/procella/esc-eval/providers/vaultsecrets"
 	"github.com/pulumi/esc"
 	"github.com/pulumi/esc/eval"
 )

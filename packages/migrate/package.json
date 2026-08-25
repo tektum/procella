@@ -6,7 +6,7 @@
 	"license": "MIT",
 	"repository": {
 		"type": "git",
-		"url": "https://github.com/procella-dev/procella",
+		"url": "https://github.com/tektum/procella",
 		"directory": "packages/migrate"
 	},
 	"keywords": [

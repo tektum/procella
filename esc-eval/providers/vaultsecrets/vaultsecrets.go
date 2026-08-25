@@ -11,7 +11,7 @@ import (
 	"path"
 	"strings"
 
-	"github.com/procella-dev/procella/esc-eval/providers/internal/escutil"
+	"github.com/tektum/procella/esc-eval/providers/internal/escutil"
 	"github.com/pulumi/esc"
 	"github.com/pulumi/esc/schema"
 )

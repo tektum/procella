@@ -172,7 +172,7 @@ export function HomePage() {
 							Docs
 						</a>
 						<a
-							href="https://github.com/procella-dev/procella"
+							href="https://github.com/tektum/procella"
 							target="_blank"
 							rel="noopener noreferrer"
 							className="text-sm text-cloud hover:text-mist/80 transition-colors"
@@ -248,7 +248,7 @@ export function HomePage() {
 							</svg>
 						</a>
 						<a
-							href="https://github.com/procella-dev/procella"
+							href="https://github.com/tektum/procella"
 							target="_blank"
 							rel="noopener noreferrer"
 							className="inline-flex items-center gap-2 px-6 py-3 text-cloud hover:text-mist font-medium rounded-lg transition-colors text-sm border border-slate-brand hover:border-cloud/30"
@@ -404,7 +404,7 @@ export function HomePage() {
 							Docs
 						</a>
 						<a
-							href="https://github.com/procella-dev/procella"
+							href="https://github.com/tektum/procella"
 							target="_blank"
 							rel="noopener noreferrer"
 							className="text-sm text-cloud/60 hover:text-cloud transition-colors"

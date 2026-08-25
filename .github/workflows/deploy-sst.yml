@@ -10,6 +10,25 @@ on:
         required: false
         type: string
         default: ""
+    secrets:
+      AWS_ROLE_ARN:
+        required: true
+      PROCELLA_ENCRYPTION_KEY:
+        required: true
+      PROCELLA_DEV_AUTH_TOKEN:
+        required: true
+      DESCOPE_MANAGEMENT_KEY:
+        required: true
+      PROCELLA_GITHUB_APP_ID:
+        required: true
+      PROCELLA_GITHUB_APP_PRIVATE_KEY:
+        required: true
+      PROCELLA_GITHUB_APP_WEBHOOK_SECRET:
+        required: true
+      OTEL_EXPORTER_OTLP_ENDPOINT:
+        required: true
+      OTEL_EXPORTER_OTLP_HEADERS:
+        required: true
 
 permissions:
   id-token: write
@@ -22,16 +41,17 @@ jobs:
     timeout-minutes: 20
     environment: ${{ inputs.stage }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
 
       - name: Capture deployed ref
         id: meta
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - uses: jdx/mise-action@v4
-      - uses: actions/cache@v6
+      - uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             node_modules
@@ -42,7 +62,7 @@ jobs:
       - run: bun install --frozen-lockfile
 
       - name: Download ESC eval bootstrap artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: esc-eval-bootstrap
           path: .build/esc-eval
@@ -57,45 +77,51 @@ jobs:
           cp -rf packages/db/drizzle .build/migrate/drizzle
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: us-east-1
-          role-session-name: GitHubActions-Deploy-${{ inputs.stage }}-${{ github.run_id }}
+          role-session-name: GitHubActions-Deploy-${{ github.run_id }}
 
       - name: Unlock stale state
-        run: npx sst unlock --stage ${{ inputs.stage }}
-        continue-on-error: true
-
-      - name: Deploy
-        run: npx sst deploy --stage ${{ inputs.stage }}
         env:
+          STAGE: ${{ inputs.stage }}
+        run: npx sst unlock --stage "$STAGE"
+        continue-on-error: true
+      - name: Deploy
+        env:
+          STAGE: ${{ inputs.stage }}
           GITHUB_TOKEN: ${{ github.token }}
           SST_SECRET_ProcellaEncryptionKey: ${{ secrets.PROCELLA_ENCRYPTION_KEY }}
           SST_SECRET_ProcellaDevAuthToken: ${{ secrets.PROCELLA_DEV_AUTH_TOKEN }}
           SST_SECRET_ProcellaDescopeManagementKey: ${{ secrets.DESCOPE_MANAGEMENT_KEY }}
-          SST_SECRET_ProcellaGitHubAppId: ${{ secrets.RENOVATE_APP_ID }}
-          SST_SECRET_ProcellaGitHubAppPrivateKey: ${{ secrets.RENOVATE_APP_PRIVATE_KEY }}
+          SST_SECRET_ProcellaGitHubAppId: ${{ secrets.PROCELLA_GITHUB_APP_ID }}
+          SST_SECRET_ProcellaGitHubAppPrivateKey: ${{ secrets.PROCELLA_GITHUB_APP_PRIVATE_KEY }}
           SST_SECRET_ProcellaGitHubAppWebhookSecret: ${{ secrets.PROCELLA_GITHUB_APP_WEBHOOK_SECRET }}
           SST_SECRET_ProcellaOtelEndpoint: ${{ secrets.OTEL_EXPORTER_OTLP_ENDPOINT }}
           SST_SECRET_ProcellaOtelHeaders: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
-
+        run: npx sst deploy --stage "$STAGE"
       - name: Deployment summary
         if: always()
+        env:
+          STAGE: ${{ inputs.stage }}
+          STATUS: ${{ job.status }}
+          SHA: ${{ steps.meta.outputs.sha }}
+          REF: ${{ inputs.ref || 'default' }}
+          ACTOR: ${{ github.actor }}
         run: |
-          DOMAIN=${{ inputs.stage == 'production' && 'procella.cloud' || format('{0}.procella.cloud', inputs.stage) }}
-          echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Stage | \`${{ inputs.stage }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Status | \`${{ job.status }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Region | \`us-east-1\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Commit | \`${{ steps.meta.outputs.sha }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Ref | \`${{ inputs.ref || 'default' }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Triggered by | ${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**URLs:**" >> $GITHUB_STEP_SUMMARY
-          echo "- API: https://api.${DOMAIN}" >> $GITHUB_STEP_SUMMARY
-          echo "- App: https://app.${DOMAIN}" >> $GITHUB_STEP_SUMMARY
-          echo "- Docs: https://docs.${DOMAIN}" >> $GITHUB_STEP_SUMMARY
+          if [ "$STAGE" = production ]; then DOMAIN=procella.cloud; else DOMAIN="$STAGE.procella.cloud"; fi
+          echo "## Deployment Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Stage | \`$STAGE\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Status | \`$STATUS\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Region | \`us-east-1\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Commit | \`$SHA\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Ref | \`$REF\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Triggered by | $ACTOR |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**URLs:**" >> "$GITHUB_STEP_SUMMARY"
+          echo "- API: https://api.$DOMAIN" >> "$GITHUB_STEP_SUMMARY"
+          echo "- App: https://app.$DOMAIN" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Docs: https://docs.$DOMAIN" >> "$GITHUB_STEP_SUMMARY"

@@ -17,8 +17,8 @@ on:
         required: false
 
 permissions:
-  id-token: write
   contents: read
+
 
 concurrency:
   group: deploy-${{ inputs.stage || 'dev' }}
@@ -29,11 +29,12 @@ jobs:
     name: Build ESC eval bootstrap
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: esc-eval/go.mod
           cache: true
@@ -52,7 +53,7 @@ jobs:
         run: cd esc-eval && make build
 
       - name: Upload bootstrap artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: esc-eval-bootstrap
           path: .build/esc-eval/bootstrap
@@ -67,4 +68,13 @@ jobs:
     with:
       stage: ${{ inputs.stage || 'dev' }}
       ref: ${{ inputs.ref || '' }}
-    secrets: inherit
+    secrets:
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+      PROCELLA_ENCRYPTION_KEY: ${{ secrets.PROCELLA_ENCRYPTION_KEY }}
+      PROCELLA_DEV_AUTH_TOKEN: ${{ secrets.PROCELLA_DEV_AUTH_TOKEN }}
+      DESCOPE_MANAGEMENT_KEY: ${{ secrets.DESCOPE_MANAGEMENT_KEY }}
+      PROCELLA_GITHUB_APP_ID: ${{ secrets.PROCELLA_GITHUB_APP_ID }}
+      PROCELLA_GITHUB_APP_PRIVATE_KEY: ${{ secrets.PROCELLA_GITHUB_APP_PRIVATE_KEY }}
+      PROCELLA_GITHUB_APP_WEBHOOK_SECRET: ${{ secrets.PROCELLA_GITHUB_APP_WEBHOOK_SECRET }}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${{ secrets.OTEL_EXPORTER_OTLP_ENDPOINT }}
+      OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}

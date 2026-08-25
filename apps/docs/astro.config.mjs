@@ -17,10 +17,10 @@ export default defineConfig({
         ThemeSelect: './src/components/ThemeSelect.astro',
       },
       social: [
-        { icon: 'github', label: 'GitHub', href: 'https://github.com/procella-dev/procella' },
+        { icon: 'github', label: 'GitHub', href: 'https://github.com/tektum/procella' },
       ],
       editLink: {
-        baseUrl: 'https://github.com/procella-dev/procella/edit/main/apps/docs/',
+        baseUrl: 'https://github.com/tektum/procella/edit/main/apps/docs/',
       },
       tableOfContents: {
         minHeadingLevel: 2,
