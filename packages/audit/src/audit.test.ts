@@ -5,6 +5,7 @@ import {
 	extractResourceType,
 	mapActionToType,
 	mapRouteToAction,
+	NoopAuditService,
 } from "./index.js";
 
 describe("@procella/audit", () => {
@@ -92,5 +93,62 @@ describe("@procella/audit", () => {
 		expect(mapActionToType("token.create")).toBe("info");
 		expect(mapActionToType("webhook.create")).toBe("info");
 		expect(mapActionToType("webhook.delete")).toBe("warn");
+	});
+});
+
+describe("NoopAuditService", () => {
+	test("retains logged entries and filters by action/tenant for query", async () => {
+		const audit = new NoopAuditService();
+		audit.log("tenant-a", {
+			actorId: "user-1",
+			actorType: "user",
+			action: AuditAction.STACK_CREATE,
+			resourceType: "stack",
+			resourceId: "dev-org/security/xff-1",
+			ipAddress: "127.0.0.1",
+		});
+		audit.log("tenant-a", {
+			actorId: "user-1",
+			actorType: "user",
+			action: AuditAction.STACK_DELETE,
+			resourceType: "stack",
+			resourceId: "dev-org/security/other",
+			ipAddress: "127.0.0.1",
+		});
+		audit.log("tenant-b", {
+			actorId: "user-2",
+			actorType: "user",
+			action: AuditAction.STACK_CREATE,
+			resourceType: "stack",
+			resourceId: "other-org/security/xff-1",
+			ipAddress: "10.0.0.1",
+		});
+
+		const result = await audit.query("tenant-a", {
+			action: AuditAction.STACK_CREATE,
+			pageSize: 20,
+		});
+		expect(result.total).toBe(1);
+		expect(result.entries).toHaveLength(1);
+		expect(result.entries[0]?.resourceId).toBe("dev-org/security/xff-1");
+		expect(result.entries[0]?.ipAddress).toBe("127.0.0.1");
+		expect(result.entries[0]?.id).toBeTruthy();
+		expect(result.entries[0]?.createdAt).toBeInstanceOf(Date);
+	});
+
+	test("export returns filtered entries without pagination", async () => {
+		const audit = new NoopAuditService();
+		for (let i = 0; i < 3; i++) {
+			audit.log("tenant-a", {
+				actorId: "user-1",
+				actorType: "user",
+				action: AuditAction.STACK_CREATE,
+				resourceType: "stack",
+				resourceId: `stack-${i}`,
+			});
+		}
+
+		const exported = await audit.export("tenant-a", { action: AuditAction.STACK_CREATE });
+		expect(exported).toHaveLength(3);
 	});
 });

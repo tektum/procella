@@ -182,6 +182,13 @@ describe("DevAuthService", () => {
 			UnauthorizedError,
 		);
 	});
+
+	test("createCliAccessKey returns a non-empty dev access key", async () => {
+		const caller = await svc.authenticate(reqWithAuth("token devtoken123"));
+		const key = await svc.createCliAccessKey(caller, "local-cli");
+		expect(key.startsWith("dev-cli:dev-user:local-cli:")).toBe(true);
+		expect(key.length).toBeGreaterThan(40);
+	});
 });
 
 // ============================================================================

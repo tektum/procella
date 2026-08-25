@@ -128,6 +128,11 @@ export class DevAuthService implements AuthService {
 			},
 		);
 	}
+
+	/** Local/dev stand-in for Descope access-key creation (enables /api/auth/cli-token e2e). */
+	async createCliAccessKey(caller: Caller, name: string): Promise<string> {
+		return `dev-cli:${caller.login}:${name}:${crypto.randomUUID()}`;
+	}
 }
 
 // ============================================================================
