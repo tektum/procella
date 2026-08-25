@@ -73,9 +73,9 @@ After installation, the app starts receiving webhook events from GitHub.
 
 ### Moving a Repository Between Organizations
 
-Moving a repository does not require a new GitHub App. Install the existing app on the destination organization, grant it access to the moved repository, and retain the existing App ID, private key, webhook URL, and webhook secret. GitHub continues delivering events to the same webhook URL after the installation exists in the destination organization.
+Use a GitHub App owned by the destination organization when the previous organization-owned App cannot move with the repository. Create the replacement App under the destination organization, install it on the required repositories, and replace all three `PROCELLA_GITHUB_APP_*` values together with the new App ID, private key, and webhook secret. Procella rejects partial GitHub App configuration.
 
-Create a new GitHub App only when its owner account is being retired or its credentials need rotation. In that case, generate a new private key and webhook secret, then update all three `PROCELLA_GITHUB_APP_*` values together. Procella rejects partial GitHub App configuration.
+The new App may keep the existing webhook URL. Confirm a signed delivery succeeds after installation before retiring the old App.
 
 ### Deployment Credentials
 
