@@ -5,7 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-    types: [opened, reopened, synchronize]
+    types: [opened, reopened, synchronize, labeled, unlabeled]
 
 permissions:
   contents: read
@@ -21,7 +21,9 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-bun
       - run: bunx biome check .
       - run: bun run typecheck
@@ -31,7 +33,7 @@ jobs:
           bun test --parallel --coverage --coverage-reporter=lcov --reporter=junit --reporter-outfile=test-results/unit.junit.xml packages/ apps/ scripts/
       - name: Upload coverage to Codecov
         if: always()
-        uses: codecov/codecov-action@v7
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7
         with:
           files: ./coverage/lcov.info
           flags: unit
@@ -39,7 +41,7 @@ jobs:
           fail_ci_if_error: true
       - name: Upload test results to Codecov
         if: ${{ !cancelled() }}
-        uses: codecov/test-results-action@v1
+        uses: codecov/test-results-action@0fa95f0e1eeaafde2c782583b36b28ad0d8c77d3 # v1
         with:
           files: test-results/unit.junit.xml
           flags: unit
@@ -52,7 +54,9 @@ jobs:
       id-token: write
     needs: [check]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-bun
       - name: Build UI
         run: bun run --cwd apps/ui build
@@ -80,7 +84,9 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-bun
       - name: Run integration tests
         env:
@@ -90,7 +96,7 @@ jobs:
           bun test --timeout 30000 --preload ./integration/setup.ts --reporter=junit --reporter-outfile=test-results/integration.junit.xml integration/
       - name: Upload test results to Codecov
         if: ${{ !cancelled() }}
-        uses: codecov/test-results-action@v1
+        uses: codecov/test-results-action@0fa95f0e1eeaafde2c782583b36b28ad0d8c77d3 # v1
         with:
           files: test-results/integration.junit.xml
           flags: integration
@@ -115,13 +121,15 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: jdx/mise-action@v4
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: esc-eval/go.mod
           cache-dependency-path: esc-eval/go.sum
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             node_modules
@@ -139,9 +147,11 @@ jobs:
     runs-on: ubuntu-latest
     # Always runs — the strict ci-required gate fails on any skipped job.
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-bun
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: packages/types/tygo/go.mod
           cache-dependency-path: packages/types/tygo/go.sum
@@ -194,9 +204,11 @@ jobs:
           - 4318:4318
           - 16686:16686
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-bun
-      - uses: pulumi/setup-pulumi@v2
+      - uses: pulumi/setup-pulumi@b374ceb6168550de27c6eba92e01c1a774040e11 # v2
       - name: Run E2E tests (shard ${{ matrix.shard }}/3)
         env:
           PROCELLA_DATABASE_URL: postgres://procella:procella@localhost:5432/procella?sslmode=disable
@@ -209,7 +221,7 @@ jobs:
           bun test --shard=${{ matrix.shard }}/3 --timeout 120000 --preload ./e2e/setup.ts --reporter=junit --reporter-outfile=test-results/e2e-shard-${{ matrix.shard }}.junit.xml e2e/*.test.ts
       - name: Upload test results to Codecov
         if: ${{ !cancelled() }}
-        uses: codecov/test-results-action@v1
+        uses: codecov/test-results-action@0fa95f0e1eeaafde2c782583b36b28ad0d8c77d3 # v1
         with:
           files: test-results/e2e-shard-${{ matrix.shard }}.junit.xml
           flags: e2e
@@ -239,9 +251,11 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-bun
-      - uses: pulumi/setup-pulumi@v2
+      - uses: pulumi/setup-pulumi@b374ceb6168550de27c6eba92e01c1a774040e11 # v2
       - name: Install Playwright browsers
         run: bunx playwright install chromium --with-deps
       - name: Run Playwright UI tests
@@ -257,7 +271,7 @@ jobs:
           PLAYWRIGHT_BASE_URL: http://localhost:5173
           VITE_API_PORT: "18080"
         run: bun run e2e:ui
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: failure()
         with:
           name: playwright-report
@@ -295,9 +309,11 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-bun
-      - uses: pulumi/setup-pulumi@v2
+      - uses: pulumi/setup-pulumi@b374ceb6168550de27c6eba92e01c1a774040e11 # v2
       - name: Run benchmark
         env:
           PROCELLA_DATABASE_URL: postgres://procella:procella@localhost:5432/procella?sslmode=disable
@@ -318,7 +334,7 @@ jobs:
         run: bun run bench/analyze-traces.ts
       - name: Upload benchmark results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: benchmark-results
           path: bench/results.json
@@ -333,8 +349,10 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: esc-eval/go.mod
           cache: true
@@ -351,7 +369,7 @@ jobs:
 
       - name: Upload Go coverage to Codecov
         if: always()
-        uses: codecov/codecov-action@v7
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7
         with:
           files: ./esc-eval/coverage.out
           flags: esc-eval
@@ -362,7 +380,7 @@ jobs:
         run: cd esc-eval && make build
 
       - name: Upload bootstrap artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: esc-eval-bootstrap
           path: .build/esc-eval/bootstrap
@@ -370,12 +388,14 @@ jobs:
 
   # =========================================================================
   # preview-* — folded in from .github/workflows/preview.yml. These deploy a
-  # real SST stage to AWS and run integration + OIDC E2E against it. Only
-  # runs on pull_request events (push to main has its own Deploy workflow).
+  # real SST stage to AWS and run integration + OIDC E2E against it. They run
+  # only when a pull request has the `deploy-preview` label. Label changes
+  # trigger this workflow so adding the label starts a preview immediately.
+  # Pushes to main use the separate Deploy workflow.
   # =========================================================================
   preview-deploy:
     name: Deploy Preview
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'deploy-preview')
     needs: [check, esc-eval-go]
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -390,9 +410,11 @@ jobs:
       docs_url: ${{ steps.outputs.outputs.docs }}
       descope_project_id: ${{ steps.outputs.outputs.descope_project_id }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: jdx/mise-action@v4
-      - uses: actions/cache@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             node_modules
@@ -403,7 +425,7 @@ jobs:
       - run: bun install --frozen-lockfile
 
       - name: Download ESC eval bootstrap artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: esc-eval-bootstrap
           path: .build/esc-eval
@@ -418,7 +440,7 @@ jobs:
           cp -rf packages/db/drizzle .build/migrate/drizzle
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: us-east-1
@@ -439,8 +461,8 @@ jobs:
           SST_SECRET_ProcellaEncryptionKey: ${{ secrets.PROCELLA_ENCRYPTION_KEY }}
           SST_SECRET_ProcellaDevAuthToken: ${{ secrets.PROCELLA_DEV_AUTH_TOKEN }}
           SST_SECRET_ProcellaDescopeManagementKey: ${{ secrets.DESCOPE_MANAGEMENT_KEY }}
-          SST_SECRET_ProcellaGitHubAppId: ${{ secrets.RENOVATE_APP_ID }}
-          SST_SECRET_ProcellaGitHubAppPrivateKey: ${{ secrets.RENOVATE_APP_PRIVATE_KEY }}
+          SST_SECRET_ProcellaGitHubAppId: ${{ secrets.PROCELLA_GITHUB_APP_ID }}
+          SST_SECRET_ProcellaGitHubAppPrivateKey: ${{ secrets.PROCELLA_GITHUB_APP_PRIVATE_KEY }}
           SST_SECRET_ProcellaGitHubAppWebhookSecret: ${{ secrets.PROCELLA_GITHUB_APP_WEBHOOK_SECRET }}
           SST_SECRET_ProcellaOtelEndpoint: ${{ secrets.OTEL_EXPORTER_OTLP_ENDPOINT }}
           SST_SECRET_ProcellaOtelHeaders: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
@@ -479,8 +501,8 @@ jobs:
           SST_SECRET_ProcellaEncryptionKey: ${{ secrets.PROCELLA_ENCRYPTION_KEY }}
           SST_SECRET_ProcellaDevAuthToken: ${{ secrets.PROCELLA_DEV_AUTH_TOKEN }}
           SST_SECRET_ProcellaDescopeManagementKey: ${{ secrets.DESCOPE_MANAGEMENT_KEY }}
-          SST_SECRET_ProcellaGitHubAppId: ${{ secrets.RENOVATE_APP_ID }}
-          SST_SECRET_ProcellaGitHubAppPrivateKey: ${{ secrets.RENOVATE_APP_PRIVATE_KEY }}
+          SST_SECRET_ProcellaGitHubAppId: ${{ secrets.PROCELLA_GITHUB_APP_ID }}
+          SST_SECRET_ProcellaGitHubAppPrivateKey: ${{ secrets.PROCELLA_GITHUB_APP_PRIVATE_KEY }}
           SST_SECRET_ProcellaGitHubAppWebhookSecret: ${{ secrets.PROCELLA_GITHUB_APP_WEBHOOK_SECRET }}
           SST_SECRET_ProcellaOtelEndpoint: ${{ secrets.OTEL_EXPORTER_OTLP_ENDPOINT }}
           SST_SECRET_ProcellaOtelHeaders: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
@@ -521,7 +543,7 @@ jobs:
       pull-requests: write
       issues: write
     steps:
-      - uses: actions/github-script@v9
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         env:
           API_URL: ${{ needs.preview-deploy.outputs.api_url }}
           APP_URL: ${{ needs.preview-deploy.outputs.app_url }}
@@ -576,16 +598,18 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@v7
-      - uses: jdx/mise-action@v4
-      - uses: actions/cache@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             node_modules
             ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
           restore-keys: bun-${{ runner.os }}-
-      - uses: pulumi/setup-pulumi@v2
+      - uses: pulumi/setup-pulumi@b374ceb6168550de27c6eba92e01c1a774040e11 # v2
       - run: bun install --frozen-lockfile
       - name: Run integration tests against deployed preview
         env:
@@ -610,10 +634,12 @@ jobs:
       STACK_NAME: oidc-e2e-${{ github.run_id }}
       PULUMI_BACKEND_URL: ${{ needs.preview-deploy.outputs.api_url }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: pulumi/setup-pulumi@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: pulumi/setup-pulumi@b374ceb6168550de27c6eba92e01c1a774040e11 # v2
 
-      - uses: pulumi/auth-actions@v2
+      - uses: pulumi/auth-actions@141415910c3beb54e03b48e9057c204c97b956f2 # v2
         with:
           organization: ${{ env.ORG_SLUG }}
           requested-token-type: urn:pulumi:token-type:access_token:organization
@@ -664,14 +690,13 @@ jobs:
   # branch protection rule on `main` to require ONLY this check, and the
   # entire CI suite is gated by it.
   #
-  # Strict semantics: any non-success result on a needed job (failure,
-  # cancelled, OR skipped) fails the gate. Per the user's choice — this
-  # catches the case where a job's `if:` condition silently excluded it.
+  # Strict semantics: every normal CI job must succeed. Preview jobs may be
+  # skipped unless this is a pull request with the `deploy-preview` label. Once
+  # opted in, every preview job must succeed and skipped results fail the gate.
   #
-  # `if: always()` ensures the gate evaluates even when an upstream job
-  # fails — without it, the gate would itself be skipped and (per GitHub's
-  # default branch-protection behavior) appear "successful". That's the
-  # exact pitfall this design avoids.
+  # `if: always()` ensures the gate evaluates even when an upstream job fails.
+  # Without it, the gate would itself be skipped and appear successful under
+  # GitHub's default branch-protection behavior.
   #
   # Excluded from the gate (and therefore NOT required):
   #   - CodeQL (separate workflow, GitHub Default Setup, can't be a job here)
@@ -700,28 +725,24 @@ jobs:
       - name: Verify every needed job succeeded
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
-          IS_PR: ${{ github.event_name == 'pull_request' }}
+          PREVIEW_REQUIRED: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'deploy-preview') }}
         run: |
           set -eu
-          # The preview-* jobs are gated `if: github.event_name == 'pull_request'`
-          # because they deploy a real SST stage scoped to the PR number. On push
-          # to main, those four jobs are intentionally skipped (Deploy workflow
-          # handles main). For every other event type, the strict rule applies:
-          # success is the ONLY acceptable result — `skipped` is treated as a
-          # failure, exactly to catch the case where someone adds a stale `if:`
-          # condition that quietly excludes a required check.
+          # The preview-* jobs are opt-in because they deploy a real SST stage.
+          # A skipped preview job is allowed unless PREVIEW_REQUIRED is true.
+          # Every non-preview job keeps strict success-only semantics.
 
           # Step 1: render a human-readable summary for the run log.
-          jq -r --arg is_pr "$IS_PR" '
+          jq -r --arg preview_required "$PREVIEW_REQUIRED" '
             (["preview-deploy","preview-comment","preview-integration","preview-oidc-e2e"]) as $preview |
             to_entries[] |
             . as $j |
             ($preview | index($j.key)) as $is_preview |
-            (($is_pr != "true") and ($is_preview != null)) as $allowed_skip |
+            (($preview_required != "true") and ($is_preview != null)) as $allowed_skip |
             if $j.value.result == "success"
               then "✅ \($j.key)"
             elif $j.value.result == "skipped" and $allowed_skip
-              then "➖ \($j.key) (skipped — preview job on non-PR event, allowed)"
+              then "➖ \($j.key) (skipped — deploy-preview label absent, allowed)"
             else
               "❌ \($j.key) (result=\($j.value.result))"
             end
@@ -731,13 +752,13 @@ jobs:
           # `. as $e` binds the to_entries element so `$preview | index(...)`
           # inside the inner pipeline can still reference $e.key (otherwise
           # `.` rebinds to $preview and `.key` errors with "Cannot index array").
-          if jq -e --arg is_pr "$IS_PR" '
+          if jq -e --arg preview_required "$PREVIEW_REQUIRED" '
               (["preview-deploy","preview-comment","preview-integration","preview-oidc-e2e"]) as $preview |
               [ to_entries[]
                 | . as $e
                 | select($e.value.result != "success")
                 | select(
-                    ($is_pr == "true")
+                    ($preview_required == "true")
                     or (($preview | index($e.key)) == null)
                     or ($e.value.result != "skipped")
                   )

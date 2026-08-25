@@ -71,6 +71,16 @@ Go back to your GitHub App settings and click **Install App**. Choose your organ
 
 After installation, the app starts receiving webhook events from GitHub.
 
+### Moving a Repository Between Organizations
+
+Use a GitHub App owned by the destination organization when the previous organization-owned App cannot move with the repository. Create the replacement App under the destination organization, install it on the required repositories, and replace all three `PROCELLA_GITHUB_APP_*` values together with the new App ID, private key, and webhook secret. Procella rejects partial GitHub App configuration.
+
+The new App may keep the existing webhook URL. Confirm a signed delivery succeeds after installation before retiring the old App.
+
+### Deployment Credentials
+
+The deployed Procella instance needs its own GitHub App credentials. Do not supply the Renovate App ID or private key as `PROCELLA_GITHUB_APP_*`; the two apps have different permissions and purposes. For SST deployments, map the dedicated Procella App to the `PROCELLA_GITHUB_APP_ID` and `PROCELLA_GITHUB_APP_PRIVATE_KEY` GitHub Actions secrets, then keep the matching webhook secret in `PROCELLA_GITHUB_APP_WEBHOOK_SECRET`.
+
 ## How PR Comments Work
 
 The integration relies on stack tags to know which PR a stack is associated with. When running `pulumi preview` in CI, your workflow must set these tags on the stack:

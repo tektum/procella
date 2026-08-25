@@ -11,7 +11,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	ststypes "github.com/aws/aws-sdk-go-v2/service/sts/types"
-	"github.com/procella-dev/procella/esc-eval/providers/internal/escutil"
+	"github.com/tektum/procella/esc-eval/providers/internal/escutil"
 	"github.com/pulumi/esc"
 	"github.com/pulumi/esc/schema"
 )

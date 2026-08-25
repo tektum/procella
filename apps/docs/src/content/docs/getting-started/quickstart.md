@@ -12,7 +12,7 @@ description: Get a local Procella instance running and deploy your first stack i
 ## Start the Dev Environment
 
 ```bash
-git clone https://github.com/procella-dev/procella.git
+git clone https://github.com/tektum/procella.git
 cd procella
 bun run dev
 ```

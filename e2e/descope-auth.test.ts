@@ -343,10 +343,9 @@ describe_descope("Descope auth (deployed preview)", () => {
 						issuer: "https://token.actions.githubusercontent.com",
 						maxExpiration: 600,
 						claimConditions: {
-							repository: process.env.GITHUB_REPOSITORY ?? "procella-dev/procella",
+							repository: process.env.GITHUB_REPOSITORY ?? "tektum/procella",
 							repository_owner:
-								(process.env.GITHUB_REPOSITORY ?? "procella-dev/procella").split("/")[0] ||
-								"procella-dev",
+								(process.env.GITHUB_REPOSITORY ?? "tektum/procella").split("/")[0] || "tektum",
 						},
 						grantedRole: "member",
 					},

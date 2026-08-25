@@ -51,7 +51,7 @@ Procella is faster than Pulumi Cloud. Server-side processing is ~55ms p50 per re
 
 ```bash
 # Clone and start the dev environment
-git clone https://github.com/procella-dev/procella.git
+git clone https://github.com/tektum/procella.git
 cd procella
 bun run dev
 ```
@@ -76,9 +76,9 @@ pulumi up
 
 ## Deploy
 
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/procella-dev/procella)
-[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template?template=https://github.com/procella-dev/procella)
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/procella-dev/procella)
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/tektum/procella)
+[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template?template=https://github.com/tektum/procella)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/tektum/procella)
 
 | Platform | Method | Config file |
 |---|---|---|
@@ -117,7 +117,10 @@ All configuration is via `PROCELLA_*` environment variables. Set these as Vercel
 | `PROCELLA_GITHUB_APP_ID` | *(optional)* | GitHub App ID for PR comments and commit status checks |
 | `PROCELLA_GITHUB_APP_PRIVATE_KEY` | *(optional)* | GitHub App private key (PEM format) |
 | `PROCELLA_GITHUB_APP_WEBHOOK_SECRET` | *(optional)* | GitHub App webhook secret for signature verification |
+
 | `PROCELLA_TRUST_PROXY` | *(optional)* | Set to `true` only behind a trusted reverse proxy so Procella honors `X-Forwarded-For` / `X-Real-IP` |
+
+For the GitHub App integration, use a dedicated App and configure the three `PROCELLA_GITHUB_APP_*` variables with that App's credentials. Do not reuse the Renovate App credentials; it requires broader repository permissions and should remain scoped to dependency updates. After moving this repository to another GitHub organization, install the Procella App on the destination organization and grant it access to this repository. See the [GitHub App setup guide](apps/docs/src/content/docs/features/github-app.md).
 
 Encryption keys must be set explicitly in every environment. Generate one with `openssl rand -hex 32`.
 

@@ -12,7 +12,7 @@ import (
 	"strings"
 
 	"github.com/aws/aws-lambda-go/lambda"
-	"github.com/procella-dev/procella/esc-eval/providers"
+	"github.com/tektum/procella/esc-eval/providers"
 	"github.com/pulumi/esc"
 	"github.com/pulumi/esc/eval"
 	"github.com/pulumi/esc/syntax"

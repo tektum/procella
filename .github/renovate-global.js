@@ -12,7 +12,7 @@
 
 module.exports = {
   platform: "github",
-  repositories: ["procella-dev/procella"],
+  repositories: ["tektum/procella"],
 
   onboarding: false,
   // Do NOT read renovate.json — it is the hosted app's config.
