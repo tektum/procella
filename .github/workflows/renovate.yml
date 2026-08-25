@@ -11,7 +11,7 @@
 # Prerequisites:
 #   1. Hosted Renovate app installed on the repo (handles everything else)
 #   2. A GitHub App with these repository permissions:
-#        contents: write, pull_requests: write, issues: write, workflows: write
+#        contents: write, pull_requests: write, issues: write
 #   3. Install the app on the tektum org / procella repo
 #   4. Add the app's ID and private key as repository secrets:
 #        RENOVATE_APP_ID, RENOVATE_APP_PRIVATE_KEY
@@ -69,7 +69,6 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
           permission-issues: write
-          permission-workflows: write
 
       # Bun + Go are needed on PATH for postUpgradeTasks.
       # Running Renovate directly on the runner (not Docker) means
