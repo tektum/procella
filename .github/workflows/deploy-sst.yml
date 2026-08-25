@@ -80,6 +80,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
           role-session-name: GitHubActions-Deploy-${{ github.run_id }}
 
       - name: Unlock stale state
