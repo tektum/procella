@@ -5,7 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-    types: [opened, reopened, synchronize]
+    types: [opened, reopened, synchronize, labeled, unlabeled]
 
 permissions:
   contents: read
@@ -388,12 +388,14 @@ jobs:
 
   # =========================================================================
   # preview-* — folded in from .github/workflows/preview.yml. These deploy a
-  # real SST stage to AWS and run integration + OIDC E2E against it. Only
-  # runs on pull_request events (push to main has its own Deploy workflow).
+  # real SST stage to AWS and run integration + OIDC E2E against it. They run
+  # only when a pull request has the `deploy-preview` label. Label changes
+  # trigger this workflow so adding the label starts a preview immediately.
+  # Pushes to main use the separate Deploy workflow.
   # =========================================================================
   preview-deploy:
     name: Deploy Preview
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'deploy-preview')
     needs: [check, esc-eval-go]
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -688,14 +690,13 @@ jobs:
   # branch protection rule on `main` to require ONLY this check, and the
   # entire CI suite is gated by it.
   #
-  # Strict semantics: any non-success result on a needed job (failure,
-  # cancelled, OR skipped) fails the gate. Per the user's choice — this
-  # catches the case where a job's `if:` condition silently excluded it.
+  # Strict semantics: every normal CI job must succeed. Preview jobs may be
+  # skipped unless this is a pull request with the `deploy-preview` label. Once
+  # opted in, every preview job must succeed and skipped results fail the gate.
   #
-  # `if: always()` ensures the gate evaluates even when an upstream job
-  # fails — without it, the gate would itself be skipped and (per GitHub's
-  # default branch-protection behavior) appear "successful". That's the
-  # exact pitfall this design avoids.
+  # `if: always()` ensures the gate evaluates even when an upstream job fails.
+  # Without it, the gate would itself be skipped and appear successful under
+  # GitHub's default branch-protection behavior.
   #
   # Excluded from the gate (and therefore NOT required):
   #   - CodeQL (separate workflow, GitHub Default Setup, can't be a job here)
@@ -724,28 +725,24 @@ jobs:
       - name: Verify every needed job succeeded
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
-          IS_PR: ${{ github.event_name == 'pull_request' }}
+          PREVIEW_REQUIRED: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'deploy-preview') }}
         run: |
           set -eu
-          # The preview-* jobs are gated `if: github.event_name == 'pull_request'`
-          # because they deploy a real SST stage scoped to the PR number. On push
-          # to main, those four jobs are intentionally skipped (Deploy workflow
-          # handles main). For every other event type, the strict rule applies:
-          # success is the ONLY acceptable result — `skipped` is treated as a
-          # failure, exactly to catch the case where someone adds a stale `if:`
-          # condition that quietly excludes a required check.
+          # The preview-* jobs are opt-in because they deploy a real SST stage.
+          # A skipped preview job is allowed unless PREVIEW_REQUIRED is true.
+          # Every non-preview job keeps strict success-only semantics.
 
           # Step 1: render a human-readable summary for the run log.
-          jq -r --arg is_pr "$IS_PR" '
+          jq -r --arg preview_required "$PREVIEW_REQUIRED" '
             (["preview-deploy","preview-comment","preview-integration","preview-oidc-e2e"]) as $preview |
             to_entries[] |
             . as $j |
             ($preview | index($j.key)) as $is_preview |
-            (($is_pr != "true") and ($is_preview != null)) as $allowed_skip |
+            (($preview_required != "true") and ($is_preview != null)) as $allowed_skip |
             if $j.value.result == "success"
               then "✅ \($j.key)"
             elif $j.value.result == "skipped" and $allowed_skip
-              then "➖ \($j.key) (skipped — preview job on non-PR event, allowed)"
+              then "➖ \($j.key) (skipped — deploy-preview label absent, allowed)"
             else
               "❌ \($j.key) (result=\($j.value.result))"
             end
@@ -755,13 +752,13 @@ jobs:
           # `. as $e` binds the to_entries element so `$preview | index(...)`
           # inside the inner pipeline can still reference $e.key (otherwise
           # `.` rebinds to $preview and `.key` errors with "Cannot index array").
-          if jq -e --arg is_pr "$IS_PR" '
+          if jq -e --arg preview_required "$PREVIEW_REQUIRED" '
               (["preview-deploy","preview-comment","preview-integration","preview-oidc-e2e"]) as $preview |
               [ to_entries[]
                 | . as $e
                 | select($e.value.result != "success")
                 | select(
-                    ($is_pr == "true")
+                    ($preview_required == "true")
                     or (($preview | index($e.key)) == null)
                     or ($e.value.result != "skipped")
                   )
