@@ -139,31 +139,13 @@ describe("PostgresWebhooksService — integration", () => {
 	// ========================================================================
 
 	describe("SSRF validation", () => {
+		// Exhaustive URL cases live in packages/webhooks unit tests.
+		// One integration case proves the service wires the validator in.
 		test("rejects localhost URLs", async () => {
 			await expect(
 				webhooks.createWebhook(
 					"tenant-1",
 					{ name: "Evil", url: "http://localhost/hook", events: ["update.succeeded"] },
-					"user-1",
-				),
-			).rejects.toThrow();
-		});
-
-		test("rejects private IP URLs", async () => {
-			await expect(
-				webhooks.createWebhook(
-					"tenant-1",
-					{ name: "Evil", url: "http://192.168.1.1/hook", events: ["update.succeeded"] },
-					"user-1",
-				),
-			).rejects.toThrow();
-		});
-
-		test("rejects 10.x.x.x URLs", async () => {
-			await expect(
-				webhooks.createWebhook(
-					"tenant-1",
-					{ name: "Evil", url: "http://10.0.0.1/hook", events: ["update.succeeded"] },
 					"user-1",
 				),
 			).rejects.toThrow();

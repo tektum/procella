@@ -182,6 +182,46 @@ describe("DevAuthService", () => {
 			UnauthorizedError,
 		);
 	});
+
+	test("createCliAccessKey returns a non-empty dev access key", async () => {
+		const caller = await svc.authenticate(reqWithAuth("token devtoken123"));
+		const key = await svc.createCliAccessKey(caller, "local-cli");
+		expect(key.startsWith("dev-cli:dev-user:local-cli:")).toBe(true);
+		expect(key.length).toBeGreaterThan(40);
+	});
+
+	test("createCliAccessKey registers a key that authenticate accepts", async () => {
+		const caller = await svc.authenticate(reqWithAuth("token devtoken123"));
+		const key = await svc.createCliAccessKey(caller, "round-trip");
+		const authenticated = await svc.authenticate(reqWithAuth(`token ${key}`));
+		expect(authenticated.login).toBe(caller.login);
+		expect(authenticated.orgSlug).toBe(caller.orgSlug);
+		expect(authenticated.roles).toEqual(caller.roles);
+	});
+
+	test("createCliAccessKey does not make unknown keys valid", async () => {
+		await expect(
+			svc.authenticate(
+				reqWithAuth("token dev-cli:dev-user:forged:00000000-0000-0000-0000-000000000000"),
+			),
+		).rejects.toBeInstanceOf(UnauthorizedError);
+	});
+
+	test("createCliAccessKey honors expireTime and rejects expired keys", async () => {
+		const caller = await svc.authenticate(reqWithAuth("token devtoken123"));
+		const expired = await svc.createCliAccessKey(caller, "expired", {
+			expireTime: Math.floor(Date.now() / 1000) - 10,
+		});
+		await expect(svc.authenticate(reqWithAuth(`token ${expired}`))).rejects.toBeInstanceOf(
+			UnauthorizedError,
+		);
+
+		const future = await svc.createCliAccessKey(caller, "future", {
+			expireTime: Math.floor(Date.now() / 1000) + 3600,
+		});
+		const authenticated = await svc.authenticate(reqWithAuth(`token ${future}`));
+		expect(authenticated.login).toBe(caller.login);
+	});
 });
 
 // ============================================================================

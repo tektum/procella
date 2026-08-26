@@ -292,14 +292,57 @@ export class DescopeAuditService implements AuditService {
 	}
 }
 
+/**
+ * In-memory audit sink for auth.mode=dev / local e2e.
+ * Keeps a bounded ring buffer so security regressions (e.g. X-Forwarded-For)
+ * can query real entries without Descope.
+ */
 export class NoopAuditService implements AuditService {
-	log(): void {}
+	private static readonly MAX_ENTRIES = 1_000;
+	private readonly entriesByTenant = new Map<string, AuditLogEntry[]>();
 
-	async query(): Promise<{ entries: AuditLogEntry[]; total: number }> {
-		return { entries: [], total: 0 };
+	log(tenantId: string, entry: Omit<AuditLogEntry, "id" | "createdAt">): void {
+		const full: AuditLogEntry = {
+			...entry,
+			id: crypto.randomUUID(),
+			createdAt: new Date(),
+		};
+		const existing = this.entriesByTenant.get(tenantId) ?? [];
+		existing.push(full);
+		if (existing.length > NoopAuditService.MAX_ENTRIES) {
+			existing.splice(0, existing.length - NoopAuditService.MAX_ENTRIES);
+		}
+		this.entriesByTenant.set(tenantId, existing);
 	}
 
-	async export(): Promise<AuditLogEntry[]> {
-		return [];
+	async query(
+		tenantId: string,
+		params: AuditLogParams,
+	): Promise<{ entries: AuditLogEntry[]; total: number }> {
+		const filtered = this.filter(tenantId, params);
+		const page = Math.max((params.page ?? 1) - 1, 0);
+		const size = Math.min(Math.max(params.pageSize ?? 50, 1), 200);
+		const start = page * size;
+		return { entries: filtered.slice(start, start + size), total: filtered.length };
+	}
+
+	async export(
+		tenantId: string,
+		params: Omit<AuditLogParams, "page" | "pageSize">,
+	): Promise<AuditLogEntry[]> {
+		return this.filter(tenantId, params);
+	}
+
+	private filter(
+		tenantId: string,
+		params: Omit<AuditLogParams, "page" | "pageSize">,
+	): AuditLogEntry[] {
+		const entries = this.entriesByTenant.get(tenantId) ?? [];
+		return entries.filter((entry) => {
+			if (params.action && entry.action !== params.action) return false;
+			if (params.startTime && entry.createdAt < params.startTime) return false;
+			if (params.endTime && entry.createdAt > params.endTime) return false;
+			return true;
+		});
 	}
 }

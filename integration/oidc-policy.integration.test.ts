@@ -1,21 +1,9 @@
-// Integration tests for PostgresTrustPolicyRepository.
-// Requires a running PostgreSQL instance (uses TEST_DB_URL or default).
-// Run with: bun test packages/oidc/src/policy.integration.test.ts
-
-// Skip in unit test runs — this test requires a real PostgreSQL instance.
-// Run explicitly: bun test packages/oidc/src/policy.integration.test.ts
-// Or via: bun run test:integration
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { createDb, type Database, oidcTrustPolicies } from "@procella/db";
-import { eq } from "drizzle-orm";
-import { PostgresTrustPolicyRepository } from "./policy.js";
-
-const TEST_DB_URL =
-	process.env.PROCELLA_DATABASE_URL ||
-	"postgres://procella:procella@localhost:5432/procella?sslmode=disable";
+import { afterEach, beforeAll, describe, expect, test } from "bun:test";
+import type { Database } from "@procella/db";
+import { PostgresTrustPolicyRepository } from "@procella/oidc";
+import { getTestDb, truncateTables } from "./setup.js";
 
 let db: Database;
-let closeDb: () => Promise<void>;
 let repo: PostgresTrustPolicyRepository;
 
 const TENANT_ID = "integration-test-tenant";
@@ -23,37 +11,16 @@ const OTHER_TENANT_ID = "integration-test-other-tenant";
 const ORG_SLUG = "integration-test-org";
 const ISSUER = "https://token.actions.githubusercontent.com";
 
-const SKIP_INTEGRATION =
-	process.env.SKIP_INTEGRATION_TESTS === "true" ||
-	(process.env.CI === "true" && !process.env.PROCELLA_DATABASE_URL);
+beforeAll(() => {
+	db = getTestDb();
+	repo = new PostgresTrustPolicyRepository(db);
+});
 
-const describe_db = SKIP_INTEGRATION ? describe.skip : describe;
+afterEach(async () => {
+	await truncateTables();
+});
 
-describe_db("PostgresTrustPolicyRepository", () => {
-	let createdId: string;
-
-	beforeAll(async () => {
-		const result = await createDb({ url: TEST_DB_URL, max: 2 });
-		db = result.db;
-		closeDb = async () => result.client.close();
-		repo = new PostgresTrustPolicyRepository(db);
-		// Clean up any leftover test data
-		await db.delete(oidcTrustPolicies).where(eq(oidcTrustPolicies.tenantId, TENANT_ID));
-		await db.delete(oidcTrustPolicies).where(eq(oidcTrustPolicies.tenantId, OTHER_TENANT_ID));
-	});
-
-	afterAll(async () => {
-		await db
-			.delete(oidcTrustPolicies)
-			.where(eq(oidcTrustPolicies.tenantId, TENANT_ID))
-			.catch(() => {});
-		await db
-			.delete(oidcTrustPolicies)
-			.where(eq(oidcTrustPolicies.tenantId, OTHER_TENANT_ID))
-			.catch(() => {});
-		await closeDb();
-	});
-
+describe("PostgresTrustPolicyRepository — integration", () => {
 	test("tenant B retires stale tenant A policy for same org and issuer", async () => {
 		const tenantAPolicy = await repo.create({
 			tenantId: TENANT_ID,
@@ -91,9 +58,6 @@ describe_db("PostgresTrustPolicyRepository", () => {
 
 		const activePolicies = await repo.findByOrgSlugAndIssuer(ORG_SLUG, ISSUER);
 		expect(activePolicies.map((policy) => policy.tenantId)).toEqual([OTHER_TENANT_ID]);
-
-		await repo.delete(tenantAPolicy.id, TENANT_ID);
-		await repo.delete(tenantBPolicy.id, OTHER_TENANT_ID);
 	});
 
 	test("create inserts a policy and returns it with generated id", async () => {
@@ -124,36 +88,69 @@ describe_db("PostgresTrustPolicyRepository", () => {
 		expect(policy.grantedRole).toBe("member");
 		expect(policy.active).toBe(true);
 		expect(policy.createdAt).toBeInstanceOf(Date);
-
-		createdId = policy.id;
 	});
 
 	test("findByOrgSlug returns active policies for the org", async () => {
+		const policy = await repo.create({
+			tenantId: TENANT_ID,
+			orgSlug: ORG_SLUG,
+			provider: "github-actions",
+			displayName: "Test Policy",
+			issuer: ISSUER,
+			maxExpiration: 3600,
+			claimConditions: { iss: ISSUER, repository_owner: "integration-test-org" },
+			grantedRole: "member",
+			active: true,
+		});
+
 		const policies = await repo.findByOrgSlug(ORG_SLUG);
 		expect(policies).toBeArray();
-		const found = policies.find((p) => p.id === createdId);
+		const found = policies.find((p) => p.id === policy.id);
 		expect(found).toBeDefined();
 		expect(found?.displayName).toBe("Test Policy");
 	});
 
 	test("findByOrgSlug does not return policies for different org", async () => {
+		const policy = await repo.create({
+			tenantId: TENANT_ID,
+			orgSlug: ORG_SLUG,
+			provider: "github-actions",
+			displayName: "Test Policy",
+			issuer: ISSUER,
+			maxExpiration: 3600,
+			claimConditions: { iss: ISSUER, repository_owner: "integration-test-org" },
+			grantedRole: "member",
+			active: true,
+		});
+
 		const policies = await repo.findByOrgSlug("some-other-org");
-		const found = policies.find((p) => p.id === createdId);
+		const found = policies.find((p) => p.id === policy.id);
 		expect(found).toBeUndefined();
 	});
 
 	test("update patches allowed fields and enforces tenant isolation", async () => {
-		const updated = await repo.update(createdId, TENANT_ID, {
+		const policy = await repo.create({
+			tenantId: TENANT_ID,
+			orgSlug: ORG_SLUG,
+			provider: "github-actions",
+			displayName: "Test Policy",
+			issuer: ISSUER,
+			maxExpiration: 3600,
+			claimConditions: { iss: ISSUER, repository_owner: "integration-test-org" },
+			grantedRole: "member",
+			active: true,
+		});
+
+		const updated = await repo.update(policy.id, TENANT_ID, {
 			displayName: "Updated Policy",
 			maxExpiration: 7200,
 			active: false,
 		});
 
-		expect(updated.id).toBe(createdId);
+		expect(updated.id).toBe(policy.id);
 		expect(updated.displayName).toBe("Updated Policy");
 		expect(updated.maxExpiration).toBe(7200);
 		expect(updated.active).toBe(false);
-		// Unchanged fields
 		expect(updated.issuer).toBe(ISSUER);
 		expect(updated.claimConditions).toEqual({
 			iss: ISSUER,
@@ -162,38 +159,83 @@ describe_db("PostgresTrustPolicyRepository", () => {
 	});
 
 	test("findByOrgSlug excludes inactive policies", async () => {
-		// Policy was set inactive in previous test
+		const policy = await repo.create({
+			tenantId: TENANT_ID,
+			orgSlug: ORG_SLUG,
+			provider: "github-actions",
+			displayName: "Test Policy",
+			issuer: ISSUER,
+			maxExpiration: 3600,
+			claimConditions: { iss: ISSUER, repository_owner: "integration-test-org" },
+			grantedRole: "member",
+			active: true,
+		});
+		await repo.update(policy.id, TENANT_ID, { active: false });
+
 		const policies = await repo.findByOrgSlug(ORG_SLUG);
-		const found = policies.find((p) => p.id === createdId);
-		expect(found).toBeUndefined(); // inactive — should not appear
+		const found = policies.find((p) => p.id === policy.id);
+		expect(found).toBeUndefined();
 	});
 
 	test("listByOrgSlug returns inactive policies too", async () => {
-		// Policy is still inactive from previous test
+		const policy = await repo.create({
+			tenantId: TENANT_ID,
+			orgSlug: ORG_SLUG,
+			provider: "github-actions",
+			displayName: "Test Policy",
+			issuer: ISSUER,
+			maxExpiration: 3600,
+			claimConditions: { iss: ISSUER, repository_owner: "integration-test-org" },
+			grantedRole: "member",
+			active: true,
+		});
+		await repo.update(policy.id, TENANT_ID, { active: false });
+
 		const all = await repo.listByOrgSlug(ORG_SLUG);
-		const found = all.find((p) => p.id === createdId);
+		const found = all.find((p) => p.id === policy.id);
 		expect(found).toBeDefined();
 		expect(found?.active).toBe(false);
 	});
 
-	test("update returns error when policy not found for tenant", () => {
-		return expect(
-			repo.update(createdId, "wrong-tenant", { displayName: "Should Fail" }),
-		).rejects.toThrow();
+	test("update returns error when policy not found for tenant", async () => {
+		const policy = await repo.create({
+			tenantId: TENANT_ID,
+			orgSlug: ORG_SLUG,
+			provider: "github-actions",
+			displayName: "Test Policy",
+			issuer: ISSUER,
+			maxExpiration: 3600,
+			claimConditions: { iss: ISSUER, repository_owner: "integration-test-org" },
+			grantedRole: "member",
+			active: true,
+		});
+
+		await expect(
+			repo.update(policy.id, "wrong-tenant", { displayName: "Should Fail" }),
+		).rejects.toBeInstanceOf(Error);
 	});
 
 	test("delete removes the policy", async () => {
-		// Re-enable the policy first via raw update
-		await repo.update(createdId, TENANT_ID, { active: true });
-		await repo.delete(createdId, TENANT_ID);
+		const policy = await repo.create({
+			tenantId: TENANT_ID,
+			orgSlug: ORG_SLUG,
+			provider: "github-actions",
+			displayName: "Test Policy",
+			issuer: ISSUER,
+			maxExpiration: 3600,
+			claimConditions: { iss: ISSUER, repository_owner: "integration-test-org" },
+			grantedRole: "member",
+			active: true,
+		});
+
+		await repo.delete(policy.id, TENANT_ID);
 
 		const policies = await repo.findByOrgSlug(ORG_SLUG);
-		const found = policies.find((p) => p.id === createdId);
+		const found = policies.find((p) => p.id === policy.id);
 		expect(found).toBeUndefined();
 	});
 
 	test("delete is tenant-scoped (cannot delete other tenant's policy)", async () => {
-		// Create a new policy to attempt deletion
 		const policy = await repo.create({
 			tenantId: TENANT_ID,
 			orgSlug: ORG_SLUG,
@@ -206,15 +248,10 @@ describe_db("PostgresTrustPolicyRepository", () => {
 			active: true,
 		});
 
-		// Delete with wrong tenant — should silently not delete (no error, no rows)
 		await repo.delete(policy.id, "wrong-tenant");
 
-		// Verify still exists
 		const policies = await repo.findByOrgSlug(ORG_SLUG);
 		const found = policies.find((p) => p.id === policy.id);
 		expect(found).toBeDefined();
-
-		// Cleanup
-		await repo.delete(policy.id, TENANT_ID);
 	});
 });

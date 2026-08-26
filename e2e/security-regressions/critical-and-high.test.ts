@@ -183,16 +183,16 @@ async function signDescopeJwt(
 }
 
 function createConflictDb(): Database {
-	return {
+	// create() runs inside db.transaction(); the insert must reject with SQLSTATE 23505
+	// so the repository maps it to OidcPolicyConflictError (policy_conflict).
+	const conflictError = Object.assign(new Error("duplicate key value violates unique constraint"), {
+		code: "23505",
+		constraint: "idx_oidc_trust_org_issuer",
+	});
+	const db = {
 		insert: mock(() => ({
 			values: mock(() => ({
-				returning: mock(() =>
-					Promise.reject(
-						Object.assign(new Error("duplicate key value violates unique constraint"), {
-							code: "23505",
-						}),
-					),
-				),
+				returning: mock(() => Promise.reject(conflictError)),
 			})),
 		})),
 		select: mock(() => ({ from: mock(() => ({ where: mock(async () => []) })) })),
@@ -200,7 +200,9 @@ function createConflictDb(): Database {
 			set: mock(() => ({ where: mock(() => ({ returning: mock(async () => []) })) })),
 		})),
 		delete: mock(() => ({ where: mock(async () => undefined) })),
-	} as unknown as Database;
+		transaction: mock(async (callback: (tx: unknown) => unknown) => callback(db)),
+	};
+	return db as unknown as Database;
 }
 
 let server: Subprocess;
@@ -297,13 +299,12 @@ describe("[security] CRITICAL regressions (vulns.txt C1-C6)", () => {
 
 	serverTest("[C4] invalid update kind returns 400", async () => {
 		// C4 exploit attempt: POST a script-like update kind and verify the handler rejects it before any persistence.
-		const res = await apiRequest(
-			"/stacks/dev-org/security-c4/dev/%3Cscript%3Ealert(1)%3C/script%3E",
-			{
-				method: "POST",
-				body: {},
-			},
-		);
+		// encodeURIComponent is required: a literal `/` inside `</script>` becomes an extra path segment (404).
+		const kind = encodeURIComponent("<script>alert(1)</script>");
+		const res = await apiRequest(`/stacks/dev-org/security-c4/dev/${kind}`, {
+			method: "POST",
+			body: {},
+		});
 
 		expect(res.status).toBe(400);
 		expect(await res.json()).toEqual({

@@ -9,6 +9,9 @@ linker = "hoisted"
 coverageReporter = ["text", "lcov"]
 coverageDir = "coverage"
 coverageSkipTestFiles = true
+# packages/ and apps/ globs (used by CI + test:unit) would otherwise pick up
+# compiled *.test.js under dist/ after a local tsc/build.
+pathIgnorePatterns = ["**/dist/**"]
 coveragePathIgnorePatterns = [
   "e2e/**",
   "bench/**",
@@ -16,4 +19,5 @@ coveragePathIgnorePatterns = [
   "**/generated/**",
   "apps/docs/**",
   "packages/test-utils/**",
+  "**/dist/**",
 ]

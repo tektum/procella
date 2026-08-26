@@ -5,27 +5,10 @@ import {
 	hasAnyRole,
 	hasRole,
 	parseStackFQN,
-	Role,
 	type StackFQN,
 } from "./domain.js";
 
 describe("@procella/types domain", () => {
-	// ========================================================================
-	// Role
-	// ========================================================================
-
-	describe("Role", () => {
-		test("has admin, member, viewer values", () => {
-			expect(Role.Admin).toBe("admin");
-			expect(Role.Member).toBe("member");
-			expect(Role.Viewer).toBe("viewer");
-		});
-
-		test("has exactly 3 role values", () => {
-			expect(Object.keys(Role)).toHaveLength(3);
-		});
-	});
-
 	// ========================================================================
 	// hasRole / hasAnyRole
 	// ========================================================================

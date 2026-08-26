@@ -169,8 +169,6 @@ jobs:
           fi
       - name: Typecheck with regenerated types
         run: bun run typecheck
-      - name: Run unit tests
-        run: bun test --parallel packages/
 
   e2e:
     name: E2E Acceptance Tests (shard ${{ matrix.shard }}/3)
@@ -231,6 +229,47 @@ jobs:
         env:
           OTEL_SERVICE_NAME: procella-ci-e2e
         run: bun run bench/analyze-traces.ts
+  security-e2e:
+    name: Security E2E Tests
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    needs: [check]
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: procella
+          POSTGRES_PASSWORD: procella
+          POSTGRES_DB: procella
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U procella"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - uses: pulumi/setup-pulumi@b374ceb6168550de27c6eba92e01c1a774040e11 # v2
+      - name: Run security E2E tests
+        env:
+          PROCELLA_DATABASE_URL: postgres://procella:procella@localhost:5432/procella?sslmode=disable
+          PROCELLA_SECURITY_E2E: "1"
+          CI: "1"
+        run: |
+          mkdir -p test-results
+          bun test --timeout 60000 --preload ./e2e/setup.ts --reporter=junit --reporter-outfile=test-results/security-e2e.junit.xml e2e/security-regressions/ e2e/encrypt-decrypt.test.ts e2e/lease-token-binding.test.ts
+      - name: Upload test results to Codecov
+        if: ${{ !cancelled() }}
+        uses: codecov/test-results-action@0fa95f0e1eeaafde2c782583b36b28ad0d8c77d3 # v1
+        with:
+          files: test-results/security-e2e.junit.xml
+          flags: security-e2e
+          use_oidc: true
 
   e2e-ui:
     name: E2E UI Tests (Playwright)
@@ -314,6 +353,8 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-bun
       - uses: pulumi/setup-pulumi@b374ceb6168550de27c6eba92e01c1a774040e11 # v2
+      - name: Run benchmark tests
+        run: bun test bench/
       - name: Run benchmark
         env:
           PROCELLA_DATABASE_URL: postgres://procella:procella@localhost:5432/procella?sslmode=disable
@@ -714,6 +755,7 @@ jobs:
       - esc-cli-e2e
       - types-freshness
       - e2e
+      - security-e2e
       - e2e-ui
       - bench
       - esc-eval-go
