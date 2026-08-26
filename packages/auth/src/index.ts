@@ -70,7 +70,8 @@ export interface DevAuthConfig {
 }
 
 export class DevAuthService implements AuthService {
-	private readonly users: readonly DevAuthUser[];
+	/** Mutable so createCliAccessKey can register keys that authenticate() accepts. */
+	private readonly users: DevAuthUser[];
 
 	constructor(config: DevAuthConfig) {
 		this.users = [
@@ -129,9 +130,20 @@ export class DevAuthService implements AuthService {
 		);
 	}
 
-	/** Local/dev stand-in for Descope access-key creation (enables /api/auth/cli-token e2e). */
+	/**
+	 * Local/dev stand-in for Descope access-key creation (enables /api/auth/cli-token e2e).
+	 * Registers the cleartext in-process so authenticate() accepts it — single-process only,
+	 * matching auth.mode=dev (Postgres-backed keys belong to DescopeAuthService / production).
+	 */
 	async createCliAccessKey(caller: Caller, name: string): Promise<string> {
-		return `dev-cli:${caller.login}:${name}:${crypto.randomUUID()}`;
+		const token = `dev-cli:${caller.login}:${name}:${crypto.randomUUID()}`;
+		this.users.push({
+			token,
+			login: caller.login,
+			org: caller.orgSlug,
+			role: caller.roles.includes("admin") ? "admin" : (caller.roles[0] ?? "viewer"),
+		});
+		return token;
 	}
 }
 
