@@ -206,6 +206,22 @@ describe("DevAuthService", () => {
 			),
 		).rejects.toBeInstanceOf(UnauthorizedError);
 	});
+
+	test("createCliAccessKey honors expireTime and rejects expired keys", async () => {
+		const caller = await svc.authenticate(reqWithAuth("token devtoken123"));
+		const expired = await svc.createCliAccessKey(caller, "expired", {
+			expireTime: Math.floor(Date.now() / 1000) - 10,
+		});
+		await expect(svc.authenticate(reqWithAuth(`token ${expired}`))).rejects.toBeInstanceOf(
+			UnauthorizedError,
+		);
+
+		const future = await svc.createCliAccessKey(caller, "future", {
+			expireTime: Math.floor(Date.now() / 1000) + 3600,
+		});
+		const authenticated = await svc.authenticate(reqWithAuth(`token ${future}`));
+		expect(authenticated.login).toBe(caller.login);
+	});
 });
 
 // ============================================================================
