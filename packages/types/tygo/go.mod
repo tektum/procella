@@ -1,14 +1,15 @@
 module procella-tygo
 
-go 1.25.11
+go 1.26.6
 
-require github.com/pulumi/pulumi/sdk/v3 v3.259.0
+require github.com/pulumi/pulumi/sdk/v3 v3.260.0
 
 require (
 	github.com/aead/chacha20 v0.0.0-20180709150244-8b13a72661da // indirect
 	github.com/blang/semver v3.5.1+incompatible // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/deckarep/golang-set/v2 v2.5.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/golang/glog v1.2.5 // indirect
