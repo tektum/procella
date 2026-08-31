@@ -880,6 +880,22 @@ describe("@procella/updates helpers", () => {
 			expect("deletedWith" in resources[1]).toBe(false);
 		});
 
+		test("refresh replay does not mutate the cached base deployment", () => {
+			const removed = makeResource("urn:removed", "removed-id");
+			const dependent = {
+				...makeResource("urn:dependent", "dependent-id"),
+				dependencies: [removed.urn],
+			};
+			const base = makeBase([removed, dependent]);
+			const original = structuredClone(base);
+
+			applyJournalEntries(base, [
+				makeEntry({ kind: JournalEntryRefreshSuccess, operationId: 1, removeOld: 0n }),
+			]);
+
+			expect(base).toEqual(original);
+		});
+
 		test("persisted refresh success also prunes dangling dependencies", () => {
 			const removed = makeResource("urn:removed", "removed-id");
 			const dependent = {

@@ -1180,7 +1180,9 @@ function rebuildFromJournal(
 	base: Record<string, unknown>,
 	state: JournalReplayState,
 ): Record<string, unknown> {
-	const baseResources = ((base.resources ?? []) as ResourceV3[]).slice();
+	const baseResources = ((base.resources ?? []) as ResourceV3[]).map((resource) => ({
+		...resource,
+	}));
 
 	for (const [index, replacement] of state.toReplaceInSnapshot) {
 		if (index >= 0 && index < baseResources.length) baseResources[index] = replacement;
