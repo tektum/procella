@@ -51,8 +51,7 @@ import {
 	UpdateConflictError,
 	UpdateNotFoundError,
 } from "@procella/types";
-import { and, asc, desc, eq, gt, max, sql } from "drizzle-orm";
-import { checkpointDedup } from "./checkpoint-dedup.js";
+import { and, desc, eq, gt, max, ne, sql } from "drizzle-orm";
 import type { TextEdit } from "./helpers.js";
 import {
 	applyTextEdits,
@@ -495,7 +494,8 @@ export class PostgresUpdatesService implements UpdatesService {
 				throw new BadRequestError(`Too many journal entries (max ${MAX_JOURNAL_ENTRIES})`);
 			}
 
-			const stackId = await this.db.transaction(async (tx) => {
+			const hasNonElided = entries.some((entry: JournalEntry) => !entry.elideWrite);
+			await this.db.transaction(async (tx) => {
 				const lockedUpdate = await this.lockUpdateForWrite(tx, updateId);
 				const rows = entries.map((entry: JournalEntry) => {
 					if (
@@ -532,14 +532,11 @@ export class PostgresUpdatesService implements UpdatesService {
 				});
 
 				await tx.insert(journalEntries).values(rows).onConflictDoNothing();
-				return lockedUpdate.stackId;
+				if (hasNonElided) {
+					await this.flushJournalToCheckpoint(tx, updateId, lockedUpdate.stackId);
+				}
 			});
 			journalEntriesCount().add(entries.length, { "update.id": updateId });
-
-			const hasNonElided = entries.some((e: JournalEntry) => !e.elideWrite);
-			if (hasNonElided) {
-				await this.flushJournalToCheckpoint(updateId, stackId);
-			}
 		});
 	}
 
@@ -773,7 +770,6 @@ export class PostgresUpdatesService implements UpdatesService {
 
 	private clearUpdateCaches(updateId: string): void {
 		this.baseDeploymentCache.delete(updateId);
-		checkpointDedup.clear(updateId);
 	}
 
 	private evictStaleCaches(): void {
@@ -782,28 +778,30 @@ export class PostgresUpdatesService implements UpdatesService {
 		}
 	}
 
-	private async flushJournalToCheckpoint(updateId: string, stackId: string): Promise<void> {
+	private async flushJournalToCheckpoint(
+		tx: DbTransaction,
+		updateId: string,
+		stackId: string,
+	): Promise<void> {
 		return withDbSpan("flushJournalToCheckpoint", { "update.id": updateId }, async () => {
 			this.evictStaleCaches();
 
-			const allEntries = await this.db
+			const allEntries = await tx
 				.select()
 				.from(journalEntries)
 				.where(eq(journalEntries.updateId, updateId))
 				.orderBy(journalEntries.sequenceId);
 
-			if (allEntries.length === 0) {
-				return;
-			}
+			if (allEntries.length === 0) return;
 
 			let baseDeployment = this.baseDeploymentCache.get(updateId);
 			if (!baseDeployment) {
-				baseDeployment = await this.loadBaseDeploymentForUpdate(stackId, updateId);
+				baseDeployment = await this.loadBaseDeploymentForUpdate(tx, stackId, updateId);
 				this.baseDeploymentCache.set(updateId, baseDeployment);
 			}
 
 			const reconstructed = applyJournalEntries(baseDeployment, allEntries);
-			await this.upsertCheckpoint(updateId, reconstructed);
+			await this.upsertCheckpointInTransaction(tx, updateId, reconstructed);
 		});
 	}
 
@@ -826,10 +824,6 @@ export class PostgresUpdatesService implements UpdatesService {
 		const serialized = JSON.stringify(data);
 		const lockedUpdate = await this.lockUpdateForWrite(tx, updateId, options);
 
-		if (await checkpointDedup.isDuplicate(updateId, serialized)) {
-			return;
-		}
-
 		checkpointSizeHistogram().record(Buffer.byteLength(serialized, "utf8"), {
 			"stack.id": lockedUpdate.stackId,
 		});
@@ -849,10 +843,11 @@ export class PostgresUpdatesService implements UpdatesService {
 					data: null,
 					blobKey,
 					isDelta: false,
+					createdAt: sql`clock_timestamp()`,
 				})
 				.onConflictDoUpdate({
 					target: [checkpoints.updateId, checkpoints.version],
-					set: { data: null, blobKey, isDelta: false },
+					set: { data: null, blobKey, isDelta: false, createdAt: sql`clock_timestamp()` },
 				});
 			return;
 		}
@@ -866,6 +861,7 @@ export class PostgresUpdatesService implements UpdatesService {
 				data: checkpointData,
 				blobKey,
 				isDelta: false,
+				createdAt: sql`clock_timestamp()`,
 			})
 			.onConflictDoUpdate({
 				target: [checkpoints.updateId, checkpoints.version],
@@ -873,6 +869,7 @@ export class PostgresUpdatesService implements UpdatesService {
 					data: checkpointData,
 					blobKey,
 					isDelta: false,
+					createdAt: sql`clock_timestamp()`,
 				},
 			});
 	}
@@ -943,25 +940,22 @@ export class PostgresUpdatesService implements UpdatesService {
 	}
 
 	private async loadBaseDeploymentForUpdate(
+		tx: DbTransaction,
 		stackId: string,
 		updateId: string,
 	): Promise<Record<string, unknown>> {
-		const [initial] = await this.db
+		const [row] = await tx
 			.select()
 			.from(checkpoints)
-			.where(and(eq(checkpoints.updateId, updateId), eq(checkpoints.isDelta, false)))
-			.orderBy(asc(checkpoints.version))
+			.where(
+				and(
+					eq(checkpoints.stackId, stackId),
+					ne(checkpoints.updateId, updateId),
+					eq(checkpoints.isDelta, false),
+				),
+			)
+			.orderBy(desc(checkpoints.createdAt))
 			.limit(1);
-
-		const row =
-			initial ??
-			(await this.db
-				.select()
-				.from(checkpoints)
-				.where(and(eq(checkpoints.stackId, stackId), eq(checkpoints.isDelta, false)))
-				.orderBy(desc(checkpoints.createdAt))
-				.limit(1)
-				.then((rows) => rows[0]));
 
 		if (!row) {
 			return {
@@ -1221,7 +1215,6 @@ function rebuildFromJournal(
 
 function rebuildDependencies(resources: ResourceV3[]): void {
 	const referenceable = new Set<string>();
-	const availableParents = new Map<string, string | undefined>();
 
 	for (const resource of resources) {
 		if (resource.dependencies) {
@@ -1248,11 +1241,15 @@ function rebuildDependencies(resources: ResourceV3[]): void {
 		if (resource.deletedWith && !referenceable.has(resource.deletedWith)) {
 			delete resource.deletedWith;
 		}
+		referenceable.add(resource.urn);
+	}
+
+	const availableParents = new Map<string, string | undefined>();
+	for (const resource of resources) {
 		if (resource.parent && !referenceable.has(resource.parent)) {
 			resource.parent = availableParents.get(resource.parent);
 		}
 		availableParents.set(resource.urn, resource.parent);
-		referenceable.add(resource.urn);
 	}
 }
 

@@ -853,7 +853,7 @@ describe("@procella/updates helpers", () => {
 			expect(completed.pending_operations).toEqual([]);
 		});
 
-		test("refresh deletion prunes dangling dependency metadata and reparents children", () => {
+		test("refresh deletion prunes dangling dependency metadata and clears a removed parent", () => {
 			const root = makeResource("urn:root", "root-id");
 			const removed = { ...makeResource("urn:removed", "removed-id"), parent: root.urn };
 			const dependent = {
@@ -894,6 +894,31 @@ describe("@procella/updates helpers", () => {
 			]);
 
 			expect(base).toEqual(original);
+		});
+
+		test("refresh preserves a parent retained later in the rebuilt snapshot", () => {
+			const parent = makeResource("urn:parent", "parent-id");
+			const child = { ...makeResource("urn:child", "child-id"), parent: parent.urn };
+			const entries = [
+				makeEntry({
+					kind: JournalEntrySuccess,
+					operationId: 1,
+					state: child,
+					isRefresh: true,
+				}),
+			];
+
+			const result = applyJournalEntries(makeBase([parent]), entries);
+			expect(result.resources).toEqual([child, parent]);
+		});
+
+		test("retains only creating operations from the base snapshot", () => {
+			const creating = { resource: makeResource("urn:create"), type: "creating" };
+			const deleting = { resource: makeResource("urn:delete"), type: "deleting" };
+			const base = { ...makeBase(), pending_operations: [creating, deleting] };
+
+			const result = applyJournalEntries(base, []);
+			expect(result.pending_operations).toEqual([creating]);
 		});
 
 		test("persisted refresh success also prunes dangling dependencies", () => {

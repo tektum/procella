@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test
 import { AesCryptoService } from "@procella/crypto";
 import { checkpoints, type Database, journalEntries } from "@procella/db";
 import { PostgresStacksService, type StackInfo } from "@procella/stacks";
-import { LocalBlobStorage } from "@procella/storage";
+import { type BlobStorage, LocalBlobStorage } from "@procella/storage";
 import {
 	BadRequestError,
 	JournalEntryBegin,
@@ -11,7 +11,7 @@ import {
 	UpdateConflictError,
 	UpdateNotFoundError,
 } from "@procella/types";
-import { ImportConflictError, PostgresUpdatesService } from "@procella/updates";
+import { BLOB_THRESHOLD, ImportConflictError, PostgresUpdatesService } from "@procella/updates";
 import { asc, eq } from "drizzle-orm";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -420,6 +420,97 @@ describe("PostgresUpdatesService — integration", () => {
 				deleteNew: 7n,
 				isRefresh: true,
 			});
+		});
+
+		test("replays from the pre-update snapshot after a service restart", async () => {
+			const stack = await seedStack();
+			const created = await updatesService.createUpdate(stack.id, "update");
+			await updatesService.startUpdate(created.updateID, {});
+			const resourceA = {
+				urn: "urn:pulumi:dev::test-project::test:index:Thing::a",
+				custom: true,
+				type: "test:index:Thing",
+			};
+			const resourceB = {
+				urn: "urn:pulumi:dev::test-project::test:index:Thing::b",
+				custom: true,
+				type: "test:index:Thing",
+			};
+
+			await updatesService.appendJournalEntries(created.updateID, {
+				entries: [
+					{
+						version: 1,
+						kind: JournalEntrySuccess,
+						operationID: 1,
+						sequenceID: 1,
+						state: resourceA,
+					},
+				],
+			});
+
+			const restartedService = new PostgresUpdatesService({
+				db,
+				storage: new LocalBlobStorage(blobDir),
+				crypto: new AesCryptoService("a".repeat(64)),
+			});
+			await restartedService.appendJournalEntries(created.updateID, {
+				entries: [
+					{
+						version: 1,
+						kind: JournalEntrySuccess,
+						operationID: 2,
+						sequenceID: 2,
+						state: resourceB,
+					},
+				],
+			});
+
+			const exported = await restartedService.exportStack(stack.id);
+			// UntypedDeployment intentionally leaves the deployment payload untyped.
+			const deployment = exported.deployment as { resources: Array<{ urn: string }> };
+			const { resources } = deployment;
+			expect(resources.map((resource) => resource.urn)).toEqual([resourceA.urn, resourceB.urn]);
+		});
+
+		test("retries an identical checkpoint after blob persistence fails", async () => {
+			const stack = await seedStack();
+			const created = await updatesService.createUpdate(stack.id, "update");
+			await updatesService.startUpdate(created.updateID, {});
+			const localStorage = new LocalBlobStorage(blobDir);
+			let putAttempts = 0;
+			const flakyStorage: BlobStorage = {
+				get: (key) => localStorage.get(key),
+				put: async (key, data) => {
+					putAttempts++;
+					if (putAttempts === 1) throw new Error("injected storage failure");
+					await localStorage.put(key, data);
+				},
+				delete: (key) => localStorage.delete(key),
+				exists: (key) => localStorage.exists(key),
+			};
+			const retryingService = new PostgresUpdatesService({
+				db,
+				storage: flakyStorage,
+				crypto: new AesCryptoService("a".repeat(64)),
+			});
+			const request = {
+				isInvalid: false,
+				version: 3,
+				deployment: { resources: [], payload: "x".repeat(BLOB_THRESHOLD + 1) },
+			};
+
+			await expect(retryingService.patchCheckpoint(created.updateID, request)).rejects.toThrow(
+				"injected storage failure",
+			);
+			await retryingService.patchCheckpoint(created.updateID, request);
+
+			expect(putAttempts).toBe(2);
+			const persisted = await db
+				.select()
+				.from(checkpoints)
+				.where(eq(checkpoints.updateId, created.updateID));
+			expect(persisted).toHaveLength(1);
 		});
 
 		test("concurrent checkpoint writes use sequential versions without conflicts", async () => {

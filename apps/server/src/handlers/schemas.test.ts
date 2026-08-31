@@ -163,6 +163,12 @@ describe("Pulumi request schemas", () => {
 						deleteNew: 1,
 						isRefresh: true,
 					},
+					{
+						version: 1,
+						kind: 0,
+						operationID: 2,
+						sequenceID: 2,
+					},
 				],
 			}).success,
 		).toBe(true);
