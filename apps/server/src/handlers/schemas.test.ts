@@ -151,7 +151,19 @@ describe("Pulumi request schemas", () => {
 
 		expect(
 			JournalEntriesSchema.safeParse({
-				entries: [{ version: 1, kind: 1, operationID: 1, sequenceID: 1 }],
+				entries: [
+					{
+						version: 1,
+						kind: 1,
+						operationID: 1,
+						sequenceID: 1,
+						pendingReplacementOld: 0,
+						pendingReplacementNew: 1,
+						deleteOld: 0,
+						deleteNew: 1,
+						isRefresh: true,
+					},
+				],
 			}).success,
 		).toBe(true);
 

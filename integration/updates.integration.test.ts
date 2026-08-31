@@ -1,11 +1,12 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { AesCryptoService } from "@procella/crypto";
-import { checkpoints, type Database } from "@procella/db";
+import { checkpoints, type Database, journalEntries } from "@procella/db";
 import { PostgresStacksService, type StackInfo } from "@procella/stacks";
 import { LocalBlobStorage } from "@procella/storage";
 import {
 	BadRequestError,
 	JournalEntryBegin,
+	JournalEntrySuccess,
 	LeaseExpiredError,
 	UpdateConflictError,
 	UpdateNotFoundError,
@@ -380,6 +381,45 @@ describe("PostgresUpdatesService — integration", () => {
 					})),
 				}),
 			).rejects.toBeInstanceOf(BadRequestError);
+		});
+
+		test("persists every replay-relevant journal field", async () => {
+			const stack = await seedStack();
+			const created = await updatesService.createUpdate(stack.id, "update");
+			await updatesService.startUpdate(created.updateID, {});
+
+			await updatesService.appendJournalEntries(created.updateID, {
+				entries: [
+					{
+						version: 1,
+						kind: JournalEntrySuccess,
+						operationID: 7,
+						sequenceID: 11,
+						state: {
+							urn: "urn:pulumi:dev::test-project::test:index:Thing::example",
+							custom: true,
+							type: "test:index:Thing",
+						},
+						pendingReplacementOld: 2,
+						pendingReplacementNew: 7,
+						deleteOld: 3,
+						deleteNew: 7,
+						isRefresh: true,
+					},
+				],
+			});
+
+			const [persisted] = await db
+				.select()
+				.from(journalEntries)
+				.where(eq(journalEntries.updateId, created.updateID));
+			expect(persisted).toMatchObject({
+				pendingReplacementOld: 2n,
+				pendingReplacementNew: 7n,
+				deleteOld: 3n,
+				deleteNew: 7n,
+				isRefresh: true,
+			});
 		});
 
 		test("concurrent checkpoint writes use sequential versions without conflicts", async () => {

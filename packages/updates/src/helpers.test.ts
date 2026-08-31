@@ -4,6 +4,9 @@ import {
 	InvalidUpdateTokenError,
 	JournalEntryBegin,
 	JournalEntryFailure,
+	JournalEntryOutputs,
+	JournalEntryRebuiltBaseState,
+	JournalEntryRefreshSuccess,
 	JournalEntrySecretsManager,
 	JournalEntrySuccess,
 	JournalEntryWrite,
@@ -636,6 +639,11 @@ describe("@procella/updates helpers", () => {
 			operationType: null,
 			removeOld: null,
 			removeNew: null,
+			pendingReplacementOld: null,
+			pendingReplacementNew: null,
+			deleteOld: null,
+			deleteNew: null,
+			isRefresh: false,
 			elideWrite: false,
 			...overrides,
 		});
@@ -697,8 +705,8 @@ describe("@procella/updates helpers", () => {
 			const base = makeBase();
 			const resource = makeResource("urn:a");
 			const entries = [
-				makeEntry({ kind: JournalEntryBegin, operationId: 1, state: resource }),
-				makeEntry({ kind: JournalEntrySuccess, operationId: 1, removeNew: 1n, state: resource }),
+				makeEntry({ kind: JournalEntryBegin, operationId: 1 }),
+				makeEntry({ kind: JournalEntrySuccess, operationId: 1, state: resource }),
 			];
 			const result = applyJournalEntries(base, entries);
 			expect((result.resources as unknown[]).length).toBe(1);
@@ -709,7 +717,7 @@ describe("@procella/updates helpers", () => {
 			const updated = makeResource("urn:a", "id-updated");
 			const base = makeBase([existing]);
 			const entries = [
-				makeEntry({ kind: JournalEntryBegin, operationId: 1, state: existing }),
+				makeEntry({ kind: JournalEntryBegin, operationId: 1 }),
 				makeEntry({ kind: JournalEntrySuccess, operationId: 1, removeOld: 0n, state: updated }),
 			];
 			const result = applyJournalEntries(base, entries);
@@ -722,7 +730,7 @@ describe("@procella/updates helpers", () => {
 			const existing = makeResource("urn:a");
 			const base = makeBase([existing]);
 			const entries = [
-				makeEntry({ kind: JournalEntryBegin, operationId: 1, state: existing }),
+				makeEntry({ kind: JournalEntryBegin, operationId: 1 }),
 				makeEntry({ kind: JournalEntrySuccess, operationId: 1, removeOld: 0n }),
 			];
 			const result = applyJournalEntries(base, entries);
@@ -731,9 +739,8 @@ describe("@procella/updates helpers", () => {
 
 		test("Failure entry clears incomplete op without side effects", () => {
 			const base = makeBase();
-			const resource = makeResource("urn:a");
 			const entries = [
-				makeEntry({ kind: JournalEntryBegin, operationId: 1, state: resource }),
+				makeEntry({ kind: JournalEntryBegin, operationId: 1 }),
 				makeEntry({ kind: JournalEntryFailure, operationId: 1 }),
 			];
 			const result = applyJournalEntries(base, entries);
@@ -745,13 +752,169 @@ describe("@procella/updates helpers", () => {
 			const resA = makeResource("urn:a", "id-a");
 			const resB = makeResource("urn:b", "id-b");
 			const entries = [
-				makeEntry({ kind: JournalEntryBegin, operationId: 1, state: resA }),
-				makeEntry({ kind: JournalEntryBegin, operationId: 2, state: resB }),
-				makeEntry({ kind: JournalEntrySuccess, operationId: 1, removeNew: 1n, state: resA }),
-				makeEntry({ kind: JournalEntrySuccess, operationId: 2, removeNew: 2n, state: resB }),
+				makeEntry({ kind: JournalEntryBegin, operationId: 1 }),
+				makeEntry({ kind: JournalEntryBegin, operationId: 2 }),
+				makeEntry({ kind: JournalEntrySuccess, operationId: 1, state: resA }),
+				makeEntry({ kind: JournalEntrySuccess, operationId: 2, state: resB }),
 			];
 			const result = applyJournalEntries(base, entries);
 			expect((result.resources as unknown[]).length).toBe(2);
+		});
+
+		test("removeNew removes the resource created by the referenced operation", () => {
+			const resA = makeResource("urn:a", "id-a");
+			const resB = makeResource("urn:b", "id-b");
+			const entries = [
+				makeEntry({ kind: JournalEntrySuccess, operationId: 1, state: resA }),
+				makeEntry({ kind: JournalEntrySuccess, operationId: 2, removeNew: 1n, state: resB }),
+			];
+
+			const result = applyJournalEntries(makeBase(), entries);
+			expect((result.resources as Array<{ urn: string }>).map((resource) => resource.urn)).toEqual([
+				resB.urn,
+			]);
+		});
+
+		test("orders newly-created dependencies before an updated dependent", () => {
+			const dnsRecord = makeResource("urn:dns", "dns-id");
+			const certificate = {
+				...makeResource("urn:certificate", "certificate-id"),
+				dependencies: [dnsRecord.urn],
+			};
+			const domain = {
+				...makeResource("urn:domain", "domain-id"),
+				dependencies: [certificate.urn],
+			};
+			const base = makeBase([makeResource(domain.urn, "old-domain-id")]);
+			const entries = [
+				makeEntry({ kind: JournalEntryBegin, operationId: 1 }),
+				makeEntry({ kind: JournalEntrySuccess, operationId: 1, state: dnsRecord }),
+				makeEntry({ kind: JournalEntryBegin, operationId: 2 }),
+				makeEntry({ kind: JournalEntrySuccess, operationId: 2, state: certificate }),
+				makeEntry({ kind: JournalEntryBegin, operationId: 3 }),
+				makeEntry({ kind: JournalEntrySuccess, operationId: 3, removeOld: 0n, state: domain }),
+			];
+
+			const result = applyJournalEntries(base, entries);
+			expect((result.resources as Array<{ urn: string }>).map((resource) => resource.urn)).toEqual([
+				dnsRecord.urn,
+				certificate.urn,
+				domain.urn,
+			]);
+		});
+
+		test("Outputs replaces a newly-created resource by operation ID without moving it", () => {
+			const initial = makeResource("urn:a", "initial-id");
+			const updated = makeResource("urn:a", "updated-id");
+			const entries = [
+				makeEntry({ kind: JournalEntrySuccess, operationId: 1, state: initial }),
+				makeEntry({ kind: JournalEntryOutputs, operationId: 2, removeNew: 1n, state: updated }),
+			];
+
+			const result = applyJournalEntries(makeBase(), entries);
+			expect(result.resources).toEqual([updated]);
+		});
+
+		test("preserves deletion and pending-replacement markers", () => {
+			const deletedBase = makeResource("urn:deleted-base", "deleted-base-id");
+			const pendingBase = makeResource("urn:pending-base", "pending-base-id");
+			const newResource = makeResource("urn:new", "new-id");
+			const entries = [
+				makeEntry({ kind: JournalEntrySuccess, operationId: 1, state: newResource }),
+				makeEntry({
+					kind: JournalEntrySuccess,
+					operationId: 2,
+					deleteOld: 0n,
+					deleteNew: 1n,
+					pendingReplacementOld: 1n,
+					pendingReplacementNew: 1n,
+				}),
+			];
+
+			const result = applyJournalEntries(makeBase([deletedBase, pendingBase]), entries);
+			expect(result.resources).toEqual([
+				{ ...newResource, delete: true, pendingReplacement: true },
+				{ ...deletedBase, delete: true },
+				{ ...pendingBase, pendingReplacement: true },
+			]);
+		});
+
+		test("tracks incomplete operations until success or failure", () => {
+			const operation = { resource: makeResource("urn:a"), type: "creating" };
+			const pending = applyJournalEntries(makeBase(), [
+				makeEntry({ kind: JournalEntryBegin, operationId: 1, operation }),
+			]);
+			expect(pending.pending_operations).toEqual([operation]);
+
+			const completed = applyJournalEntries(makeBase(), [
+				makeEntry({ kind: JournalEntryBegin, operationId: 1, operation }),
+				makeEntry({ kind: JournalEntryFailure, operationId: 1 }),
+			]);
+			expect(completed.pending_operations).toEqual([]);
+		});
+
+		test("refresh deletion prunes dangling dependency metadata and reparents children", () => {
+			const root = makeResource("urn:root", "root-id");
+			const removed = { ...makeResource("urn:removed", "removed-id"), parent: root.urn };
+			const dependent = {
+				...makeResource("urn:dependent", "dependent-id"),
+				parent: removed.urn,
+				dependencies: [root.urn, removed.urn],
+				property_dependencies: { input: [root.urn, removed.urn] },
+				replaceWith: [root.urn, removed.urn],
+				deletedWith: removed.urn,
+			};
+			const entries = [
+				makeEntry({ kind: JournalEntryRefreshSuccess, operationId: 1, removeOld: 1n }),
+			];
+
+			const result = applyJournalEntries(makeBase([root, removed, dependent]), entries);
+			const resources = result.resources as Array<Record<string, unknown>>;
+			expect(resources.map((resource) => resource.urn)).toEqual([root.urn, dependent.urn]);
+			expect(resources[1]).toMatchObject({
+				parent: undefined,
+				dependencies: [root.urn],
+				property_dependencies: { input: [root.urn] },
+				replaceWith: [root.urn],
+			});
+			expect("deletedWith" in resources[1]).toBe(false);
+		});
+
+		test("persisted refresh success also prunes dangling dependencies", () => {
+			const removed = makeResource("urn:removed", "removed-id");
+			const dependent = {
+				...makeResource("urn:dependent", "dependent-id"),
+				dependencies: [removed.urn],
+			};
+			const entries = [
+				makeEntry({
+					kind: JournalEntrySuccess,
+					operationId: 1,
+					removeOld: 0n,
+					isRefresh: true,
+				}),
+			];
+
+			const result = applyJournalEntries(makeBase([removed, dependent]), entries);
+			expect(result.resources).toEqual([{ ...dependent, dependencies: [] }]);
+		});
+
+		test("RebuiltBaseState rebases later journal entries", () => {
+			const baseResource = makeResource("urn:base", "base-id");
+			const first = makeResource("urn:first", "first-id");
+			const second = makeResource("urn:second", "second-id");
+			const entries = [
+				makeEntry({ kind: JournalEntrySuccess, operationId: 1, state: first }),
+				makeEntry({ kind: JournalEntryRebuiltBaseState, operationId: 0 }),
+				makeEntry({ kind: JournalEntrySuccess, operationId: 2, state: second }),
+			];
+
+			const result = applyJournalEntries(makeBase([baseResource]), entries);
+			expect((result.resources as Array<{ urn: string }>).map((resource) => resource.urn)).toEqual([
+				second.urn,
+				first.urn,
+				baseResource.urn,
+			]);
 		});
 
 		test("Write + SecretsManager + Begin/Success: full lifecycle", () => {
@@ -765,8 +928,8 @@ describe("@procella/updates helpers", () => {
 			const entries = [
 				makeEntry({ kind: JournalEntryWrite, operationId: 0, newSnapshot: snapshot }),
 				makeEntry({ kind: JournalEntrySecretsManager, operationId: 0, secretsProvider: sp }),
-				makeEntry({ kind: JournalEntryBegin, operationId: 1, state: resource }),
-				makeEntry({ kind: JournalEntrySuccess, operationId: 1, removeNew: 1n, state: resource }),
+				makeEntry({ kind: JournalEntryBegin, operationId: 1 }),
+				makeEntry({ kind: JournalEntrySuccess, operationId: 1, state: resource }),
 			];
 			const result = applyJournalEntries({}, entries);
 			expect((result.secrets_providers as { state: { salt: string } }).state.salt).toBe(
