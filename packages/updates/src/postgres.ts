@@ -497,39 +497,9 @@ export class PostgresUpdatesService implements UpdatesService {
 			const hasNonElided = entries.some((entry: JournalEntry) => !entry.elideWrite);
 			await this.db.transaction(async (tx) => {
 				const lockedUpdate = await this.lockUpdateForWrite(tx, updateId);
-				const rows = entries.map((entry: JournalEntry) => {
-					if (
-						typeof entry.sequenceID !== "number" ||
-						typeof entry.operationID !== "number" ||
-						typeof entry.kind !== "number"
-					) {
-						throw new BadRequestError(
-							"Invalid journal entry: sequenceID, operationID, and kind must be numbers",
-						);
-					}
-					return {
-						updateId,
-						stackId: lockedUpdate.stackId,
-						sequenceId: BigInt(entry.sequenceID),
-						operationId: BigInt(entry.operationID),
-						kind: entry.kind,
-						state: entry.state ?? null,
-						operation: entry.operation ?? null,
-						secretsProvider: entry.secretsProvider ?? null,
-						newSnapshot: entry.newSnapshot ?? null,
-						operationType: null,
-						removeOld: entry.removeOld != null ? BigInt(entry.removeOld) : null,
-						removeNew: entry.removeNew != null ? BigInt(entry.removeNew) : null,
-						pendingReplacementOld:
-							entry.pendingReplacementOld != null ? BigInt(entry.pendingReplacementOld) : null,
-						pendingReplacementNew:
-							entry.pendingReplacementNew != null ? BigInt(entry.pendingReplacementNew) : null,
-						deleteOld: entry.deleteOld != null ? BigInt(entry.deleteOld) : null,
-						deleteNew: entry.deleteNew != null ? BigInt(entry.deleteNew) : null,
-						isRefresh: entry.isRefresh ?? false,
-						elideWrite: entry.elideWrite ?? false,
-					};
-				});
+				const rows = entries.map((entry: JournalEntry) =>
+					journalEntryValues(updateId, lockedUpdate.stackId, entry),
+				);
 
 				await tx.insert(journalEntries).values(rows).onConflictDoNothing();
 				if (hasNonElided) {
@@ -1000,6 +970,41 @@ export function mapStatusToApiStatus(dbStatus: string): string {
 		default:
 			return dbStatus;
 	}
+}
+
+export function journalEntryValues(updateId: string, stackId: string, entry: JournalEntry) {
+	if (
+		typeof entry.sequenceID !== "number" ||
+		typeof entry.operationID !== "number" ||
+		typeof entry.kind !== "number"
+	) {
+		throw new BadRequestError(
+			"Invalid journal entry: sequenceID, operationID, and kind must be numbers",
+		);
+	}
+
+	return {
+		updateId,
+		stackId,
+		sequenceId: BigInt(entry.sequenceID),
+		operationId: BigInt(entry.operationID),
+		kind: entry.kind,
+		state: entry.state ?? null,
+		operation: entry.operation ?? null,
+		secretsProvider: entry.secretsProvider ?? null,
+		newSnapshot: entry.newSnapshot ?? null,
+		operationType: null,
+		removeOld: entry.removeOld != null ? BigInt(entry.removeOld) : null,
+		removeNew: entry.removeNew != null ? BigInt(entry.removeNew) : null,
+		pendingReplacementOld:
+			entry.pendingReplacementOld != null ? BigInt(entry.pendingReplacementOld) : null,
+		pendingReplacementNew:
+			entry.pendingReplacementNew != null ? BigInt(entry.pendingReplacementNew) : null,
+		deleteOld: entry.deleteOld != null ? BigInt(entry.deleteOld) : null,
+		deleteNew: entry.deleteNew != null ? BigInt(entry.deleteNew) : null,
+		isRefresh: entry.isRefresh ?? false,
+		elideWrite: entry.elideWrite ?? false,
+	};
 }
 
 export interface JournalRow {

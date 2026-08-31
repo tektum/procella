@@ -26,6 +26,7 @@ import {
 	applyJournalEntries,
 	detectEventKind,
 	type JournalRow,
+	journalEntryValues,
 	mapStatusToApiStatus,
 	PostgresUpdatesService,
 } from "./postgres.js";
@@ -618,6 +619,124 @@ describe("@procella/updates helpers", () => {
 			const svc = new PostgresUpdatesService({ db, storage: noopStorage, crypto: noopCrypto });
 			await svc.createUpdate("stack-1", "update");
 			expect(capturedVersion).toBe(1);
+		});
+	});
+
+	describe("journalEntryValues", () => {
+		test("maps every replay field to its database representation", () => {
+			const state = { urn: "urn:a", custom: true, type: "test:index:Resource" };
+			const operation = { resource: state, type: "creating" as const };
+			const secretsProvider = { type: "passphrase", state: { salt: "salt" } };
+			const newSnapshot = {
+				manifest: { time: "2026-01-01T00:00:00Z", magic: "abc", version: "3.225.0" },
+				resources: [state],
+			};
+
+			expect(
+				journalEntryValues("update-1", "stack-1", {
+					version: 1,
+					kind: JournalEntrySuccess,
+					sequenceID: 11,
+					operationID: 7,
+					state,
+					operation,
+					secretsProvider,
+					newSnapshot,
+					removeOld: 1,
+					removeNew: 2,
+					pendingReplacementOld: 3,
+					pendingReplacementNew: 4,
+					deleteOld: 5,
+					deleteNew: 6,
+					isRefresh: true,
+					elideWrite: true,
+				}),
+			).toEqual({
+				updateId: "update-1",
+				stackId: "stack-1",
+				sequenceId: 11n,
+				operationId: 7n,
+				kind: JournalEntrySuccess,
+				state,
+				operation,
+				secretsProvider,
+				newSnapshot,
+				operationType: null,
+				removeOld: 1n,
+				removeNew: 2n,
+				pendingReplacementOld: 3n,
+				pendingReplacementNew: 4n,
+				deleteOld: 5n,
+				deleteNew: 6n,
+				isRefresh: true,
+				elideWrite: true,
+			});
+		});
+
+		test("rejects malformed journal identifiers", () => {
+			expect(() =>
+				journalEntryValues("update-1", "stack-1", {
+					version: 1,
+					kind: "success" as never,
+					sequenceID: 1,
+					operationID: 1,
+				}),
+			).toThrow(BadRequestError);
+		});
+	});
+
+	describe("appendJournalEntries", () => {
+		test("inserts and flushes a journal batch in one transaction", async () => {
+			let transactions = 0;
+			let insertedRows: unknown;
+			const selectChain = {
+				from: () => selectChain,
+				where: () => selectChain,
+				orderBy: () => Promise.resolve([]),
+			};
+			const insertChain = {
+				values: (rows: unknown) => {
+					insertedRows = rows;
+					return insertChain;
+				},
+				onConflictDoNothing: () => Promise.resolve(),
+			};
+			const tx = {
+				execute: () =>
+					Promise.resolve([
+						{
+							stackId: "stack-1",
+							status: "running",
+							leaseToken: "lease",
+							leaseExpiresAt: new Date(Date.now() + 60_000),
+						},
+					]),
+				insert: () => insertChain,
+				select: () => selectChain,
+			};
+			const db = {
+				transaction: async (callback: (transaction: typeof tx) => Promise<void>) => {
+					transactions++;
+					await callback(tx);
+				},
+			} as never;
+			const service = new PostgresUpdatesService({ db, storage: {} as never, crypto: {} as never });
+
+			await service.appendJournalEntries("update-1", {
+				entries: [
+					{
+						version: 1,
+						kind: JournalEntryBegin,
+						operationID: 1,
+						sequenceID: 1,
+					},
+				],
+			});
+
+			expect(transactions).toBe(1);
+			expect(insertedRows).toEqual([
+				expect.objectContaining({ updateId: "update-1", stackId: "stack-1", sequenceId: 1n }),
+			]);
 		});
 	});
 
