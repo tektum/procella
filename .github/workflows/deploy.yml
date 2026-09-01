@@ -25,43 +25,8 @@ concurrency:
   cancel-in-progress: ${{ (inputs.stage || 'dev') != 'production' }}
 
 jobs:
-  esc-eval-go:
-    name: Build ESC eval bootstrap
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: ${{ inputs.ref || github.sha }}
-          persist-credentials: false
-
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with:
-          go-version-file: esc-eval/go.mod
-          cache: true
-          cache-dependency-path: esc-eval/go.sum
-
-      - name: Download Go modules
-        run: cd esc-eval && go mod download
-
-      - name: Vet Go code
-        run: cd esc-eval && go vet ./...
-
-      - name: Test Go code
-        run: cd esc-eval && go test ./... -race -count=1
-
-      - name: Build ESC eval bootstrap
-        run: cd esc-eval && make build
-
-      - name: Upload bootstrap artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: esc-eval-bootstrap
-          path: .build/esc-eval/bootstrap
-          if-no-files-found: error
-
   deploy:
     uses: ./.github/workflows/deploy-sst.yml
-    needs: [esc-eval-go]
     permissions:
       id-token: write
       contents: read
