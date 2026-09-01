@@ -1,5 +1,5 @@
 # Stage 1: deps — install workspace dependencies
-FROM oven/bun:1.3-alpine AS deps
+FROM oven/bun:1.4-alpine AS deps
 WORKDIR /app
 COPY package.json bun.lock ./
 COPY packages/types/package.json packages/types/

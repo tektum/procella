@@ -1,5 +1,5 @@
 [tools]
-bun = "1.3.14"
+bun = "1.4.0"
 node = "24"
 awscli = { version = "latest", symlink_bins = "true" }
 esc = "0.26.0"
