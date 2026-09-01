@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: ./.github/actions/setup-bun
+      - uses: $/.github/actions/setup-bun
       - run: bunx biome check .
       - run: bun run typecheck
       - name: Run unit tests with coverage
@@ -61,7 +61,11 @@ jobs:
           go-version: stable
           cache: false
       - name: Run actionlint
-        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+        run: |
+          # actionlint v1.7.12 predates GitHub's $/ self-repository syntax.
+          go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 \
+            -ignore 'specifying action "\$/.*" in invalid format' \
+            -ignore 'reusable workflow call "\$/.*"'
       - name: Run zizmor
         uses: zizmorcore/zizmor-action@70fb788f84895a7701f5643d103d587e460b5c99 # v0.6.3
         with:
@@ -77,7 +81,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: ./.github/actions/setup-bun
+      - uses: $/.github/actions/setup-bun
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: esc-eval/go.mod
@@ -114,7 +118,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: ./.github/actions/setup-bun
+      - uses: $/.github/actions/setup-bun
       - name: Build UI
         run: bun run --cwd apps/ui build
       - name: Build Docs
@@ -144,7 +148,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: ./.github/actions/setup-bun
+      - uses: $/.github/actions/setup-bun
       - name: Run integration tests
         env:
           TEST_DATABASE_URL: postgres://procella:procella@localhost:5432/procella?sslmode=disable
@@ -207,7 +211,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: ./.github/actions/setup-bun
+      - uses: $/.github/actions/setup-bun
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: packages/types/tygo/go.mod
@@ -262,7 +266,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: ./.github/actions/setup-bun
+      - uses: $/.github/actions/setup-bun
       - uses: pulumi/setup-pulumi@b374ceb6168550de27c6eba92e01c1a774040e11 # v2
       - name: Run E2E tests (shard ${{ matrix.shard }}/3)
         env:
@@ -310,7 +314,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: ./.github/actions/setup-bun
+      - uses: $/.github/actions/setup-bun
       - uses: pulumi/setup-pulumi@b374ceb6168550de27c6eba92e01c1a774040e11 # v2
       - name: Run security E2E tests
         env:
@@ -350,7 +354,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: ./.github/actions/setup-bun
+      - uses: $/.github/actions/setup-bun
       - uses: pulumi/setup-pulumi@b374ceb6168550de27c6eba92e01c1a774040e11 # v2
       - name: Install Playwright browsers
         run: bunx playwright install chromium --with-deps
@@ -408,7 +412,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: ./.github/actions/setup-bun
+      - uses: $/.github/actions/setup-bun
       - uses: pulumi/setup-pulumi@b374ceb6168550de27c6eba92e01c1a774040e11 # v2
       - name: Run benchmark tests
         run: bun test bench/
@@ -538,7 +542,7 @@ jobs:
           cp -rf packages/db/drizzle .build/migrate/drizzle
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: us-east-1
