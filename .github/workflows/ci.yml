@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: ./.github/actions/setup-bun
+      - uses: $/.github/actions/setup-bun
       - run: bunx biome check .
       - run: bun run typecheck
       - name: Run unit tests with coverage
@@ -47,6 +47,67 @@ jobs:
           flags: unit
           use_oidc: true
 
+  workflow-policy:
+    name: Workflow Policy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: stable
+          cache: false
+      - name: Run actionlint
+        run: |
+          # actionlint v1.7.12 predates GitHub's $/ self-repository syntax.
+          go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 \
+            -ignore 'specifying action "\$/.*" in invalid format' \
+            -ignore 'reusable workflow call "\$/.*"'
+      - name: Run zizmor
+        uses: zizmorcore/zizmor-action@70fb788f84895a7701f5643d103d587e460b5c99 # v0.6.3
+        with:
+          advanced-security: false
+          annotations: true
+          version: 1.30.0
+
+  deployment-package:
+    name: Deployment Package
+    runs-on: ubuntu-latest
+    needs: [check]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: $/.github/actions/setup-bun
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: esc-eval/go.mod
+          cache-dependency-path: esc-eval/go.sum
+      - name: Build deployment binaries
+        run: ./scripts/build-deployment-binaries.sh
+
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Skip dependency review outside pull requests
+        if: github.event_name != 'pull_request'
+        run: echo "Dependency review applies only to pull requests."
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        if: github.event_name == 'pull_request'
+        with:
+          persist-credentials: false
+      - name: Review dependency changes
+        if: github.event_name == 'pull_request'
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+
   bundle-analysis:
     name: Bundle Analysis
     runs-on: ubuntu-latest
@@ -57,7 +118,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: ./.github/actions/setup-bun
+      - uses: $/.github/actions/setup-bun
       - name: Build UI
         run: bun run --cwd apps/ui build
       - name: Build Docs
@@ -87,7 +148,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: ./.github/actions/setup-bun
+      - uses: $/.github/actions/setup-bun
       - name: Run integration tests
         env:
           TEST_DATABASE_URL: postgres://procella:procella@localhost:5432/procella?sslmode=disable
@@ -150,7 +211,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: ./.github/actions/setup-bun
+      - uses: $/.github/actions/setup-bun
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: packages/types/tygo/go.mod
@@ -205,7 +266,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: ./.github/actions/setup-bun
+      - uses: $/.github/actions/setup-bun
       - uses: pulumi/setup-pulumi@b374ceb6168550de27c6eba92e01c1a774040e11 # v2
       - name: Run E2E tests (shard ${{ matrix.shard }}/3)
         env:
@@ -253,7 +314,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: ./.github/actions/setup-bun
+      - uses: $/.github/actions/setup-bun
       - uses: pulumi/setup-pulumi@b374ceb6168550de27c6eba92e01c1a774040e11 # v2
       - name: Run security E2E tests
         env:
@@ -293,7 +354,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: ./.github/actions/setup-bun
+      - uses: $/.github/actions/setup-bun
       - uses: pulumi/setup-pulumi@b374ceb6168550de27c6eba92e01c1a774040e11 # v2
       - name: Install Playwright browsers
         run: bunx playwright install chromium --with-deps
@@ -351,7 +412,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: ./.github/actions/setup-bun
+      - uses: $/.github/actions/setup-bun
       - uses: pulumi/setup-pulumi@b374ceb6168550de27c6eba92e01c1a774040e11 # v2
       - name: Run benchmark tests
         run: bun test bench/
@@ -481,7 +542,7 @@ jobs:
           cp -rf packages/db/drizzle .build/migrate/drizzle
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: us-east-1
@@ -524,7 +585,7 @@ jobs:
             sleep 10
           done
           echo "❌ Health check failed — possible infrastructure drift"
-          echo "drift=true" >> $GITHUB_OUTPUT
+          echo "drift=true" >> "$GITHUB_OUTPUT"
 
       - name: Recover from infrastructure drift
         if: steps.deploy.outcome == 'failure' || steps.health_check.outputs.drift == 'true'
@@ -532,11 +593,11 @@ jobs:
           STAGE="pr-${{ github.event.number }}"
           echo "::warning::Infrastructure drift detected — running full recovery cycle"
           echo "Unlocking stale state..."
-          npx sst unlock --stage ${STAGE} || true
+          npx sst unlock --stage "${STAGE}" || true
           echo "Removing stale resources..."
-          npx sst remove --stage ${STAGE} || true
+          npx sst remove --stage "${STAGE}" || true
           echo "Re-deploying from clean state..."
-          npx sst deploy --stage ${STAGE} | tee /tmp/sst-deploy.log
+          npx sst deploy --stage "${STAGE}" | tee /tmp/sst-deploy.log
         env:
           GITHUB_TOKEN: ${{ github.token }}
           SST_SECRET_ProcellaEncryptionKey: ${{ secrets.PROCELLA_ENCRYPTION_KEY }}
@@ -570,10 +631,12 @@ jobs:
         run: |
           STAGE="pr-${{ github.event.number }}"
           DESCOPE_ID=$(grep -oP 'descopeProjectId:\s*\K\S+' /tmp/sst-deploy.log | tail -1)
-          echo "api=https://api.${STAGE}.procella.cloud" >> $GITHUB_OUTPUT
-          echo "app=https://app.${STAGE}.procella.cloud" >> $GITHUB_OUTPUT
-          echo "docs=https://docs.${STAGE}.procella.cloud" >> $GITHUB_OUTPUT
-          echo "descope_project_id=${DESCOPE_ID}" >> $GITHUB_OUTPUT
+          {
+            echo "api=https://api.${STAGE}.procella.cloud"
+            echo "app=https://app.${STAGE}.procella.cloud"
+            echo "docs=https://docs.${STAGE}.procella.cloud"
+            echo "descope_project_id=${DESCOPE_ID}"
+          } >> "$GITHUB_OUTPUT"
 
   preview-comment:
     name: PR Comment
@@ -759,6 +822,9 @@ jobs:
       - e2e-ui
       - bench
       - esc-eval-go
+      - workflow-policy
+      - deployment-package
+      - dependency-review
       - preview-deploy
       - preview-comment
       - preview-integration

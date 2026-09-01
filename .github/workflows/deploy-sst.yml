@@ -75,20 +75,11 @@ jobs:
       - name: Test Go code
         run: cd esc-eval && go test ./... -race -count=1
 
-      - name: Build ESC eval bootstrap
-        run: cd esc-eval && make build
-
-      - name: Build Lambda binaries
-        run: |
-          mkdir -p .build/cli-api .build/web-api .build/gc .build/migrate
-          bun build --compile --target=bun-linux-x64 --production --sourcemap --compile-exec-argv="--smol" apps/server/src/lambda-cli.ts --outfile .build/cli-api/bootstrap
-          bun build --compile --target=bun-linux-x64 --production --sourcemap --compile-exec-argv="--smol" apps/server/src/lambda-web.ts --outfile .build/web-api/bootstrap
-          bun build --compile --target=bun-linux-x64 --production --sourcemap --compile-exec-argv="--smol" apps/server/src/gc-bootstrap.ts --outfile .build/gc/bootstrap
-          bun build --compile --target=bun-linux-x64 --production --sourcemap --compile-exec-argv="--smol" apps/server/src/migrate-bootstrap.ts --outfile .build/migrate/bootstrap
-          cp -rf packages/db/drizzle .build/migrate/drizzle
+      - name: Build deployment binaries
+        run: ./scripts/build-deployment-binaries.sh
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: us-east-1
@@ -122,18 +113,21 @@ jobs:
           ACTOR: ${{ github.actor }}
         run: |
           if [ "$STAGE" = production ]; then DOMAIN=procella.cloud; else DOMAIN="$STAGE.procella.cloud"; fi
-          echo "## Deployment Summary" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Stage | \`$STAGE\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Status | \`$STATUS\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Region | \`us-east-1\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Commit | \`$SHA\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Ref | \`$REF\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Triggered by | $ACTOR |" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "**URLs:**" >> "$GITHUB_STEP_SUMMARY"
-          echo "- API: https://api.$DOMAIN" >> "$GITHUB_STEP_SUMMARY"
-          echo "- App: https://app.$DOMAIN" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Docs: https://docs.$DOMAIN" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## Deployment Summary"
+            echo ""
+            echo "| Field | Value |"
+            echo "|-------|-------|"
+            echo "| Stage | \`$STAGE\` |"
+            echo "| Status | \`$STATUS\` |"
+            echo "| Region | \`us-east-1\` |"
+            echo "| Commit | \`$SHA\` |"
+            echo "| Ref | \`$REF\` |"
+            echo "| Triggered by | $ACTOR |"
+            echo ""
+            echo "**URLs:**"
+            echo "- API: https://api.$DOMAIN"
+            echo "- App: https://app.$DOMAIN"
+            echo "- Docs: https://docs.$DOMAIN"
+          } >> "$GITHUB_STEP_SUMMARY"
+
