@@ -76,7 +76,7 @@ jobs:
         run: cd esc-eval && go test ./... -race -count=1
 
       - name: Build deployment binaries
-        run: ./scripts/build-deployment-binaries.sh
+        uses: $/.github/actions/build-deployment
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
