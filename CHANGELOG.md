@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.3](https://github.com/tektum/procella/compare/procella-v0.3.2...procella-v0.3.3) (2026-09-01)
+
+
+### Bug Fixes
+
+* **ci:** configure deployment AWS region ([#218](https://github.com/tektum/procella/issues/218)) ([1e2c18c](https://github.com/tektum/procella/commit/1e2c18cbee8d3c2588eee942e16de19db8aec059))
+* **ci:** correct mise action version comments ([#222](https://github.com/tektum/procella/issues/222)) ([bbb2d4e](https://github.com/tektum/procella/commit/bbb2d4eceb1e328201af7c94865d7091c7374b91))
+* **deps:** update aws-sdk-go-v2 monorepo ([#211](https://github.com/tektum/procella/issues/211)) ([2b8adc1](https://github.com/tektum/procella/commit/2b8adc14db468cee21e6200e39246507ea3c29f8))
+* **deps:** update aws-sdk-go-v2 monorepo ([#226](https://github.com/tektum/procella/issues/226)) ([72516cb](https://github.com/tektum/procella/commit/72516cb8273bbaca0804a212b25860fc7f35dfb0))
+* **deps:** update aws-sdk-go-v2 monorepo ([#228](https://github.com/tektum/procella/issues/228)) ([3ffa926](https://github.com/tektum/procella/commit/3ffa926a4e4f2221947d4364ad8462cfb8ba45ee))
+* **deps:** update dependency @opentelemetry/otlp-transformer to ^0.221.0 ([#215](https://github.com/tektum/procella/issues/215)) ([d7457a9](https://github.com/tektum/procella/commit/d7457a971703085e0ea8ee2b1c015fedb2b2f8c0))
+* **updates:** preserve Pulumi journal dependency order ([#230](https://github.com/tektum/procella/issues/230)) ([b9408f8](https://github.com/tektum/procella/commit/b9408f826b8b21d0ffcf8eb000f6346fd5d38b98))
+
 ## [0.3.2](https://github.com/procella-dev/procella/compare/procella-v0.3.1...procella-v0.3.2) (2026-07-13)
 
 
