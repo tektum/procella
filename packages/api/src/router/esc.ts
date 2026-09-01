@@ -26,20 +26,41 @@ const draftStatusFilter = environmentInput.extend({
 });
 
 const UNKNOWN_USER = "Unknown user";
+const MAX_CONCURRENT_IDENTITY_LOOKUPS = 8;
+
+type UserDisplayNameResolver = (subject: string) => Promise<string | null>;
 
 async function resolveCreatedBy<T extends { createdBy: string }>(
-	resolveUserDisplayName: (subject: string) => Promise<string | null>,
+	resolveUserDisplayName: UserDisplayNameResolver,
 	value: T,
 ): Promise<T> {
-	const displayName = await resolveUserDisplayName(value.createdBy).catch(() => null);
-	return { ...value, createdBy: displayName ?? UNKNOWN_USER };
+	const createdBy =
+		(await resolveUserDisplayName(value.createdBy).catch(() => null)) ?? UNKNOWN_USER;
+	return { ...value, createdBy };
 }
 
 async function resolveCreatedByList<T extends { createdBy: string }>(
-	resolveUserDisplayName: (subject: string) => Promise<string | null>,
+	resolveUserDisplayName: UserDisplayNameResolver,
 	values: T[],
 ): Promise<T[]> {
-	return Promise.all(values.map((value) => resolveCreatedBy(resolveUserDisplayName, value)));
+	const subjects = [...new Set(values.map((value) => value.createdBy))];
+	const displayNames = new Map<string, string>();
+	let nextSubject = 0;
+	const worker = async () => {
+		while (nextSubject < subjects.length) {
+			const subject = subjects[nextSubject++];
+			if (subject === undefined) return;
+			const displayName = (await resolveUserDisplayName(subject).catch(() => null)) ?? UNKNOWN_USER;
+			displayNames.set(subject, displayName);
+		}
+	};
+	await Promise.all(
+		Array.from({ length: Math.min(MAX_CONCURRENT_IDENTITY_LOOKUPS, subjects.length) }, worker),
+	);
+	return values.map((value) => ({
+		...value,
+		createdBy: displayNames.get(value.createdBy) ?? UNKNOWN_USER,
+	}));
 }
 
 export const escRouter = router({

@@ -188,7 +188,7 @@ interface CachedAuth {
 }
 
 interface CachedUserDisplayName {
-	value: string;
+	value: string | null;
 	expiresAt: number;
 }
 
@@ -209,6 +209,7 @@ export class DescopeAuthService implements AuthService {
 	private readonly EXPIRY_MARGIN_S = 60;
 	private readonly MAX_CACHE_TTL_S = 300;
 	private readonly USER_DISPLAY_NAME_CACHE_TTL_MS = 5 * 60_000;
+	private readonly UNKNOWN_USER_CACHE_TTL_MS = 30_000;
 	private readonly projectId: string;
 	private readonly issuer: string;
 	/** Accepted `iss` values — the default api.descope.com issuer plus the custom auth domain (if any). */
@@ -342,12 +343,12 @@ export class DescopeAuthService implements AuthService {
 		this.pendingUserDisplayNames.set(subject, lookup);
 		try {
 			const value = await lookup;
-			if (value) {
-				this.userDisplayNameCache.set(subject, {
-					value,
-					expiresAt: Date.now() + this.USER_DISPLAY_NAME_CACHE_TTL_MS,
-				});
-			}
+			this.userDisplayNameCache.set(subject, {
+				value,
+				expiresAt:
+					Date.now() +
+					(value === null ? this.UNKNOWN_USER_CACHE_TTL_MS : this.USER_DISPLAY_NAME_CACHE_TTL_MS),
+			});
 			return value;
 		} finally {
 			this.pendingUserDisplayNames.delete(subject);

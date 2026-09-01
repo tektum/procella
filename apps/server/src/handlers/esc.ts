@@ -1,3 +1,4 @@
+import type { AuthService } from "@procella/auth";
 import type {
 	CloneEnvironmentInput,
 	CreateEnvironmentInput,
@@ -43,6 +44,43 @@ const revisionTagUpdateSchema = z.object({
 });
 
 const revisionHeader = "Pulumi-ESC-Revision";
+const UNKNOWN_USER = "Unknown user";
+const MAX_CONCURRENT_IDENTITY_LOOKUPS = 8;
+
+type UserDisplayNameResolver = AuthService["resolveUserDisplayName"];
+
+async function resolveCreatedBy<T extends { createdBy: string }>(
+	resolveUserDisplayName: UserDisplayNameResolver,
+	value: T,
+): Promise<T> {
+	const createdBy =
+		(await resolveUserDisplayName(value.createdBy).catch(() => null)) ?? UNKNOWN_USER;
+	return { ...value, createdBy };
+}
+
+async function resolveCreatedByList<T extends { createdBy: string }>(
+	resolveUserDisplayName: UserDisplayNameResolver,
+	values: T[],
+): Promise<T[]> {
+	const subjects = [...new Set(values.map((value) => value.createdBy))];
+	const displayNames = new Map<string, string>();
+	let nextSubject = 0;
+	const worker = async () => {
+		while (nextSubject < subjects.length) {
+			const subject = subjects[nextSubject++];
+			if (subject === undefined) return;
+			const displayName = (await resolveUserDisplayName(subject).catch(() => null)) ?? UNKNOWN_USER;
+			displayNames.set(subject, displayName);
+		}
+	};
+	await Promise.all(
+		Array.from({ length: Math.min(MAX_CONCURRENT_IDENTITY_LOOKUPS, subjects.length) }, worker),
+	);
+	return values.map((value) => ({
+		...value,
+		createdBy: displayNames.get(value.createdBy) ?? UNKNOWN_USER,
+	}));
+}
 
 type EscValueJson = {
 	value?: unknown;
@@ -122,7 +160,10 @@ function parseRevisionValue(version: string): number {
 	return revisionNumber;
 }
 
-export function escHandlers(deps: { esc: EscService }) {
+export function escHandlers(deps: {
+	esc: EscService;
+	resolveUserDisplayName: UserDisplayNameResolver;
+}) {
 	const requireOrgMatch = (c: Context<Env>): string => {
 		const caller = c.get("caller");
 		const org = param(c, "org");
@@ -330,8 +371,12 @@ export function escHandlers(deps: { esc: EscService }) {
 			}
 			const count = c.req.query("count");
 			const limit = count ? parseRevisionValue(count) : undefined;
+			const resolvedRevisions = await resolveCreatedByList(
+				deps.resolveUserDisplayName,
+				revisions.slice(0, limit),
+			);
 			return c.json(
-				revisions.slice(0, limit).map((revision) => ({
+				resolvedRevisions.map((revision) => ({
 					number: revision.revisionNumber,
 					created: revision.createdAt,
 					creatorLogin: revision.createdBy,
@@ -348,8 +393,9 @@ export function escHandlers(deps: { esc: EscService }) {
 				param(c, "project"),
 				param(c, "envName"),
 			);
+			const resolvedTags = await resolveCreatedByList(deps.resolveUserDisplayName, tags);
 			return c.json({
-				tags: tags.map((tag) => ({
+				tags: resolvedTags.map((tag) => ({
 					name: tag.name,
 					revision: tag.revisionNumber,
 					created: tag.createdAt,
@@ -393,13 +439,15 @@ export function escHandlers(deps: { esc: EscService }) {
 			if (!tag) {
 				throw new NotFoundError("RevisionTag", tagName);
 			}
+			const createdBy =
+				(await deps.resolveUserDisplayName(tag.createdBy).catch(() => null)) ?? UNKNOWN_USER;
 			return c.json({
 				name: tag.name,
 				revision: tag.revisionNumber,
 				created: tag.createdAt,
 				modified: tag.createdAt,
-				editorLogin: tag.createdBy,
-				editorName: tag.createdBy,
+				editorLogin: createdBy,
+				editorName: createdBy,
 			});
 		},
 
@@ -601,14 +649,16 @@ export function escHandlers(deps: { esc: EscService }) {
 				yamlBody: parsed.yamlBody,
 			};
 			const env = await deps.esc.createEnvironment(tenantId, input, caller.userId);
-			return c.json(env, 201);
+			return c.json(await resolveCreatedBy(deps.resolveUserDisplayName, env), 201);
 		},
 
 		internalListEnvironments: async (c: Context<Env>) => {
 			const tenantId = requireOrgMatch(c);
 			const projectName = param(c, "project");
 			const envs = await deps.esc.listEnvironments(tenantId, projectName);
-			return c.json({ environments: envs });
+			return c.json({
+				environments: await resolveCreatedByList(deps.resolveUserDisplayName, envs),
+			});
 		},
 
 		internalGetEnvironment: async (c: Context<Env>) => {
@@ -619,7 +669,7 @@ export function escHandlers(deps: { esc: EscService }) {
 			if (!env) {
 				throw new NotFoundError("Environment", `${projectName}/${envName}`);
 			}
-			return c.json(env);
+			return c.json(await resolveCreatedBy(deps.resolveUserDisplayName, env));
 		},
 
 		internalUpdateEnvironment: async (c: Context<Env>) => {
@@ -636,7 +686,7 @@ export function escHandlers(deps: { esc: EscService }) {
 				{ yamlBody: parsed.yamlBody },
 				caller.userId,
 			);
-			return c.json(env);
+			return c.json(await resolveCreatedBy(deps.resolveUserDisplayName, env));
 		},
 
 		internalDeleteEnvironment: async (c: Context<Env>) => {
@@ -652,7 +702,9 @@ export function escHandlers(deps: { esc: EscService }) {
 				param(c, "project"),
 				param(c, "envName"),
 			);
-			return c.json({ revisions });
+			return c.json({
+				revisions: await resolveCreatedByList(deps.resolveUserDisplayName, revisions),
+			});
 		},
 
 		internalGetRevision: async (c: Context<Env>) => {
@@ -669,7 +721,7 @@ export function escHandlers(deps: { esc: EscService }) {
 			if (!rev) {
 				throw new NotFoundError("EnvironmentRevision", `${projectName}/${envName}#${versionStr}`);
 			}
-			return c.json(rev);
+			return c.json(await resolveCreatedBy(deps.resolveUserDisplayName, rev));
 		},
 
 		internalOpenSession: async (c: Context<Env>) => {
@@ -699,7 +751,7 @@ export function escHandlers(deps: { esc: EscService }) {
 				param(c, "project"),
 				param(c, "envName"),
 			);
-			return c.json({ tags });
+			return c.json({ tags: await resolveCreatedByList(deps.resolveUserDisplayName, tags) });
 		},
 
 		internalTagRevision: async (c: Context<Env>) => {
@@ -778,7 +830,7 @@ export function escHandlers(deps: { esc: EscService }) {
 				parsed.description,
 				caller.userId,
 			);
-			return c.json(draft, 201);
+			return c.json(await resolveCreatedBy(deps.resolveUserDisplayName, draft), 201);
 		},
 
 		internalListDrafts: async (c: Context<Env>) => {
@@ -798,7 +850,7 @@ export function escHandlers(deps: { esc: EscService }) {
 				param(c, "envName"),
 				status,
 			);
-			return c.json({ drafts });
+			return c.json({ drafts: await resolveCreatedByList(deps.resolveUserDisplayName, drafts) });
 		},
 
 		internalGetDraft: async (c: Context<Env>) => {
@@ -812,7 +864,7 @@ export function escHandlers(deps: { esc: EscService }) {
 			if (!draft) {
 				throw new NotFoundError("Draft", param(c, "draftId"));
 			}
-			return c.json(draft);
+			return c.json(await resolveCreatedBy(deps.resolveUserDisplayName, draft));
 		},
 
 		applyDraft: async (c: Context<Env>) => {
@@ -825,7 +877,7 @@ export function escHandlers(deps: { esc: EscService }) {
 				param(c, "draftId"),
 				caller.userId,
 			);
-			return c.json(draft);
+			return c.json(await resolveCreatedBy(deps.resolveUserDisplayName, draft));
 		},
 
 		discardDraft: async (c: Context<Env>) => {

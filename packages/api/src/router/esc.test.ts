@@ -177,6 +177,44 @@ describe("escRouter", () => {
 		expect(environments[0]?.createdBy).not.toContain("K3-key");
 	});
 
+	test("bounds concurrent creator identity lookups for large lists", async () => {
+		const environments = Array.from({ length: 20 }, (_, index) => ({
+			id: `e${index}`,
+			projectId: "p1",
+			name: `env-${index}`,
+			yamlBody: "values:{}",
+			currentRevisionNumber: 1,
+			createdBy: `K3-key-${index}`,
+			createdAt: new Date(),
+			updatedAt: new Date(),
+		}));
+		let activeLookups = 0;
+		let maxActiveLookups = 0;
+		const resolveUserDisplayName = mock(async (subject: string) => {
+			activeLookups += 1;
+			maxActiveLookups = Math.max(maxActiveLookups, activeLookups);
+			await Promise.resolve();
+			activeLookups -= 1;
+			return `${subject}@example.com`;
+		});
+		const baseContext = mockContext();
+		const caller = escRouter.createCaller(
+			mockContext({
+				resolveUserDisplayName,
+				esc: {
+					...baseContext.esc,
+					listEnvironments: mock(async () => environments),
+				} as never,
+			}),
+		);
+
+		const result = await caller.listEnvironments({ project: "acme" });
+
+		expect(result).toHaveLength(20);
+		expect(resolveUserDisplayName).toHaveBeenCalledTimes(20);
+		expect(maxActiveLookups).toBeLessThanOrEqual(8);
+	});
+
 	test("maps missing environment, revision, and draft to NOT_FOUND errors", async () => {
 		const ctx = mockContext({
 			esc: {

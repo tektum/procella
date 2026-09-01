@@ -756,11 +756,28 @@ describe("DescopeAuthService — creator identity resolution", () => {
 		expect(mockLoadByUserId).toHaveBeenCalledWith("U3-user");
 	});
 
-	test("returns null instead of exposing an unresolved subject", async () => {
+	test("caches unresolved subjects without exposing or repeatedly loading them", async () => {
 		mockAccessKeyLoad.mockResolvedValueOnce({ ok: false });
 		mockLoadByUserId.mockResolvedValueOnce({ ok: false });
 
 		await expect(svc.resolveUserDisplayName("K3-raw-id")).resolves.toBeNull();
+		await expect(svc.resolveUserDisplayName("K3-raw-id")).resolves.toBeNull();
+		expect(mockAccessKeyLoad).toHaveBeenCalledTimes(1);
+		expect(mockLoadByUserId).toHaveBeenCalledTimes(1);
+	});
+
+	test("does not treat an unbound access key as a user ID", async () => {
+		mockAccessKeyLoad.mockResolvedValueOnce({ ok: true, data: { id: "K3-key" } });
+
+		await expect(svc.resolveUserDisplayName("K3-key")).resolves.toBeNull();
+		expect(mockLoadByUserId).not.toHaveBeenCalled();
+	});
+
+	test("converts rejected identity lookups into a safe unresolved result", async () => {
+		mockAccessKeyLoad.mockRejectedValueOnce(new Error("Descope unavailable"));
+		mockLoadByUserId.mockRejectedValueOnce(new Error("Descope unavailable"));
+
+		await expect(svc.resolveUserDisplayName("K3-key")).resolves.toBeNull();
 	});
 
 	test("deduplicates and caches repeated identity lookups", async () => {
