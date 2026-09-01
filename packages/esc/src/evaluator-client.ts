@@ -70,13 +70,10 @@ export class StdioEvaluatorClient implements EvaluatorClient {
 	async evaluate(payload: EvaluatePayload): Promise<EvaluateResult> {
 		const proc = Bun.spawn([this.binaryPath], {
 			env: { ...process.env, PROCELLA_ESC_STDIO: "1" },
-			stdin: "pipe",
+			stdin: new TextEncoder().encode(JSON.stringify(payload)),
 			stdout: "pipe",
 			stderr: "pipe",
 		});
-
-		await proc.stdin.write(new TextEncoder().encode(JSON.stringify(payload)));
-		proc.stdin.end();
 
 		const [exitCode, stdoutBuf, stderrBuf] = await Promise.all([
 			proc.exited,
