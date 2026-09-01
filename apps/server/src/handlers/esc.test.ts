@@ -113,7 +113,11 @@ function injectCaller(caller: Caller) {
 	};
 }
 
-function createTestApp(esc: EscService) {
+function createTestApp(
+	esc: EscService,
+	resolveUserDisplayName: (subject: string) => Promise<string | null> = async (subject) =>
+		subject === "u-1" ? "owner@example.com" : null,
+) {
 	const app = new Hono<Env>();
 	app.use("*", injectCaller(validCaller));
 	app.onError((err, c) => {
@@ -128,7 +132,7 @@ function createTestApp(esc: EscService) {
 		return c.json({ error: err.message }, status as 400 | 404 | 500);
 	});
 
-	const h = escHandlers({ esc });
+	const h = escHandlers({ esc, resolveUserDisplayName });
 	app.get("/esc/environments", h.listAllEnvironments);
 	app.get("/esc/environments/:org", h.listOrgEnvironments);
 	app.post("/esc/environments/:org", h.createEnvironment);
@@ -174,6 +178,81 @@ describe("escHandlers", () => {
 		});
 	});
 
+	test("revision and tag responses never expose stored creator subjects", async () => {
+		const esc = mockEscService({
+			listRevisions: mock(async () => [{ ...mockRevision, createdBy: "K3-key" }]),
+			listRevisionTags: mock(async () => [
+				{ name: "stable", revisionNumber: 3, createdBy: "K3-key", createdAt: now },
+			]),
+		});
+		const app = createTestApp(esc, async (subject) =>
+			subject === "K3-key" ? "owner@example.com" : null,
+		);
+
+		const revisions = await app.request("/esc/environments/my-org/proj/staging/versions");
+		const revisionBody = await revisions.json();
+		expect(revisionBody).toEqual([
+			expect.objectContaining({
+				creatorLogin: "owner@example.com",
+				creatorName: "owner@example.com",
+			}),
+		]);
+
+		const tag = await app.request("/esc/environments/my-org/proj/staging/versions/tags/stable");
+		const tagBody = await tag.json();
+		expect(tagBody).toEqual(
+			expect.objectContaining({
+				editorLogin: "owner@example.com",
+				editorName: "owner@example.com",
+			}),
+		);
+		expect(JSON.stringify([revisionBody, tagBody])).not.toContain("K3-key");
+	});
+
+	test("revision responses use a safe label when identity lookup fails", async () => {
+		const esc = mockEscService({
+			listRevisions: mock(async () => [{ ...mockRevision, createdBy: "K3-key" }]),
+		});
+		const app = createTestApp(esc, async () => null);
+
+		const response = await app.request("/esc/environments/my-org/proj/staging/versions");
+		const body = await response.json();
+
+		expect(body).toEqual([
+			expect.objectContaining({ creatorLogin: "Unknown user", creatorName: "Unknown user" }),
+		]);
+		expect(JSON.stringify(body)).not.toContain("K3-key");
+	});
+
+	test("bounds concurrent creator lookups in revision responses", async () => {
+		const revisions = Array.from({ length: 20 }, (_, index) => ({
+			...mockRevision,
+			id: `rev-${index}`,
+			revisionNumber: index + 1,
+			createdBy: `K3-key-${index}`,
+		}));
+		let activeLookups = 0;
+		let maxActiveLookups = 0;
+		const resolveUserDisplayName = mock(async (subject: string) => {
+			activeLookups += 1;
+			maxActiveLookups = Math.max(maxActiveLookups, activeLookups);
+			await Promise.resolve();
+			activeLookups -= 1;
+			return `owner-${subject.slice("K3-key-".length)}@example.com`;
+		});
+		const app = createTestApp(
+			mockEscService({ listRevisions: mock(async () => revisions) }),
+			resolveUserDisplayName,
+		);
+
+		const response = await app.request("/esc/environments/my-org/proj/staging/versions");
+		const body = await response.json();
+
+		expect(body).toHaveLength(20);
+		expect(resolveUserDisplayName).toHaveBeenCalledTimes(20);
+		expect(maxActiveLookups).toBeLessThanOrEqual(8);
+		expect(JSON.stringify(body)).not.toContain('"K3-key-');
+	});
 	test("listOrgEnvironments enforces org match", async () => {
 		const esc = mockEscService();
 		const app = createTestApp(esc);
@@ -343,7 +422,9 @@ describe("escHandlers", () => {
 
 		const getRes = await app.request("/esc/v1-internal/environments/my-org/proj/staging");
 		expect(getRes.status).toBe(200);
-		expect((await getRes.json()).yamlBody).toBe(mockEnv.yamlBody);
+		const getBody = (await getRes.json()) as { yamlBody: string; createdBy: string };
+		expect(getBody.yamlBody).toBe(mockEnv.yamlBody);
+		expect(getBody.createdBy).toBe("owner@example.com");
 
 		const patchRes = await app.request("/esc/v1-internal/environments/my-org/proj/staging", {
 			method: "PATCH",

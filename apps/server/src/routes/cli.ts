@@ -94,7 +94,10 @@ export function createCliApp(deps: CliAppDeps): Hono<Env> {
 	const eventH = eventHandlers(deps.updates, deps.stacks);
 	const cryptoH = cryptoHandlers(deps.updates, deps.stacks);
 	const stateH = stateHandlers(deps.updates, deps.stacks);
-	const escH = escHandlers({ esc: deps.esc });
+	const escH = escHandlers({
+		esc: deps.esc,
+		resolveUserDisplayName: (subject) => deps.auth.resolveUserDisplayName(subject),
+	});
 
 	// Middleware instances
 	const withApiAuth = apiAuth(deps.auth);

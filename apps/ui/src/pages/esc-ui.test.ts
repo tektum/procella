@@ -544,13 +544,13 @@ describe("ESC UI coverage", () => {
 				name: "dev",
 				currentRevisionNumber: 2,
 				updatedAt: new Date("2026-04-24T00:00:00Z"),
-				createdBy: "dev-user",
+				createdBy: "owner@example.com",
 			},
 			{
 				name: "prod",
 				currentRevisionNumber: 3,
 				updatedAt: new Date("2026-04-24T00:00:00Z"),
-				createdBy: "dev-user",
+				createdBy: "owner@example.com",
 			},
 		]);
 
@@ -559,6 +559,8 @@ describe("ESC UI coverage", () => {
 		await view.findByText("dev");
 		expect(view.getByText("prod")).toBeDefined();
 		expect(view.getByPlaceholderText("Search environments...")).toBeDefined();
+		expect(view.getAllByText("owner@example.com")).toHaveLength(2);
+		expect(view.queryByText(/^K[0-9A-Za-z]+$/)).toBeNull();
 	});
 
 	test("EscEnvironments renders loading, empty, and error states", async () => {

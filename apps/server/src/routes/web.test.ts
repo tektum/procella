@@ -33,6 +33,7 @@ function mockAuthService(): AuthService {
 			return validCaller;
 		},
 		authenticateUpdateToken: async () => ({ updateId: "u-1", stackId: "s-1" }),
+		resolveUserDisplayName: async () => null,
 		createCliAccessKey: async () => "cli-token",
 	};
 }

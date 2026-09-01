@@ -118,6 +118,7 @@ export function createWebApp(deps: WebAppDeps): Hono<Env> {
 
 		const ctx: TRPCContext = {
 			caller,
+			resolveUserDisplayName: (subject) => deps.auth.resolveUserDisplayName(subject),
 			issueSubscriptionTicket: deps.issueSubscriptionTicket,
 			db: deps.db,
 			dbUrl: deps.dbUrl,

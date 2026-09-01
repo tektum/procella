@@ -11,6 +11,7 @@ function buildContext(overrides?: Partial<TRPCContext>): TRPCContext {
 			roles: ["admin"],
 			principalType: "user",
 		},
+		resolveUserDisplayName: (subject) => Promise.resolve(subject),
 		db: {} as never,
 		dbUrl: "",
 		stacks: {} as never,

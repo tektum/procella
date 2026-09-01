@@ -19,12 +19,13 @@ import {
 const mockExchangeAccessKey = mock();
 const mockLoadByUserId = mock();
 const mockAccessKeyCreate = mock();
+const mockAccessKeyLoad = mock();
 mock.module("@descope/node-sdk", () => ({
 	default: () => ({
 		exchangeAccessKey: mockExchangeAccessKey,
 		management: {
 			user: { loadByUserId: mockLoadByUserId },
-			accessKey: { create: mockAccessKeyCreate },
+			accessKey: { create: mockAccessKeyCreate, load: mockAccessKeyLoad },
 			audit: { search: mock(), createEvent: mock() },
 		},
 	}),
@@ -148,6 +149,11 @@ describe("DevAuthService", () => {
 		expect(caller.userId).toBe("dev-user");
 		expect(caller.login).toBe("dev-user");
 		expect(caller.roles).toEqual(["admin"]);
+	});
+
+	test("resolves configured dev user logins without exposing unknown subjects", async () => {
+		await expect(svc.resolveUserDisplayName("dev-user")).resolves.toBe("dev-user");
+		await expect(svc.resolveUserDisplayName("K3raw-id")).resolves.toBeNull();
 	});
 
 	test("authenticateUpdateToken parses valid 4-part format", async () => {
@@ -708,6 +714,91 @@ describe("DescopeAuthService — JWT cache", () => {
 });
 
 // ============================================================================
+// DescopeAuthService — creator identity resolution
+// ============================================================================
+
+describe("DescopeAuthService — creator identity resolution", () => {
+	let svc: DescopeAuthService;
+
+	beforeEach(() => {
+		mockAccessKeyLoad.mockReset();
+		mockLoadByUserId.mockReset();
+		svc = new DescopeAuthService({
+			sdk: DescopeSdk({ projectId: "test-identity-resolution" }),
+			config: { projectId: "test-identity-resolution" },
+		});
+	});
+
+	afterEach(() => svc.dispose());
+
+	test("resolves an access key subject to its bound user's email", async () => {
+		mockAccessKeyLoad.mockResolvedValueOnce({
+			ok: true,
+			data: { id: "K3-key", boundUserId: "U3-user" },
+		});
+		mockLoadByUserId.mockResolvedValueOnce({
+			ok: true,
+			data: { email: "owner@example.com", name: "Owner" },
+		});
+
+		await expect(svc.resolveUserDisplayName("K3-key")).resolves.toBe("owner@example.com");
+		expect(mockLoadByUserId).toHaveBeenCalledWith("U3-user");
+	});
+
+	test("resolves a user subject directly when it is not an access key", async () => {
+		mockAccessKeyLoad.mockResolvedValueOnce({ ok: false });
+		mockLoadByUserId.mockResolvedValueOnce({
+			ok: true,
+			data: { givenName: "Ada", familyName: "Lovelace" },
+		});
+
+		await expect(svc.resolveUserDisplayName("U3-user")).resolves.toBe("Ada Lovelace");
+		expect(mockLoadByUserId).toHaveBeenCalledWith("U3-user");
+	});
+
+	test("caches unresolved subjects without exposing or repeatedly loading them", async () => {
+		mockAccessKeyLoad.mockResolvedValueOnce({ ok: false });
+		mockLoadByUserId.mockResolvedValueOnce({ ok: false });
+
+		await expect(svc.resolveUserDisplayName("K3-raw-id")).resolves.toBeNull();
+		await expect(svc.resolveUserDisplayName("K3-raw-id")).resolves.toBeNull();
+		expect(mockAccessKeyLoad).toHaveBeenCalledTimes(1);
+		expect(mockLoadByUserId).toHaveBeenCalledTimes(1);
+	});
+
+	test("does not treat an unbound access key as a user ID", async () => {
+		mockAccessKeyLoad.mockResolvedValueOnce({ ok: true, data: { id: "K3-key" } });
+
+		await expect(svc.resolveUserDisplayName("K3-key")).resolves.toBeNull();
+		expect(mockLoadByUserId).not.toHaveBeenCalled();
+	});
+
+	test("converts rejected identity lookups into a safe unresolved result", async () => {
+		mockAccessKeyLoad.mockRejectedValueOnce(new Error("Descope unavailable"));
+		mockLoadByUserId.mockRejectedValueOnce(new Error("Descope unavailable"));
+
+		await expect(svc.resolveUserDisplayName("K3-key")).resolves.toBeNull();
+	});
+
+	test("deduplicates and caches repeated identity lookups", async () => {
+		mockAccessKeyLoad.mockResolvedValueOnce({ ok: false });
+		mockLoadByUserId.mockResolvedValueOnce({
+			ok: true,
+			data: { email: "owner@example.com" },
+		});
+
+		const results = await Promise.all([
+			svc.resolveUserDisplayName("U3-user"),
+			svc.resolveUserDisplayName("U3-user"),
+		]);
+		await expect(svc.resolveUserDisplayName("U3-user")).resolves.toBe("owner@example.com");
+		expect(results).toEqual(["owner@example.com", "owner@example.com"]);
+		expect(mockAccessKeyLoad).toHaveBeenCalledTimes(1);
+		expect(mockLoadByUserId).toHaveBeenCalledTimes(1);
+	});
+});
+
+// ============================================================================
 // requireRole
 // ============================================================================
 
@@ -845,6 +936,7 @@ describe("createAuthService", () => {
 
 		expect(typeof svc.authenticate).toBe("function");
 		expect(typeof svc.authenticateUpdateToken).toBe("function");
+		expect(typeof svc.resolveUserDisplayName).toBe("function");
 	});
 });
 
