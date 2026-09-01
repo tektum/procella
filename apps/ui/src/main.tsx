@@ -160,11 +160,11 @@ function App() {
 	);
 
 	return (
-		<ProcellaAuthProvider>
-			<TRPCProvider>
+		<TRPCProvider>
+			<ProcellaAuthProvider>
 				<RouterProvider router={router} />
-			</TRPCProvider>
-		</ProcellaAuthProvider>
+			</ProcellaAuthProvider>
+		</TRPCProvider>
 	);
 }
 

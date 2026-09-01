@@ -13,10 +13,9 @@ export function setStoredDescopeSessionToken(token: string | null | undefined): 
 	localStorage.removeItem(DESCOPE_SESSION_TOKEN_STORAGE_KEY);
 }
 
-// Session claims mirror — populated by the AuthProvider bridge. Claims stay
-// available even when Descope manages the JWT in an HttpOnly cookie (where
-// the raw token above is empty), so non-hook code (e.g. useOrg) can derive
-// tenant/roles without decoding a JWT.
+// Session claims mirror used for tenant identification outside React hooks.
+// The raw token remains unavailable when Descope manages it in an HttpOnly
+// cookie.
 export const DESCOPE_SESSION_CLAIMS_STORAGE_KEY = "procella-descope-session-claims";
 
 export function getStoredDescopeSessionClaims(): Record<string, unknown> | null {
