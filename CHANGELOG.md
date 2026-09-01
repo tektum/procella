@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.4](https://github.com/tektum/procella/compare/procella-v0.3.3...procella-v0.3.4) (2026-09-01)
+
+
+### Bug Fixes
+
+* **ci:** build ESC bootstrap in reusable deploy ([#233](https://github.com/tektum/procella/issues/233)) ([b595376](https://github.com/tektum/procella/commit/b595376908161b3f55d06a4cfdb4b4d7f41a442a))
+
 ## [0.3.3](https://github.com/tektum/procella/compare/procella-v0.3.2...procella-v0.3.3) (2026-09-01)
 
 
