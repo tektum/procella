@@ -70,6 +70,7 @@ function mockAuthService(): AuthService {
 			}
 			return { updateId: parts[1], stackId: parts[2] };
 		},
+		resolveUserDisplayName: async () => null,
 	};
 }
 

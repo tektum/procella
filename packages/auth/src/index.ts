@@ -20,6 +20,8 @@ export interface AuthService {
 	authenticate(request: Request): Promise<Caller>;
 	/** Authenticate an update-token (lease token from StartUpdate). */
 	authenticateUpdateToken(token: string): Promise<{ updateId: string; stackId: string }>;
+	/** Resolve a stored user or access-key subject to a human-readable user identity. */
+	resolveUserDisplayName(subject: string): Promise<string | null>;
 	/** Create a long-lived CLI access key for the given caller. Returns the cleartext key. */
 	createCliAccessKey?(
 		caller: Caller,
@@ -116,6 +118,10 @@ export class DevAuthService implements AuthService {
 		});
 	}
 
+	async resolveUserDisplayName(subject: string): Promise<string | null> {
+		return this.users.find((user) => user.login === subject)?.login ?? null;
+	}
+
 	async authenticateUpdateToken(token: string): Promise<{ updateId: string; stackId: string }> {
 		return withSpan(
 			"procella.auth",
@@ -181,12 +187,28 @@ interface CachedAuth {
 	expiresAt: number;
 }
 
+interface CachedUserDisplayName {
+	value: string;
+	expiresAt: number;
+}
+
+type DescopeUserIdentity = {
+	email?: string;
+	name?: string;
+	givenName?: string;
+	familyName?: string;
+	loginIds?: string[];
+};
+
 export class DescopeAuthService implements AuthService {
 	readonly sdk: DescopeClient;
 	private readonly cache = new Map<string, CachedAuth>();
 	private readonly pending = new Map<string, Promise<Caller>>();
+	private readonly userDisplayNameCache = new Map<string, CachedUserDisplayName>();
+	private readonly pendingUserDisplayNames = new Map<string, Promise<string | null>>();
 	private readonly EXPIRY_MARGIN_S = 60;
 	private readonly MAX_CACHE_TTL_S = 300;
+	private readonly USER_DISPLAY_NAME_CACHE_TTL_MS = 5 * 60_000;
 	private readonly projectId: string;
 	private readonly issuer: string;
 	/** Accepted `iss` values — the default api.descope.com issuer plus the custom auth domain (if any). */
@@ -307,6 +329,43 @@ export class DescopeAuthService implements AuthService {
 		);
 	}
 
+	async resolveUserDisplayName(subject: string): Promise<string | null> {
+		if (!subject) return null;
+
+		const cached = this.userDisplayNameCache.get(subject);
+		if (cached && cached.expiresAt > Date.now()) return cached.value;
+
+		const inflight = this.pendingUserDisplayNames.get(subject);
+		if (inflight) return inflight;
+
+		const lookup = this.loadUserDisplayName(subject);
+		this.pendingUserDisplayNames.set(subject, lookup);
+		try {
+			const value = await lookup;
+			if (value) {
+				this.userDisplayNameCache.set(subject, {
+					value,
+					expiresAt: Date.now() + this.USER_DISPLAY_NAME_CACHE_TTL_MS,
+				});
+			}
+			return value;
+		} finally {
+			this.pendingUserDisplayNames.delete(subject);
+		}
+	}
+
+	private async loadUserDisplayName(subject: string): Promise<string | null> {
+		const accessKey = await this.sdk.management.accessKey.load(subject).catch(() => undefined);
+		const userId = accessKey?.ok ? accessKey.data?.boundUserId : undefined;
+		if (accessKey?.ok && !userId) return null;
+
+		const user = await this.sdk.management.user
+			.loadByUserId(userId ?? subject)
+			.then((response) => (response.ok ? response.data : undefined))
+			.catch(() => undefined);
+		return user ? formatUserDisplayName(user) : null;
+	}
+
 	async createCliAccessKey(
 		caller: Caller,
 		name: string,
@@ -375,6 +434,8 @@ export class DescopeAuthService implements AuthService {
 			clearInterval(this.sweepTimer);
 			this.sweepTimer = null;
 		}
+		this.userDisplayNameCache.clear();
+		this.pendingUserDisplayNames.clear();
 	}
 
 	// ---- Private: Cache ------------------------------------------------
@@ -494,12 +555,26 @@ export class DescopeAuthService implements AuthService {
 
 	private sweep(): void {
 		const now = Math.floor(Date.now() / 1000);
+		const nowMs = Date.now();
 		for (const [key, entry] of this.cache) {
 			if (entry.expiresAt <= now) {
 				this.cache.delete(key);
 			}
 		}
+		for (const [key, entry] of this.userDisplayNameCache) {
+			if (entry.expiresAt <= nowMs) {
+				this.userDisplayNameCache.delete(key);
+			}
+		}
 	}
+}
+
+function formatUserDisplayName(user: DescopeUserIdentity): string | null {
+	const fullName = [user.givenName, user.familyName].filter(Boolean).join(" ");
+	for (const candidate of [user.email, user.name, fullName, user.loginIds?.[0]]) {
+		if (candidate?.trim()) return candidate.trim();
+	}
+	return null;
 }
 
 function optionalString(v: unknown): string | undefined {

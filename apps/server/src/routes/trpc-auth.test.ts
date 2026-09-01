@@ -26,6 +26,7 @@ function mockAuthService(returnCaller: Caller | null): AuthService {
 			return returnCaller;
 		},
 		authenticateUpdateToken: async () => ({ updateId: "u-1", stackId: "s-1" }),
+		resolveUserDisplayName: async () => null,
 	};
 }
 

@@ -14,6 +14,7 @@ function mockContext(overrides?: Partial<TRPCContext>): TRPCContext {
 			roles: ["admin"],
 			principalType: "user",
 		},
+		resolveUserDisplayName: (subject) => Promise.resolve(subject),
 		db: {} as never,
 		dbUrl: "",
 		stacks: {} as never,
@@ -31,7 +32,7 @@ function mockContext(overrides?: Partial<TRPCContext>): TRPCContext {
 					name: "dev",
 					yamlBody: "values:{}",
 					currentRevisionNumber: 1,
-					createdBy: "dev-user",
+					createdBy: "K3-key",
 					createdAt: new Date(),
 					updatedAt: new Date(),
 				},
@@ -42,7 +43,7 @@ function mockContext(overrides?: Partial<TRPCContext>): TRPCContext {
 				name: "dev",
 				yamlBody: "values:{}",
 				currentRevisionNumber: 1,
-				createdBy: "dev-user",
+				createdBy: "K3-key",
 				createdAt: new Date(),
 				updatedAt: new Date(),
 			})),
@@ -52,7 +53,7 @@ function mockContext(overrides?: Partial<TRPCContext>): TRPCContext {
 					environmentId: "e1",
 					revisionNumber: 1,
 					yamlBody: "values:{}",
-					createdBy: "dev-user",
+					createdBy: "K3-key",
 					createdAt: new Date(),
 				},
 			]),
@@ -61,11 +62,11 @@ function mockContext(overrides?: Partial<TRPCContext>): TRPCContext {
 				environmentId: "e1",
 				revisionNumber: 1,
 				yamlBody: "values:{}",
-				createdBy: "dev-user",
+				createdBy: "K3-key",
 				createdAt: new Date(),
 			})),
 			listRevisionTags: mock(async () => [
-				{ name: "stable", revisionNumber: 1, createdBy: "dev-user", createdAt: new Date() },
+				{ name: "stable", revisionNumber: 1, createdBy: "K3-key", createdAt: new Date() },
 			]),
 			getEnvironmentTags: mock(async () => ({ team: "platform" })),
 			listDrafts: mock(async () => [
@@ -74,7 +75,7 @@ function mockContext(overrides?: Partial<TRPCContext>): TRPCContext {
 					environmentId: "e1",
 					yamlBody: "values:{}",
 					description: "draft",
-					createdBy: "dev-user",
+					createdBy: "K3-key",
 					status: "open",
 					appliedRevisionId: null,
 					appliedAt: null,
@@ -87,7 +88,7 @@ function mockContext(overrides?: Partial<TRPCContext>): TRPCContext {
 				environmentId: "e1",
 				yamlBody: "values:{}",
 				description: "draft",
-				createdBy: "dev-user",
+				createdBy: "K3-key",
 				status: "open",
 				appliedRevisionId: null,
 				appliedAt: null,
@@ -136,6 +137,44 @@ describe("escRouter", () => {
 		await expect(
 			caller.getDraft({ project: "acme", environment: "dev", draftId: VALID_DRAFT_ID }),
 		).resolves.toMatchObject({ id: "d1" });
+	});
+
+	test("replaces stored creator subjects with user identities", async () => {
+		const resolveUserDisplayName = mock(async (subject: string) =>
+			subject === "K3-key" ? "owner@example.com" : null,
+		);
+		const caller = escRouter.createCaller(mockContext({ resolveUserDisplayName }));
+
+		const [environments, environment, revisions, revision, tags, drafts, draft] = await Promise.all(
+			[
+				caller.listEnvironments({ project: "acme" }),
+				caller.getEnvironment({ project: "acme", environment: "dev" }),
+				caller.listRevisions({ project: "acme", environment: "dev" }),
+				caller.getRevision({ project: "acme", environment: "dev", revision: 1 }),
+				caller.listRevisionTags({ project: "acme", environment: "dev" }),
+				caller.listDrafts({ project: "acme", environment: "dev" }),
+				caller.getDraft({ project: "acme", environment: "dev", draftId: VALID_DRAFT_ID }),
+			],
+		);
+
+		expect(environments[0]?.createdBy).toBe("owner@example.com");
+		expect(environment.createdBy).toBe("owner@example.com");
+		expect(revisions[0]?.createdBy).toBe("owner@example.com");
+		expect(revision.createdBy).toBe("owner@example.com");
+		expect(tags[0]?.createdBy).toBe("owner@example.com");
+		expect(drafts[0]?.createdBy).toBe("owner@example.com");
+		expect(draft.createdBy).toBe("owner@example.com");
+	});
+
+	test("uses a safe label when a creator subject cannot be resolved", async () => {
+		const caller = escRouter.createCaller(
+			mockContext({ resolveUserDisplayName: async () => null }),
+		);
+
+		const environments = await caller.listEnvironments({ project: "acme" });
+
+		expect(environments[0]?.createdBy).toBe("Unknown user");
+		expect(environments[0]?.createdBy).not.toContain("K3-key");
 	});
 
 	test("maps missing environment, revision, and draft to NOT_FOUND errors", async () => {

@@ -15,6 +15,7 @@ function mockAuthService(): AuthService {
 			updateId: "upd-1",
 			stackId: "stack-a-id",
 		}),
+		resolveUserDisplayName: async () => null,
 	};
 }
 

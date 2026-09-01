@@ -25,13 +25,31 @@ const draftStatusFilter = environmentInput.extend({
 	status: z.enum(["open", "applied", "discarded"]).optional(),
 });
 
+const UNKNOWN_USER = "Unknown user";
+
+async function resolveCreatedBy<T extends { createdBy: string }>(
+	resolveUserDisplayName: (subject: string) => Promise<string | null>,
+	value: T,
+): Promise<T> {
+	const displayName = await resolveUserDisplayName(value.createdBy).catch(() => null);
+	return { ...value, createdBy: displayName ?? UNKNOWN_USER };
+}
+
+async function resolveCreatedByList<T extends { createdBy: string }>(
+	resolveUserDisplayName: (subject: string) => Promise<string | null>,
+	values: T[],
+): Promise<T[]> {
+	return Promise.all(values.map((value) => resolveCreatedBy(resolveUserDisplayName, value)));
+}
+
 export const escRouter = router({
 	listProjects: protectedProcedure.query(async ({ ctx }) => {
 		return ctx.esc.listProjects(ctx.caller.tenantId);
 	}),
 
 	listEnvironments: protectedProcedure.input(projectInput).query(async ({ ctx, input }) => {
-		return ctx.esc.listEnvironments(ctx.caller.tenantId, input.project);
+		const environments = await ctx.esc.listEnvironments(ctx.caller.tenantId, input.project);
+		return resolveCreatedByList(ctx.resolveUserDisplayName, environments);
 	}),
 
 	getEnvironment: protectedProcedure.input(environmentInput).query(async ({ ctx, input }) => {
@@ -42,11 +60,16 @@ export const escRouter = router({
 				message: `Environment ${input.project}/${input.environment} not found`,
 			});
 		}
-		return env;
+		return resolveCreatedBy(ctx.resolveUserDisplayName, env);
 	}),
 
 	listRevisions: protectedProcedure.input(environmentInput).query(async ({ ctx, input }) => {
-		return ctx.esc.listRevisions(ctx.caller.tenantId, input.project, input.environment);
+		const revisions = await ctx.esc.listRevisions(
+			ctx.caller.tenantId,
+			input.project,
+			input.environment,
+		);
+		return resolveCreatedByList(ctx.resolveUserDisplayName, revisions);
 	}),
 
 	getRevision: protectedProcedure.input(revisionInput).query(async ({ ctx, input }) => {
@@ -62,11 +85,16 @@ export const escRouter = router({
 				message: `Revision ${input.project}/${input.environment}#${input.revision} not found`,
 			});
 		}
-		return rev;
+		return resolveCreatedBy(ctx.resolveUserDisplayName, rev);
 	}),
 
 	listRevisionTags: protectedProcedure.input(environmentInput).query(async ({ ctx, input }) => {
-		return ctx.esc.listRevisionTags(ctx.caller.tenantId, input.project, input.environment);
+		const tags = await ctx.esc.listRevisionTags(
+			ctx.caller.tenantId,
+			input.project,
+			input.environment,
+		);
+		return resolveCreatedByList(ctx.resolveUserDisplayName, tags);
 	}),
 
 	getEnvironmentTags: protectedProcedure.input(environmentInput).query(async ({ ctx, input }) => {
@@ -74,7 +102,13 @@ export const escRouter = router({
 	}),
 
 	listDrafts: protectedProcedure.input(draftStatusFilter).query(async ({ ctx, input }) => {
-		return ctx.esc.listDrafts(ctx.caller.tenantId, input.project, input.environment, input.status);
+		const drafts = await ctx.esc.listDrafts(
+			ctx.caller.tenantId,
+			input.project,
+			input.environment,
+			input.status,
+		);
+		return resolveCreatedByList(ctx.resolveUserDisplayName, drafts);
 	}),
 
 	getDraft: protectedProcedure.input(draftInput).query(async ({ ctx, input }) => {
@@ -90,6 +124,6 @@ export const escRouter = router({
 				message: `Draft ${input.draftId} not found`,
 			});
 		}
-		return draft;
+		return resolveCreatedBy(ctx.resolveUserDisplayName, draft);
 	}),
 });

@@ -20,6 +20,7 @@ import superjson from "superjson";
 export interface TRPCContext {
 	caller: Caller | null;
 	issueSubscriptionTicket?: (caller: Caller) => Promise<string>;
+	resolveUserDisplayName: (subject: string) => Promise<string | null>;
 	db: Database;
 	dbUrl: string;
 	stacks: StacksService;

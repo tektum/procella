@@ -12,6 +12,7 @@ function mockContext(overrides?: Partial<TRPCContext>): TRPCContext {
 			roles: ["member"],
 			principalType: "user",
 		},
+		resolveUserDisplayName: (subject) => Promise.resolve(subject),
 		issueSubscriptionTicket: mock(async () => "signed-ticket"),
 		db: {} as never,
 		dbUrl: "",

@@ -155,6 +155,7 @@ export function createApp(deps: {
 
 		const ctx: TRPCContext = {
 			caller,
+			resolveUserDisplayName: (subject) => deps.auth.resolveUserDisplayName(subject),
 			issueSubscriptionTicket: deps.issueSubscriptionTicket,
 			db: deps.db,
 			dbUrl: deps.dbUrl,
