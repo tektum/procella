@@ -73,10 +73,12 @@ jobs:
           PR_NUMBER: ${{ github.event.number }}
           STATUS: ${{ job.status }}
         run: |
-          echo "## Preview Cleanup" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Stage | \`pr-$PR_NUMBER\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Status | \`$STATUS\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| PR | #$PR_NUMBER |" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## Preview Cleanup"
+            echo ""
+            echo "| Field | Value |"
+            echo "|-------|-------|"
+            echo "| Stage | \`pr-$PR_NUMBER\` |"
+            echo "| Status | \`$STATUS\` |"
+            echo "| PR | #$PR_NUMBER |"
+          } >> "$GITHUB_STEP_SUMMARY"
