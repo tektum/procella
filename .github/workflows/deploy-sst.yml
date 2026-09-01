@@ -75,17 +75,8 @@ jobs:
       - name: Test Go code
         run: cd esc-eval && go test ./... -race -count=1
 
-      - name: Build ESC eval bootstrap
-        run: cd esc-eval && make build
-
-      - name: Build Lambda binaries
-        run: |
-          mkdir -p .build/cli-api .build/web-api .build/gc .build/migrate
-          bun build --compile --target=bun-linux-x64 --production --sourcemap --compile-exec-argv="--smol" apps/server/src/lambda-cli.ts --outfile .build/cli-api/bootstrap
-          bun build --compile --target=bun-linux-x64 --production --sourcemap --compile-exec-argv="--smol" apps/server/src/lambda-web.ts --outfile .build/web-api/bootstrap
-          bun build --compile --target=bun-linux-x64 --production --sourcemap --compile-exec-argv="--smol" apps/server/src/gc-bootstrap.ts --outfile .build/gc/bootstrap
-          bun build --compile --target=bun-linux-x64 --production --sourcemap --compile-exec-argv="--smol" apps/server/src/migrate-bootstrap.ts --outfile .build/migrate/bootstrap
-          cp -rf packages/db/drizzle .build/migrate/drizzle
+      - name: Build deployment binaries
+        run: ./scripts/build-deployment-binaries.sh
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
