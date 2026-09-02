@@ -39,7 +39,7 @@ jobs:
 
 `PULUMI_ACCESS_TOKEN` is required. Without it the `pulumi login` the action performs fails (upstream logs that as a warning) and the Pulumi command itself then fails. In Procella the token is a long-lived access key; store it as a repository or environment secret.
 
-`comment-on-pr: true` makes the upstream action post the preview diff to the pull request. That posting is the upstream action's own behavior: it uses `GITHUB_TOKEN` (via the `github-token` input, which defaults to `${{ github.token }}`), so the job needs `pull-requests: write`. It is independent of the [Procella GitHub App](/features/github-app/), which posts comments from the server side using its own installation credentials. Use one or the other, not both, unless you want two comments.
+`comment-on-pr: true` makes the upstream action post the preview diff to the pull request. That posting is the upstream action's own behavior: it uses `GITHUB_TOKEN` (via the `github-token` input, which defaults to `${{ github.token }}`), so the job needs `pull-requests: write`. It is independent of the [Procella GitHub App](/features/github-app/), which posts comments from the server side using its own installation credentials. Use one or the other, not both, unless you want two comments. This action does not set the `github:*` stack tags the GitHub App path depends on; that flow is documented on the GitHub App page.
 
 To deploy instead of previewing, use `command: up` on `push`. To tear a stack down, use `command: destroy`.
 
