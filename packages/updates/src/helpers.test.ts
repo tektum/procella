@@ -620,6 +620,35 @@ describe("@procella/updates helpers", () => {
 			await svc.createUpdate("stack-1", "update");
 			expect(capturedVersion).toBe(1);
 		});
+
+		test("persists update environment metadata", async () => {
+			let capturedEnvironment: Record<string, string> | undefined;
+			const chainable = {
+				from: () => chainable,
+				where: () => Promise.resolve([]),
+				values: (values: { environment: Record<string, string> }) => {
+					capturedEnvironment = values.environment;
+					return chainable;
+				},
+				returning: () => Promise.resolve([{ id: "upd-metadata" }]),
+			};
+			const db = {
+				select: () => chainable,
+				insert: () => chainable,
+				execute: () => Promise.resolve(),
+			} as never;
+			const svc = new PostgresUpdatesService({ db, storage: noopStorage, crypto: noopCrypto });
+			const environment = {
+				"vcs.owner": "octocat",
+				"vcs.repo": "hello-world",
+				"ci.pr.number": "42",
+				"ci.pr.headSHA": "abc123",
+			};
+
+			await svc.createUpdate("stack-1", "preview", undefined, undefined, undefined, environment);
+
+			expect(capturedEnvironment).toEqual(environment);
+		});
 	});
 
 	describe("journalEntryValues", () => {

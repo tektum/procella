@@ -99,6 +99,13 @@
       "when": 1788203180374,
       "tag": "0013_journal_replay_fields",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1788336000000,
+      "tag": "0014_update_environment",
+      "breakpoints": true
     }
   ]
 }

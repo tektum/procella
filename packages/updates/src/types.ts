@@ -2,6 +2,7 @@
 
 import type { StackCryptoInput } from "@procella/crypto";
 import type {
+	Caller,
 	CompleteUpdateRequest,
 	EngineEventBatch,
 	GetHistoryResponse,
@@ -25,18 +26,24 @@ import { UpdateConflictError } from "@procella/types";
 // UpdatesService Interface
 // ============================================================================
 
+export interface CompletedUpdate {
+	stackId: string;
+	environment: Record<string, string>;
+}
+
 export interface UpdatesService {
 	createUpdate(
 		stackId: string,
 		kind: string,
 		config?: unknown,
 		program?: unknown,
-		caller?: import("@procella/types").Caller,
+		caller?: Caller,
+		environment?: Record<string, string>,
 	): Promise<UpdateProgramResponse>;
 
 	startUpdate(updateId: string, request: StartUpdateRequest): Promise<StartUpdateResponse>;
 
-	completeUpdate(updateId: string, request: CompleteUpdateRequest): Promise<void>;
+	completeUpdate(updateId: string, request: CompleteUpdateRequest): Promise<CompletedUpdate>;
 
 	cancelUpdate(updateId: string): Promise<void>;
 
@@ -131,6 +138,7 @@ export interface UpdateRow {
 	updatedAt: Date;
 	config: unknown;
 	program: unknown;
+	environment: Record<string, string>;
 }
 
 export interface CheckpointRow {

@@ -10,6 +10,7 @@ import {
 	type CompleteUpdateRequest,
 	isValidUpdateKind,
 	type StartUpdateRequest,
+	type UpdateProgramRequest,
 } from "@procella/types";
 import type { UpdatesService } from "@procella/updates";
 import type { WebhooksService } from "@procella/webhooks";
@@ -39,13 +40,14 @@ export function updateHandlers(
 			}
 			const stackInfo = await stacks.getStack(caller.tenantId, org, project, stack);
 			const body = await c.req.json().catch(() => ({}));
-			const typedBody = body as { config?: unknown; program?: unknown };
+			const typedBody = body as Partial<UpdateProgramRequest> & { program?: unknown };
 			const result = await updates.createUpdate(
 				stackInfo.id,
 				kind,
 				typedBody.config,
 				typedBody.program,
 				caller,
+				typedBody.metadata?.environment,
 			);
 			return c.json(result);
 		},
@@ -74,7 +76,7 @@ export function updateHandlers(
 			const updateCtx = updateContext(c);
 			const updateId = updateCtx.updateId;
 			const body = await c.req.json<CompleteUpdateRequest>();
-			await updates.completeUpdate(updateId, body);
+			const completed = await updates.completeUpdate(updateId, body);
 
 			const caller = c.get("caller");
 			const org = c.req.param("org");
@@ -84,24 +86,26 @@ export function updateHandlers(
 			// Safe: updateAuth already verified that this URL tuple resolves to the
 			// same stackId that the lease token is bound to before any side effects run.
 			if (
-				caller &&
 				org &&
 				project &&
 				stack &&
 				github &&
 				(body.status === "succeeded" || body.status === "failed")
 			) {
-				void (async () => {
-					const stackInfo = await stacks.getStack(caller.tenantId, org, project, stack);
-					const installation = await github.getInstallation(caller.tenantId);
+				await (async () => {
+					const stackInfo = await stacks.getStackById_systemOnly(completed.stackId);
+					const installation = await github.getInstallation(stackInfo.tenantId);
 					if (!installation) {
 						return;
 					}
 
-					const owner = stackInfo.tags["github:owner"];
-					const repo = stackInfo.tags["github:repo"];
-					const pr = stackInfo.tags["github:pr"];
-					const sha = stackInfo.tags["github:sha"];
+					const owner = stackInfo.tags["github:owner"] ?? completed.environment["vcs.owner"];
+					const repo = stackInfo.tags["github:repo"] ?? completed.environment["vcs.repo"];
+					const pr = stackInfo.tags["github:pr"] ?? completed.environment["ci.pr.number"];
+					const sha =
+						stackInfo.tags["github:sha"] ??
+						completed.environment["ci.pr.headSHA"] ??
+						completed.environment["git.head"];
 
 					if (!owner || !repo || !pr || !sha) {
 						return;

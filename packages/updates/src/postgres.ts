@@ -12,6 +12,7 @@ import {
 	withDbSpan,
 } from "@procella/telemetry";
 import type {
+	Caller,
 	CompleteUpdateRequest,
 	EngineEvent,
 	EngineEventBatch,
@@ -61,7 +62,7 @@ import {
 	leaseExpiresAt,
 	safeTokenCompare,
 } from "./helpers.js";
-import type { UpdatesService } from "./types.js";
+import type { CompletedUpdate, UpdatesService } from "./types.js";
 import { BLOB_THRESHOLD, ImportConflictError, LEASE_DURATION_SECONDS } from "./types.js";
 
 const MAX_JOURNAL_ENTRIES = 10_000;
@@ -142,7 +143,8 @@ export class PostgresUpdatesService implements UpdatesService {
 		kind: string,
 		config?: unknown,
 		program?: unknown,
-		caller?: import("@procella/types").Caller,
+		caller?: Caller,
+		environment?: Record<string, string>,
 	): Promise<UpdateProgramResponse> {
 		return withDbSpan("createUpdate", { "update.kind": kind, "stack.id": stackId }, async () => {
 			const [versionRow] = await this.db
@@ -162,6 +164,7 @@ export class PostgresUpdatesService implements UpdatesService {
 						version,
 						config: config ?? null,
 						program: program ?? null,
+						environment: environment ?? {},
 						initiatedBy: caller?.userId || null, // use || so empty string becomes null
 						initiatedByType: caller?.principalType ?? null,
 						initiatedByDisplay: caller?.login ?? null,
@@ -271,9 +274,8 @@ export class PostgresUpdatesService implements UpdatesService {
 		});
 	}
 
-	async completeUpdate(updateId: string, request: CompleteUpdateRequest): Promise<void> {
-		let notifyStackId: string | undefined;
-		await withDbSpan(
+	async completeUpdate(updateId: string, request: CompleteUpdateRequest): Promise<CompletedUpdate> {
+		const completed = await withDbSpan(
 			"completeUpdate",
 			{ "update.id": updateId, "update.status": request.status },
 			() =>
@@ -289,8 +291,6 @@ export class PostgresUpdatesService implements UpdatesService {
 							`Update ${updateId} is in status "${row.status}", expected "running"`,
 						);
 					}
-
-					notifyStackId = row.stackId;
 
 					await tx
 						.update(updates)
@@ -308,13 +308,18 @@ export class PostgresUpdatesService implements UpdatesService {
 						.update(stacks)
 						.set({ activeUpdateId: null, updatedAt: sql`now()` })
 						.where(eq(stacks.id, row.stackId));
+
+					return {
+						stackId: row.stackId,
+						environment: (row.environment ?? {}) as Record<string, string>,
+					};
 				}),
 		);
 
 		activeUpdatesGauge().add(-1);
 		this.clearUpdateCaches(updateId);
-		if (notifyStackId)
-			this.db.execute(sql`SELECT pg_notify('stack_updates', ${notifyStackId})`).catch(() => {});
+		this.db.execute(sql`SELECT pg_notify('stack_updates', ${completed.stackId})`).catch(() => {});
+		return completed;
 	}
 
 	async cancelUpdate(updateId: string): Promise<void> {

@@ -79,6 +79,7 @@ export const updates = pgTable(
 		updatedAt: timestamp("updated_at").notNull().defaultNow(),
 		config: jsonb(),
 		program: jsonb(),
+		environment: jsonb().$type<Record<string, string>>().notNull().default({}),
 		initiatedBy: text("initiated_by"),
 		initiatedByType: text("initiated_by_type"),
 		initiatedByDisplay: text("initiated_by_display"),
