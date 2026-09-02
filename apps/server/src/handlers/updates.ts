@@ -10,6 +10,7 @@ import {
 	type CompleteUpdateRequest,
 	isValidUpdateKind,
 	type StartUpdateRequest,
+	type UpdateProgramRequest,
 } from "@procella/types";
 import type { UpdatesService } from "@procella/updates";
 import type { WebhooksService } from "@procella/webhooks";
@@ -39,13 +40,14 @@ export function updateHandlers(
 			}
 			const stackInfo = await stacks.getStack(caller.tenantId, org, project, stack);
 			const body = await c.req.json().catch(() => ({}));
-			const typedBody = body as { config?: unknown; program?: unknown };
+			const typedBody = body as Partial<UpdateProgramRequest> & { program?: unknown };
 			const result = await updates.createUpdate(
 				stackInfo.id,
 				kind,
 				typedBody.config,
 				typedBody.program,
 				caller,
+				typedBody.metadata?.environment,
 			);
 			return c.json(result);
 		},
@@ -84,7 +86,6 @@ export function updateHandlers(
 			// Safe: updateAuth already verified that this URL tuple resolves to the
 			// same stackId that the lease token is bound to before any side effects run.
 			if (
-				caller &&
 				org &&
 				project &&
 				stack &&
@@ -92,34 +93,48 @@ export function updateHandlers(
 				(body.status === "succeeded" || body.status === "failed")
 			) {
 				void (async () => {
-					const stackInfo = await stacks.getStack(caller.tenantId, org, project, stack);
-					const installation = await github.getInstallation(caller.tenantId);
+					const completed = await updates.getUpdateContext(updateId);
+					const stackInfo = await stacks.getStackById_systemOnly(completed.stackId);
+					const installation = await github.getInstallation(stackInfo.tenantId);
 					if (!installation) {
 						return;
 					}
 
-					const owner = stackInfo.tags["github:owner"];
-					const repo = stackInfo.tags["github:repo"];
-					const pr = stackInfo.tags["github:pr"];
-					const sha = stackInfo.tags["github:sha"];
+					const taggedOwner = stackInfo.tags["github:owner"];
+					const taggedRepo = stackInfo.tags["github:repo"];
+					const taggedPr = stackInfo.tags["github:pr"];
+					const taggedSha = stackInfo.tags["github:sha"];
+					const taggedTarget =
+						taggedOwner && taggedRepo && taggedPr && taggedSha
+							? { owner: taggedOwner, repo: taggedRepo, pr: taggedPr, sha: taggedSha }
+							: null;
 
-					if (!owner || !repo || !pr || !sha) {
-						return;
-					}
+					const metadataOwner = completed.environment["vcs.owner"];
+					const metadataRepo = completed.environment["vcs.repo"];
+					const metadataPr = completed.environment["ci.pr.number"];
+					const metadataSha =
+						completed.environment["ci.pr.headSHA"] ?? completed.environment["git.head"];
+					const metadataMatchesStack =
+						metadataOwner === stackInfo.tags["vcs:owner"] &&
+						metadataRepo === stackInfo.tags["vcs:repo"];
+					const metadataTarget =
+						metadataMatchesStack && metadataOwner && metadataRepo && metadataPr && metadataSha
+							? { owner: metadataOwner, repo: metadataRepo, pr: metadataPr, sha: metadataSha }
+							: null;
+					const target = taggedTarget ?? metadataTarget;
+					if (!target) return;
 
-					const prNumber = Number(pr);
-					if (Number.isNaN(prNumber)) {
-						return;
-					}
+					const prNumber = Number(target.pr);
+					if (Number.isNaN(prNumber)) return;
 
 					const latest = await updates.getHistory(stackInfo.id);
 					const summary = latest.updates[0];
 					const commitState = mapUpdateStatusToCommitState(body.status);
 					await github.setCommitStatus(
 						installation.installationId,
-						owner,
-						repo,
-						sha,
+						target.owner,
+						target.repo,
+						target.sha,
 						commitState,
 						`Procella ${body.status}`,
 					);
@@ -140,8 +155,8 @@ export function updateHandlers(
 					});
 					await github.postPRComment(
 						installation.installationId,
-						owner,
-						repo,
+						target.owner,
+						target.repo,
 						prNumber,
 						commentBody,
 					);

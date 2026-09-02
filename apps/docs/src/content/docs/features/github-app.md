@@ -83,28 +83,26 @@ The deployed Procella instance needs its own GitHub App credentials. Do not supp
 
 ## How PR Comments Work
 
-The integration relies on stack tags to know which PR a stack is associated with. When running `pulumi preview` in CI, your workflow must set these tags on the stack:
+During an update, the Pulumi CLI sends source-control and CI metadata to Procella. For GitHub Actions pull-request runs, Procella verifies the metadata repository against the stack's persisted `vcs:owner` and `vcs:repo` tags, then uses these values automatically:
 
-| Tag | Value | Example |
-|---|---|---|
-| `github:owner` | GitHub org or user | `my-org` |
-| `github:repo` | Repository name | `my-app` |
-| `github:pr` | PR number | `42` |
-| `github:sha` | Commit SHA | `abc1234...` |
+| Update metadata | Purpose |
+|---|---|
+| `vcs.owner` | GitHub organization or user |
+| `vcs.repo` | Repository name |
+| `ci.pr.number` | Pull request number |
+| `ci.pr.headSHA` | Pull request head commit |
 
-When Procella receives an `update.succeeded` or `update.failed` event for a preview on a stack with these tags, it:
+If `ci.pr.headSHA` is unavailable, Procella falls back to `git.head`. A complete set of explicit `github:owner`, `github:repo`, `github:pr`, and `github:sha` stack tags remains supported and takes precedence over update metadata.
 
-1. Looks up the installation token for the repo's GitHub App installation
-2. Finds any existing Procella comment on the PR and updates it (or posts a new one)
-3. Creates or updates the commit status on `github:sha`
+When a preview associated with a pull request succeeds or fails, Procella:
+
+1. Looks up the repository's GitHub App installation
+2. Posts a Procella summary comment on the pull request
+3. Creates or updates the commit status on the pull request head commit
 
 ## CI/CD Integration
 
-If you don't need the GitHub App's PR comments, use the [Procella GitHub Action](/features/github-action/) and skip the setup and login steps below entirely.
-
-This page's flow needs them because neither the Pulumi CLI nor `pulumi/actions` sets the `github:*` tags, and `pulumi stack tag set` needs an authenticated CLI. The Procella action only logs in as part of running a Pulumi command, so it cannot authenticate the tagging step that has to happen *before* the preview.
-
-Here's a complete GitHub Actions workflow that runs `pulumi preview` on PRs and posts results:
+Use the [Procella GitHub Action](/features/github-action/) to run a preview against the hosted Procella backend. The Pulumi CLI supplies the GitHub metadata automatically, so no `pulumi stack tag set` commands are required.
 
 ```yaml
 name: Pulumi Preview
@@ -119,31 +117,15 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - name: Set up Pulumi
-        uses: pulumi/actions@8e5e406f4007fca908480587cb9893c07090f58d # v7.0.0
-
-      - name: Login to Procella
-        run: pulumi login https://your-procella.example.com/api
+      - uses: tektum/procella/actions/pulumi@e036a1df5937e4ffc351c2fc47b5ea743b7f782e
+        with:
+          command: preview
+          stack-name: my-org/my-project/staging
         env:
           PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
-
-      - name: Tag stack with GitHub metadata
-        run: |
-          pulumi stack tag set github:owner ${{ github.repository_owner }}
-          pulumi stack tag set github:repo ${{ github.event.repository.name }}
-          pulumi stack tag set github:pr ${{ github.event.pull_request.number }}
-          pulumi stack tag set github:sha ${{ github.event.pull_request.head.sha }}
-        env:
-          PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
-
-      - name: Run preview
-        run: pulumi preview
-        env:
-          PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
-          # Add any stack-specific env vars here
 ```
 
-The tags are set at the stack level so they persist across runs. If the PR number changes (e.g. the branch is used for multiple PRs), update the tags before running preview.
+The metadata is attached to each update rather than stored on the stack, so concurrent or subsequent pull-request runs do not reuse another run's PR number or commit SHA.
 
 ## Managing the Integration
 

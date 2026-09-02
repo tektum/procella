@@ -58,6 +58,30 @@ describe("PostgresUpdatesService — integration", () => {
 			expect(result.updateID).toBeTruthy();
 		});
 
+		test("persists update environment through completion", async () => {
+			const stack = await seedStack();
+			const environment = {
+				"vcs.owner": "octocat",
+				"vcs.repo": "hello-world",
+				"ci.pr.number": "42",
+				"ci.pr.headSHA": "abc123",
+			};
+			const created = await updatesService.createUpdate(
+				stack.id,
+				"preview",
+				undefined,
+				undefined,
+				undefined,
+				environment,
+			);
+			await updatesService.startUpdate(created.updateID, {});
+
+			await updatesService.completeUpdate(created.updateID, { status: "succeeded" });
+			const context = await updatesService.getUpdateContext(created.updateID);
+
+			expect(context).toEqual({ stackId: stack.id, environment });
+		});
+
 		test("rejects second active update on same stack (unique constraint)", async () => {
 			const stack = await seedStack();
 			await updatesService.createUpdate(stack.id, "update");

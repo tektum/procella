@@ -12,6 +12,7 @@ import {
 	withDbSpan,
 } from "@procella/telemetry";
 import type {
+	Caller,
 	CompleteUpdateRequest,
 	EngineEvent,
 	EngineEventBatch,
@@ -61,7 +62,7 @@ import {
 	leaseExpiresAt,
 	safeTokenCompare,
 } from "./helpers.js";
-import type { UpdatesService } from "./types.js";
+import type { CompletedUpdate, UpdatesService } from "./types.js";
 import { BLOB_THRESHOLD, ImportConflictError, LEASE_DURATION_SECONDS } from "./types.js";
 
 const MAX_JOURNAL_ENTRIES = 10_000;
@@ -142,7 +143,8 @@ export class PostgresUpdatesService implements UpdatesService {
 		kind: string,
 		config?: unknown,
 		program?: unknown,
-		caller?: import("@procella/types").Caller,
+		caller?: Caller,
+		environment?: Record<string, string>,
 	): Promise<UpdateProgramResponse> {
 		return withDbSpan("createUpdate", { "update.kind": kind, "stack.id": stackId }, async () => {
 			const [versionRow] = await this.db
@@ -162,6 +164,7 @@ export class PostgresUpdatesService implements UpdatesService {
 						version,
 						config: config ?? null,
 						program: program ?? null,
+						environment: environment ?? {},
 						initiatedBy: caller?.userId || null, // use || so empty string becomes null
 						initiatedByType: caller?.principalType ?? null,
 						initiatedByDisplay: caller?.login ?? null,
@@ -315,6 +318,21 @@ export class PostgresUpdatesService implements UpdatesService {
 		this.clearUpdateCaches(updateId);
 		if (notifyStackId)
 			this.db.execute(sql`SELECT pg_notify('stack_updates', ${notifyStackId})`).catch(() => {});
+	}
+
+	async getUpdateContext(updateId: string): Promise<CompletedUpdate> {
+		return withDbSpan("getUpdateContext", { "update.id": updateId }, async () => {
+			const [row] = await this.db
+				.select({ stackId: updates.stackId, environment: updates.environment })
+				.from(updates)
+				.where(eq(updates.id, updateId));
+
+			if (!row) {
+				throw new UpdateNotFoundError(updateId);
+			}
+
+			return { stackId: row.stackId, environment: row.environment };
+		});
 	}
 
 	async cancelUpdate(updateId: string): Promise<void> {

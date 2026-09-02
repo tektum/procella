@@ -173,6 +173,7 @@ function makeRouteTestApp(opts?: { corsOrigins?: string[]; cronSecret?: string }
 				tokenExpiration: Math.floor(Date.now() / 1000) + 300,
 			}),
 			completeUpdate: async () => {},
+			getUpdateContext: async () => ({ stackId: "stack-1", environment: {} }),
 			cancelUpdate: async () => {},
 			patchCheckpoint: async () => {},
 			patchCheckpointVerbatim: async () => {},

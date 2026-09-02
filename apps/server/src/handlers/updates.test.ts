@@ -56,6 +56,7 @@ function mockUpdatesService(overrides?: Partial<UpdatesService>): UpdatesService
 		createUpdate: mock(async () => mockCreateResult as never),
 		startUpdate: mock(async () => mockStartResult as never),
 		completeUpdate: mock(async () => {}),
+		getUpdateContext: mock(async () => ({ stackId: "s-1", environment: {} })),
 		cancelUpdate: mock(async () => {}),
 		patchCheckpoint: mock(async () => {}),
 		patchCheckpointVerbatim: mock(async () => {}),
@@ -97,7 +98,10 @@ describe("updateHandlers", () => {
 		const res = await app.request("/stacks/myorg/myproj/dev/update", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ config: { key: "val" } }),
+			body: JSON.stringify({
+				config: { key: "val" },
+				metadata: { environment: { "ci.pr.number": "42" } },
+			}),
 		});
 
 		expect(res.status).toBe(200);
@@ -111,6 +115,7 @@ describe("updateHandlers", () => {
 			{ key: "val" },
 			undefined,
 			validCaller,
+			{ "ci.pr.number": "42" },
 		);
 	});
 
@@ -133,6 +138,7 @@ describe("updateHandlers", () => {
 			undefined,
 			undefined,
 			validCaller,
+			undefined,
 		);
 	});
 
@@ -337,7 +343,17 @@ describe("updateHandlers", () => {
 	});
 
 	test("completeUpdate triggers GitHub status when tags present", async () => {
-		const updates = mockUpdatesService();
+		const updates = mockUpdatesService({
+			getUpdateContext: mock(async () => ({
+				stackId: "s-1",
+				environment: {
+					"vcs.owner": "metadata-owner",
+					"vcs.repo": "metadata-repo",
+					"ci.pr.number": "7",
+					"ci.pr.headSHA": "metadata-sha",
+				},
+			})),
+		});
 		const stackWithGithubTags: StackInfo = {
 			...mockStackInfo,
 			tags: {
@@ -352,6 +368,7 @@ describe("updateHandlers", () => {
 			getStackByNames_systemOnly: mock(async () => stackWithGithubTags),
 			getStackById_systemOnly: mock(async () => stackWithGithubTags),
 		});
+		const published = Promise.withResolvers<void>();
 		const github = {
 			getInstallation: mock(async () => ({
 				id: "inst-1",
@@ -364,14 +381,13 @@ describe("updateHandlers", () => {
 				updatedAt: new Date(),
 			})),
 			setCommitStatus: mock(async () => {}),
-			postPRComment: mock(async () => {}),
+			postPRComment: mock(async () => published.resolve()),
 			handleWebhookEvent: mock(async () => {}),
 			saveInstallation: mock(async () => {}),
 			removeInstallation: mock(async () => {}),
 		};
 		const webhooks = { emit: mock(() => {}), emitAndWait: mock(async () => {}) } as never;
 		const app = new Hono<Env>();
-		app.use("*", injectCaller(validCaller));
 		app.use("*", async (c, next) => {
 			c.set("updateContext", { updateId: "upd-gh", stackId: "s-1" });
 			await next();
@@ -385,15 +401,48 @@ describe("updateHandlers", () => {
 			body: JSON.stringify({ status: "succeeded" }),
 		});
 		expect(res.status).toBe(204);
-		// Give async GitHub call time to complete
-		await new Promise((r) => setTimeout(r, 100));
-		expect(github.setCommitStatus).toHaveBeenCalledTimes(1);
-		expect(github.postPRComment).toHaveBeenCalledTimes(1);
+		await published.promise;
+		expect(github.getInstallation).toHaveBeenCalledWith("t-1");
+		expect(github.setCommitStatus).toHaveBeenCalledWith(
+			999,
+			"octocat",
+			"hello-world",
+			"abc123",
+			"success",
+			"Procella succeeded",
+		);
+		expect(github.postPRComment).toHaveBeenCalledWith(
+			999,
+			"octocat",
+			"hello-world",
+			42,
+			expect.stringContaining("Pulumi Preview Results"),
+		);
 	});
 
-	test("completeUpdate skips GitHub when tags are missing", async () => {
-		const updates = mockUpdatesService();
-		const stacks = mockStacksService();
+	test("completeUpdate uses persisted GitHub Actions metadata when tags are missing", async () => {
+		const updates = mockUpdatesService({
+			getUpdateContext: mock(async (updateId: string) => ({
+				stackId: "s-1",
+				environment: {
+					"vcs.owner": "octocat",
+					"vcs.repo": "hello-world",
+					"ci.pr.number": "42",
+					...(updateId === "upd-metadata"
+						? { "ci.pr.headSHA": "pr-head-sha", "git.head": "git-head-sha" }
+						: { "git.head": "git-head-sha" }),
+				},
+			})),
+		});
+		const stacks = mockStacksService({
+			getStackById_systemOnly: mock(async () => ({
+				...mockStackInfo,
+				tags: { "vcs:owner": "octocat", "vcs:repo": "hello-world" },
+			})),
+		});
+		const firstPublished = Promise.withResolvers<void>();
+		const fallbackPublished = Promise.withResolvers<void>();
+		let publishedCount = 0;
 		const github = {
 			getInstallation: mock(async () => ({
 				id: "inst-2",
@@ -406,13 +455,102 @@ describe("updateHandlers", () => {
 				updatedAt: new Date(),
 			})),
 			setCommitStatus: mock(async () => {}),
+			postPRComment: mock(async () => {
+				publishedCount += 1;
+				if (publishedCount === 1) firstPublished.resolve();
+				if (publishedCount === 2) fallbackPublished.resolve();
+			}),
+			handleWebhookEvent: mock(async () => {}),
+			saveInstallation: mock(async () => {}),
+			removeInstallation: mock(async () => {}),
+		};
+		const app = new Hono<Env>();
+		let activeUpdateId = "upd-metadata";
+		app.use("*", async (c, next) => {
+			c.set("updateContext", { updateId: activeUpdateId, stackId: "s-1" });
+			await next();
+		});
+		const h = updateHandlers(updates, stacks, undefined, github as never);
+		app.post("/stacks/:org/:project/:stack/update/:updateId/complete", h.completeUpdate);
+
+		const res = await app.request("/stacks/myorg/myproj/dev/update/upd-metadata/complete", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ status: "succeeded" }),
+		});
+
+		expect(res.status).toBe(204);
+		await firstPublished.promise;
+		expect(stacks.getStackById_systemOnly).toHaveBeenCalledWith("s-1");
+		expect(github.getInstallation).toHaveBeenCalledWith("t-1");
+		expect(github.setCommitStatus).toHaveBeenCalledWith(
+			999,
+			"octocat",
+			"hello-world",
+			"pr-head-sha",
+			"success",
+			"Procella succeeded",
+		);
+		expect(github.postPRComment).toHaveBeenCalledWith(
+			999,
+			"octocat",
+			"hello-world",
+			42,
+			expect.stringContaining("Pulumi Preview Results"),
+		);
+		activeUpdateId = "upd-git-head";
+		const fallbackRes = await app.request("/stacks/myorg/myproj/dev/update/upd-git-head/complete", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ status: "succeeded" }),
+		});
+		expect(fallbackRes.status).toBe(204);
+		await fallbackPublished.promise;
+		expect(github.setCommitStatus).toHaveBeenLastCalledWith(
+			999,
+			"octocat",
+			"hello-world",
+			"git-head-sha",
+			"success",
+			"Procella succeeded",
+		);
+	});
+
+	test("completeUpdate rejects metadata that does not match the stack repository", async () => {
+		const updates = mockUpdatesService({
+			getUpdateContext: mock(async () => ({
+				stackId: "s-1",
+				environment: {
+					"vcs.owner": "attacker",
+					"vcs.repo": "other-repo",
+					"ci.pr.number": "99",
+					"ci.pr.headSHA": "attacker-sha",
+				},
+			})),
+		});
+		const stacks = mockStacksService();
+		const installationChecked = Promise.withResolvers<void>();
+		const github = {
+			getInstallation: mock(async () => {
+				installationChecked.resolve();
+				return {
+					id: "inst-2",
+					installationId: 999,
+					tenantId: "t-1",
+					accountLogin: "octocat",
+					accountType: "Organization" as const,
+					repositorySelection: "all" as const,
+					createdAt: new Date(),
+					updatedAt: new Date(),
+				};
+			}),
+			setCommitStatus: mock(async () => {}),
 			postPRComment: mock(async () => {}),
 			handleWebhookEvent: mock(async () => {}),
 			saveInstallation: mock(async () => {}),
 			removeInstallation: mock(async () => {}),
 		};
 		const app = new Hono<Env>();
-		app.use("*", injectCaller(validCaller));
 		app.use("*", async (c, next) => {
 			c.set("updateContext", { updateId: "upd-no-gh", stackId: "s-1" });
 			await next();
@@ -426,8 +564,10 @@ describe("updateHandlers", () => {
 			body: JSON.stringify({ status: "succeeded" }),
 		});
 		expect(res.status).toBe(204);
-		await new Promise((r) => setTimeout(r, 100));
-		// No github:owner tag → should not call setCommitStatus
+		await installationChecked.promise;
+		await Promise.resolve();
+		// Metadata for another repository must not reach the GitHub API.
 		expect(github.setCommitStatus).not.toHaveBeenCalled();
+		expect(github.postPRComment).not.toHaveBeenCalled();
 	});
 });
