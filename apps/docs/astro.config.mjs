@@ -56,6 +56,7 @@ export default defineConfig({
             { label: 'Webhooks', slug: 'features/webhooks' },
             { label: 'Audit Logs', slug: 'features/audit' },
             { label: 'GitHub App', slug: 'features/github-app' },
+            { label: 'GitHub Action', slug: 'features/github-action' },
           ],
         },
         {
