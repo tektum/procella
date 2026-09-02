@@ -93,7 +93,7 @@ When adding new features, follow the existing package structure:
 
 Single Docker image built with `bun build --compile`:
 
-1. **Builder stage** — `oven/bun:1.2-alpine`, installs deps, builds all packages
-2. **Final stage** — `debian-slim` with the compiled binary
+1. **Builder stage** — pinned `oven/bun` image, installs dependencies and builds the application
+2. **Final stage** — distroless Debian 13 image containing only the compiled binary and runtime assets
 
 The compiled binary includes the Bun runtime, so no Node.js or Bun installation is needed in the final image.
