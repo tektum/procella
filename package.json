@@ -24,7 +24,6 @@
 		"dev:docs": "bun run --cwd apps/docs dev --port 4321",
 		"dev:deps": "docker compose up -d && printf 'Waiting for postgres' && until docker compose exec -T postgres pg_isready -U procella -q 2>/dev/null; do printf '.'; sleep 1; done && echo ' ready' && bun run db:migrate",
 		"dev:down": "docker compose down -v",
-		"docs:build": "bun run --cwd apps/docs build",
 		"check": "biome check . && bun run lint:trpc-procedures && bun run typecheck && bun run test:unit",
 		"check:dependencies": "bun audit --prod --audit-level=high && bun dedupe --check",
 		"lint:trpc-procedures": "if grep -R -n -E --include='*.ts' 't\\.procedure' packages/api/src/router/ apps/server/src/; then echo 'ERROR: use protectedProcedure or adminProcedure, not t.procedure'; exit 1; fi",

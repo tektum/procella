@@ -236,12 +236,12 @@ export const PULUMI_ROUTE_POLICY: readonly CompatibilityClassification[] = [
 	{
 		id: "getUpdateStatus",
 		status: S.CoreImplemented,
-		note: "Only the literal kind=update path is registered (GET .../update/:updateId, updateH.getUpdate); the generic {updateKind} path the CLI uses for preview/refresh/destroy polling has no matching route.",
+		note: "Pulumi uses the literal kind=update status path for preview, update, refresh, and destroy; all four lifecycle kinds are covered by E2E tests.",
 	},
 	{
 		id: "startUpdate",
 		status: S.CoreImplemented,
-		note: "Only the literal kind=update path is registered (POST .../update/:updateId, updateH.startUpdate); the generic {updateKind} path the CLI uses for preview/refresh/destroy has no matching route.",
+		note: "Pulumi uses the literal kind=update start path after creating preview, update, refresh, and destroy operations; all four lifecycle kinds are covered by E2E tests.",
 	},
 	{ id: "patchCheckpoint", status: S.CoreImplemented, note: "Full checkpoint upload." },
 	{

@@ -31,7 +31,7 @@ const compatibilityLanes: Record<CompatibilityLane, true> = {
 	latest: true,
 };
 function isCompatibilityLane(value: string): value is CompatibilityLane {
-	return value in compatibilityLanes;
+	return Object.hasOwn(compatibilityLanes, value);
 }
 if (requestedLane !== undefined && !isCompatibilityLane(requestedLane)) {
 	throw new Error(`Unknown PROCELLA_PULUMI_COMPATIBILITY_LANE: ${requestedLane}`);

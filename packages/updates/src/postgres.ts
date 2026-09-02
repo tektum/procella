@@ -301,16 +301,15 @@ export class PostgresUpdatesService implements UpdatesService {
 
 	async completeUpdate(updateId: string, request: CompleteUpdateRequest): Promise<void> {
 		let notifyStackId: string | undefined;
+		let deltaBaseBlobKey: string | null = null;
 		await withDbSpan(
 			"completeUpdate",
 			{ "update.id": updateId, "update.status": request.status },
 			() =>
 				this.db.transaction(async (tx) => {
-					const [row] = await tx.select().from(updates).where(eq(updates.id, updateId));
-
-					if (!row) {
-						throw new UpdateNotFoundError(updateId);
-					}
+					const row = await this.lockUpdateForWrite(tx, updateId, {
+						requireRunningLease: false,
+					});
 
 					if (row.status !== "running") {
 						throw new UpdateConflictError(
@@ -319,6 +318,7 @@ export class PostgresUpdatesService implements UpdatesService {
 					}
 
 					notifyStackId = row.stackId;
+					deltaBaseBlobKey = await this.deleteDeltaBaseInTransaction(tx, updateId);
 
 					await tx
 						.update(updates)
@@ -341,6 +341,7 @@ export class PostgresUpdatesService implements UpdatesService {
 
 		activeUpdatesGauge().add(-1);
 		this.clearUpdateCaches(updateId);
+		await this.deleteSupersededDeltaBase(deltaBaseBlobKey);
 		if (notifyStackId)
 			this.db.execute(sql`SELECT pg_notify('stack_updates', ${notifyStackId})`).catch(() => {});
 	}
@@ -362,13 +363,11 @@ export class PostgresUpdatesService implements UpdatesService {
 
 	async cancelUpdate(updateId: string): Promise<void> {
 		let notifyStackId: string | undefined;
+		let deltaBaseBlobKey: string | null = null;
 		const wasRunning = await withDbSpan("cancelUpdate", { "update.id": updateId }, () =>
 			this.db.transaction(async (tx) => {
-				const [row] = await tx.select().from(updates).where(eq(updates.id, updateId));
-
-				if (!row) {
-					throw new UpdateNotFoundError(updateId);
-				}
+				const row = await this.lockUpdateForWrite(tx, updateId, { requireRunningLease: false });
+				deltaBaseBlobKey = await this.deleteDeltaBaseInTransaction(tx, updateId);
 
 				if (row.status === "cancelled" || row.status === "succeeded" || row.status === "failed") {
 					return false;
@@ -401,6 +400,7 @@ export class PostgresUpdatesService implements UpdatesService {
 			activeUpdatesGauge().add(-1);
 		}
 		this.clearUpdateCaches(updateId);
+		await this.deleteSupersededDeltaBase(deltaBaseBlobKey);
 		if (notifyStackId)
 			this.db.execute(sql`SELECT pg_notify('stack_updates', ${notifyStackId})`).catch(() => {});
 	}
@@ -847,6 +847,22 @@ export class PostgresUpdatesService implements UpdatesService {
 			throw new Error("Delta checkpoint baseline row is missing its deployment text");
 		}
 		return { sequenceNumber, text, blobKey: null };
+	}
+
+	private async deleteDeltaBaseInTransaction(
+		tx: DbTransaction,
+		updateId: string,
+	): Promise<string | null> {
+		const [deleted] = await tx
+			.delete(checkpoints)
+			.where(
+				and(
+					eq(checkpoints.updateId, updateId),
+					eq(checkpoints.version, DELTA_BASE_CHECKPOINT_VERSION),
+				),
+			)
+			.returning({ blobKey: checkpoints.blobKey });
+		return deleted?.blobKey ?? null;
 	}
 
 	/**

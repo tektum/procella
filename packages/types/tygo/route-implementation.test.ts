@@ -3,12 +3,13 @@ import { CompatibilityStatus, PULUMI_ROUTE_POLICY } from "../src/compatibility.j
 import { PulumiRoutes } from "../src/routes.gen.js";
 import { bestMatchKind, readServerRouteInventory } from "./server-route-inventory.js";
 
-// Routes where the server only accepts one specific literal value for an
-// upstream {updateKind}-style param, not the full param space the CLI can
-// send (e.g. only kind=update is routed, not preview/refresh/destroy). This
-// is documented per-route in compatibility.ts; listing it here means the
-// per-route assertion below accepts "partial" instead of demanding "full".
-const DOCUMENTED_PARTIAL_ROUTES: ReadonlySet<string> = new Set(["getUpdateStatus", "startUpdate"]);
+// Pulumi uses the literal `update` lifecycle path after creating every update
+// kind. These entries prove that exact partial route instead of accepting any
+// structurally similar literal.
+const DOCUMENTED_PARTIAL_ROUTES: Readonly<Record<string, string>> = {
+	getUpdateStatus: "/api/stacks/:org/:project/:stack/update/:updateId",
+	startUpdate: "/api/stacks/:org/:project/:stack/update/:updateId",
+};
 
 // Routes independently verified absent from both apps/server/src/routes/index.ts
 // and cli.ts via exact method/path comparison. Regression guard: if any of
@@ -46,12 +47,11 @@ describe("PULUMI_ROUTE_POLICY vs actual server route registration", () => {
 
 			const upstream = PulumiRoutes[routeName as keyof typeof PulumiRoutes];
 			const matchKind = bestMatchKind(upstream, serverRoutes);
+			const documentedPath = DOCUMENTED_PARTIAL_ROUTES[routeName];
 
-			if (DOCUMENTED_PARTIAL_ROUTES.has(routeName)) {
-				expect(
-					matchKind,
-					`${routeName} is documented as a partial (single literal kind) match but no match was found at all`,
-				).not.toBeNull();
+			if (documentedPath) {
+				expect(serverRoutes).toContainEqual({ method: upstream.method, path: documentedPath });
+				expect(matchKind).toBe("partial");
 				return;
 			}
 

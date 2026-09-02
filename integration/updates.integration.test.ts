@@ -481,8 +481,7 @@ describe("PostgresUpdatesService — integration", () => {
 				],
 			});
 
-			const restartedService = new PostgresUpdatesService({
-				db,
+			const restartedService = new PostgresUpdatesService({ db,
 				storage: new LocalBlobStorage(blobDir),
 				crypto: new AesCryptoService("a".repeat(64)),
 			});
@@ -521,8 +520,7 @@ describe("PostgresUpdatesService — integration", () => {
 				delete: (key) => localStorage.delete(key),
 				exists: (key) => localStorage.exists(key),
 			};
-			const retryingService = new PostgresUpdatesService({
-				db,
+			const retryingService = new PostgresUpdatesService({ db,
 				storage: flakyStorage,
 				crypto: new AesCryptoService("a".repeat(64)),
 			});
@@ -642,6 +640,50 @@ describe("PostgresUpdatesService — integration", () => {
 			// Proof the baseline is not a parse/stringify round-trip.
 			expect(JSON.stringify(JSON.parse(BASE_TEXT))).not.toBe(BASE_TEXT);
 		});
+
+
+		for (const terminal of ["complete", "cancel"] as const) {
+			test(`removes the delta baseline row and blob on ${terminal}`, async () => {
+				const { updateId } = await startUpdate();
+				const storage = new LocalBlobStorage(blobDir);
+				const largeText = `{"version":3,"deployment":{"resources":[],"filler":"${"x".repeat(BLOB_THRESHOLD + 1)}"}}`;
+				await updatesService.patchCheckpointVerbatim(updateId, {
+					version: 3,
+					sequenceNumber: 1,
+					untypedDeploymentText: largeText,
+				});
+
+				const [sidecar] = await db
+					.select({ blobKey: checkpoints.blobKey })
+					.from(checkpoints)
+					.where(
+						and(
+							eq(checkpoints.updateId, updateId),
+							eq(checkpoints.version, DELTA_BASE_CHECKPOINT_VERSION),
+						),
+					);
+				if (!sidecar?.blobKey) throw new Error("delta baseline blob missing");
+				expect(await storage.exists(sidecar.blobKey)).toBe(true);
+
+				if (terminal === "complete") {
+					await updatesService.completeUpdate(updateId, { status: "succeeded" });
+				} else {
+					await updatesService.cancelUpdate(updateId);
+				}
+
+				const remainingSidecars = await db
+					.select()
+					.from(checkpoints)
+					.where(
+						and(
+							eq(checkpoints.updateId, updateId),
+							eq(checkpoints.version, DELTA_BASE_CHECKPOINT_VERSION),
+						),
+					);
+				expect(remainingSidecars).toEqual([]);
+				expect(await storage.exists(sidecar.blobKey)).toBe(false);
+			});
+		}
 
 		test("applies two consecutive deltas and exports the canonical v3 deployment", async () => {
 			const { stack, updateId } = await startUpdate();
@@ -1047,8 +1089,7 @@ describe("PostgresUpdatesService — integration", () => {
 				},
 				exists: (key) => localStorage.exists(key),
 			};
-			const service = new PostgresUpdatesService({
-				db,
+			const service = new PostgresUpdatesService({ db,
 				storage,
 				crypto: new AesCryptoService("a".repeat(64)),
 			});
@@ -1114,8 +1155,7 @@ describe("PostgresUpdatesService — integration", () => {
 				},
 				exists: (key) => localStorage.exists(key),
 			};
-			const service = new PostgresUpdatesService({
-				db,
+			const service = new PostgresUpdatesService({ db,
 				storage,
 				crypto: new AesCryptoService("a".repeat(64)),
 			});
@@ -1172,8 +1212,7 @@ describe("PostgresUpdatesService — integration", () => {
 			const deltaCount = 16;
 			const loadBlobDir = path.join(blobDir, `delta-load-${Date.now()}`);
 			const loadStorage = new LocalBlobStorage(loadBlobDir);
-			const loadService = new PostgresUpdatesService({
-				db,
+			const loadService = new PostgresUpdatesService({ db,
 				storage: loadStorage,
 				crypto: new AesCryptoService("a".repeat(64)),
 			});
