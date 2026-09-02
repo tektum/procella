@@ -137,9 +137,8 @@ async function runCommonCompatibilityChecks(args: {
 	pulumiHome: string;
 	projectName: string;
 	stackName: string;
-	manifestVersion: string;
 }): Promise<{ opts: PulumiOpts; stackPath: string }> {
-	const { projectDir, pulumiHome, projectName, stackName, manifestVersion } = args;
+	const { projectDir, pulumiHome, projectName, stackName } = args;
 	const opts = { cwd: projectDir, pulumiHome };
 	const stackPath = `dev-org/${projectName}/${stackName}`;
 
@@ -164,35 +163,20 @@ async function runCommonCompatibilityChecks(args: {
 
 	const initialExport = path.join(projectDir, "initial-state.json");
 	await runPulumi(["stack", "export", "--file", initialExport], opts);
-	expect(StateExport.parse(await Bun.file(initialExport).json()).version).toBe(3);
+	const initialState = StateExport.parse(await Bun.file(initialExport).json());
+	expect(initialState.version).toBe(3);
 
 	// Direct create/start/cancel coverage stays outside the CLI's signal timing.
 	await cancelDirectUpdate(stackPath, null);
 	await runPulumi(["destroy", "--yes"], opts);
 
-	const syntheticStatePath = path.join(projectDir, "synthetic-state.json");
-	await Bun.write(
-		syntheticStatePath,
-		JSON.stringify({
-			version: 3,
-			deployment: {
-				manifest: {
-					time: "2026-01-01T00:00:00.000Z",
-					magic: "",
-					version: manifestVersion,
-				},
-				resources: [],
-				pending_operations: [],
-			},
-		}),
-	);
-	await runPulumi(["stack", "import", "--file", syntheticStatePath], opts);
+	await runPulumi(["stack", "import", "--file", initialExport], opts);
 
 	const roundtripExport = path.join(projectDir, "roundtrip-state.json");
 	await runPulumi(["stack", "export", "--file", roundtripExport], opts);
 	const roundtripState = StateExport.parse(await Bun.file(roundtripExport).json());
 	expect(roundtripState.version).toBe(3);
-	expect(roundtripState.deployment.resources).toEqual([]);
+	expect(roundtripState.deployment.resources).toEqual(initialState.deployment.resources);
 
 	for (const route of ["/user", "/stacks", `/stacks/${stackPath}/export`]) {
 		const response = await apiRequest(route, { accept: null });
@@ -240,7 +224,6 @@ describeCompatibility("Pulumi CLI compatibility smoke", () => {
 				pulumiHome,
 				projectName,
 				stackName: "dev",
-				manifestVersion: PULUMI_LEGACY_SMOKE_VERSION,
 			});
 			await runPulumi(["stack", "rm", "--yes", stackPath], opts);
 		},
@@ -256,7 +239,6 @@ describeCompatibility("Pulumi CLI compatibility smoke", () => {
 				pulumiHome,
 				projectName,
 				stackName: "minimum",
-				manifestVersion: PULUMI_FULLY_SUPPORTED_MIN_VERSION,
 			});
 
 			const capabilities = await apiRequest("/capabilities", {
