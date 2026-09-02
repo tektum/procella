@@ -169,7 +169,9 @@ describe("actions/pulumi cloud-url", () => {
 		expect(forwardedInputs({ "cloud-url": override })["cloud-url"]).toBe(override);
 	});
 
-	test("forwards an empty cloud-url so callers can opt out of the default", () => {
+	// An empty value is forwarded as-is, which makes upstream run bare `pulumi login`
+	// (Pulumi Cloud). It does not preserve an existing backend selection.
+	test("forwards an explicitly emptied cloud-url as an empty value", () => {
 		expect(forwardedInputs({ "cloud-url": "" })["cloud-url"]).toBe("");
 	});
 

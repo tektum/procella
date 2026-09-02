@@ -5,7 +5,7 @@ description: Run the official Pulumi GitHub Action against Procella without wiri
 
 `tektum/procella/actions/pulumi` is a thin composite action that delegates every Pulumi operation to the official [`pulumi/actions`](https://github.com/pulumi/actions) action (pinned to `v7`), with one change: `cloud-url` defaults to Procella production, `https://api.procella.cloud/api`.
 
-That removes the separate `pulumi login` step from your workflow. Everything else — `preview`, `up`, `destroy`, PR comments, step summaries, secrets providers, policy packs — is the upstream action's behavior, unchanged.
+That removes the separate `pulumi login` step from your workflow. Everything else (`preview`, `up`, `destroy`, PR comments, step summaries, secrets providers, policy packs) is the upstream action's behavior, unchanged.
 
 ## Usage
 
@@ -57,11 +57,11 @@ Pass `cloud-url` explicitly to target a self-hosted Procella instance:
           PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
 ```
 
-An explicit `cloud-url` is forwarded verbatim. Passing `cloud-url: ""` forwards an empty value, which leaves backend selection to the Pulumi CLI (`PULUMI_BACKEND_URL`, `Pulumi.yaml`, or an existing login).
+An explicit `cloud-url` is forwarded verbatim. Passing `cloud-url: ""` forwards an empty value, which makes the upstream action run `pulumi login` with no URL. That logs in to the Pulumi Cloud backend; it does not keep an existing backend selection. Set `cloud-url` explicitly for any self-hosted backend.
 
 ## Supported inputs
 
-The action declares and forwards the complete input surface of `pulumi/actions` at the pinned commit — all 37 inputs, one-to-one, with upstream's defaults. `cloud-url` is the only default that differs. Consult the [upstream input reference](https://github.com/pulumi/actions#inputs) for what each one does.
+The action declares and forwards the complete input surface of `pulumi/actions` at the pinned commit: all 37 inputs, one-to-one, with upstream's defaults. `cloud-url` is the only default that differs. Consult the [upstream input reference](https://github.com/pulumi/actions#inputs) for what each one does.
 
 Two limitations follow from GitHub's action metadata format:
 
