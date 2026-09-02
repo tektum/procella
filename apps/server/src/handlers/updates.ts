@@ -100,31 +100,41 @@ export function updateHandlers(
 						return;
 					}
 
-					const owner = stackInfo.tags["github:owner"] ?? completed.environment["vcs.owner"];
-					const repo = stackInfo.tags["github:repo"] ?? completed.environment["vcs.repo"];
-					const pr = stackInfo.tags["github:pr"] ?? completed.environment["ci.pr.number"];
-					const sha =
-						stackInfo.tags["github:sha"] ??
-						completed.environment["ci.pr.headSHA"] ??
-						completed.environment["git.head"];
+					const taggedOwner = stackInfo.tags["github:owner"];
+					const taggedRepo = stackInfo.tags["github:repo"];
+					const taggedPr = stackInfo.tags["github:pr"];
+					const taggedSha = stackInfo.tags["github:sha"];
+					const taggedTarget =
+						taggedOwner && taggedRepo && taggedPr && taggedSha
+							? { owner: taggedOwner, repo: taggedRepo, pr: taggedPr, sha: taggedSha }
+							: null;
 
-					if (!owner || !repo || !pr || !sha) {
-						return;
-					}
+					const metadataOwner = completed.environment["vcs.owner"];
+					const metadataRepo = completed.environment["vcs.repo"];
+					const metadataPr = completed.environment["ci.pr.number"];
+					const metadataSha =
+						completed.environment["ci.pr.headSHA"] ?? completed.environment["git.head"];
+					const metadataMatchesStack =
+						metadataOwner === stackInfo.tags["vcs:owner"] &&
+						metadataRepo === stackInfo.tags["vcs:repo"];
+					const metadataTarget =
+						metadataMatchesStack && metadataOwner && metadataRepo && metadataPr && metadataSha
+							? { owner: metadataOwner, repo: metadataRepo, pr: metadataPr, sha: metadataSha }
+							: null;
+					const target = taggedTarget ?? metadataTarget;
+					if (!target) return;
 
-					const prNumber = Number(pr);
-					if (Number.isNaN(prNumber)) {
-						return;
-					}
+					const prNumber = Number(target.pr);
+					if (Number.isNaN(prNumber)) return;
 
 					const latest = await updates.getHistory(stackInfo.id);
 					const summary = latest.updates[0];
 					const commitState = mapUpdateStatusToCommitState(body.status);
 					await github.setCommitStatus(
 						installation.installationId,
-						owner,
-						repo,
-						sha,
+						target.owner,
+						target.repo,
+						target.sha,
 						commitState,
 						`Procella ${body.status}`,
 					);
@@ -145,8 +155,8 @@ export function updateHandlers(
 					});
 					await github.postPRComment(
 						installation.installationId,
-						owner,
-						repo,
+						target.owner,
+						target.repo,
 						prNumber,
 						commentBody,
 					);

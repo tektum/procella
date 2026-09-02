@@ -434,7 +434,12 @@ describe("updateHandlers", () => {
 				},
 			})),
 		});
-		const stacks = mockStacksService();
+		const stacks = mockStacksService({
+			getStackById_systemOnly: mock(async () => ({
+				...mockStackInfo,
+				tags: { "vcs:owner": "octocat", "vcs:repo": "hello-world" },
+			})),
+		});
 		const firstPublished = Promise.withResolvers<void>();
 		const fallbackPublished = Promise.withResolvers<void>();
 		let publishedCount = 0;
@@ -511,8 +516,18 @@ describe("updateHandlers", () => {
 		);
 	});
 
-	test("completeUpdate skips GitHub when tags and update metadata are missing", async () => {
-		const updates = mockUpdatesService();
+	test("completeUpdate rejects metadata that does not match the stack repository", async () => {
+		const updates = mockUpdatesService({
+			getUpdateContext: mock(async () => ({
+				stackId: "s-1",
+				environment: {
+					"vcs.owner": "attacker",
+					"vcs.repo": "other-repo",
+					"ci.pr.number": "99",
+					"ci.pr.headSHA": "attacker-sha",
+				},
+			})),
+		});
 		const stacks = mockStacksService();
 		const installationChecked = Promise.withResolvers<void>();
 		const github = {
@@ -551,7 +566,7 @@ describe("updateHandlers", () => {
 		expect(res.status).toBe(204);
 		await installationChecked.promise;
 		await Promise.resolve();
-		// No stack tags or persisted update metadata -> no GitHub notification.
+		// Metadata for another repository must not reach the GitHub API.
 		expect(github.setCommitStatus).not.toHaveBeenCalled();
 		expect(github.postPRComment).not.toHaveBeenCalled();
 	});

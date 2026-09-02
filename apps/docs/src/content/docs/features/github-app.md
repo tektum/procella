@@ -83,7 +83,7 @@ The deployed Procella instance needs its own GitHub App credentials. Do not supp
 
 ## How PR Comments Work
 
-During an update, the Pulumi CLI sends source-control and CI metadata to Procella. For GitHub Actions pull-request runs, Procella uses these values automatically:
+During an update, the Pulumi CLI sends source-control and CI metadata to Procella. For GitHub Actions pull-request runs, Procella verifies the metadata repository against the stack's persisted `vcs:owner` and `vcs:repo` tags, then uses these values automatically:
 
 | Update metadata | Purpose |
 |---|---|
@@ -92,7 +92,7 @@ During an update, the Pulumi CLI sends source-control and CI metadata to Procell
 | `ci.pr.number` | Pull request number |
 | `ci.pr.headSHA` | Pull request head commit |
 
-If `ci.pr.headSHA` is unavailable, Procella falls back to `git.head`. Existing `github:owner`, `github:repo`, `github:pr`, and `github:sha` stack tags remain supported and take precedence over update metadata.
+If `ci.pr.headSHA` is unavailable, Procella falls back to `git.head`. A complete set of explicit `github:owner`, `github:repo`, `github:pr`, and `github:sha` stack tags remains supported and takes precedence over update metadata.
 
 When a preview associated with a pull request succeeds or fails, Procella:
 

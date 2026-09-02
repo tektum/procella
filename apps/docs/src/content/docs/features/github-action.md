@@ -41,7 +41,7 @@ jobs:
 
 `@main` tracks the latest action definition. Pin to a commit SHA or release tag for reproducible builds, the same way this action pins the upstream Pulumi action it delegates to.
 
-`comment-on-pr: true` makes the upstream action post the preview diff to the pull request. That posting is the upstream action's own behavior: it uses `GITHUB_TOKEN` (via the `github-token` input, which defaults to `${{ github.token }}`), so the job needs `pull-requests: write`. It is independent of the [Procella GitHub App](/features/github-app/), which posts comments from the server side using its own installation credentials. Use one or the other, not both, unless you want two comments. For the GitHub App path, Procella derives the PR coordinates from the update metadata that the Pulumi CLI sends automatically; explicit `github:*` stack tags remain supported overrides.
+`comment-on-pr: true` makes the upstream action post the preview diff to the pull request. That posting is the upstream action's own behavior: it uses `GITHUB_TOKEN` (via the `github-token` input, which defaults to `${{ github.token }}`), so the job needs `pull-requests: write`. It is independent of the [Procella GitHub App](/features/github-app/), which posts comments from the server side using its own installation credentials. Use one or the other, not both, unless you want two comments. For the GitHub App path, Procella validates and derives the PR coordinates from the update metadata that the Pulumi CLI sends automatically; a complete set of explicit `github:*` stack tags remains a supported override.
 
 To deploy instead of previewing, use `command: up` on `push`. To tear a stack down, use `command: destroy`.
 
