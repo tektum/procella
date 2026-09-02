@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { resolve } from "node:path";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, waitFor } from "@testing-library/react";
-import { JSDOM } from "jsdom";
+import { Window } from "happy-dom";
 import type { ReactNode } from "react";
 import { createElement } from "react";
 import { MemoryRouter } from "react-router";
@@ -60,16 +60,16 @@ mock.module("@descope/react-sdk", () => ({
 const { Layout } = await import("./components/Layout");
 const { Settings } = await import("./pages/Settings");
 const { ProcellaAuthProvider } = await import("./components/AuthProvider");
-let dom: JSDOM;
+let dom: Window;
 
 beforeEach(() => {
-	dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/" });
-	globalThis.window = dom.window as unknown as typeof globalThis.window;
-	globalThis.document = dom.window.document as unknown as typeof globalThis.document;
-	globalThis.localStorage = dom.window.localStorage;
-	globalThis.HTMLElement = dom.window.HTMLElement;
-	globalThis.Event = dom.window.Event as unknown as typeof globalThis.Event;
-	globalThis.MouseEvent = dom.window.MouseEvent as unknown as typeof globalThis.MouseEvent;
+	dom = new Window({ url: "http://localhost/" });
+	globalThis.window = dom as unknown as typeof globalThis.window;
+	globalThis.document = dom.document as unknown as typeof globalThis.document;
+	globalThis.localStorage = dom.localStorage;
+	globalThis.HTMLElement = dom.HTMLElement;
+	globalThis.Event = dom.Event as unknown as typeof globalThis.Event;
+	globalThis.MouseEvent = dom.MouseEvent as unknown as typeof globalThis.MouseEvent;
 	currentCallerQuery = { data: undefined, isLoading: false, error: null };
 	sessionState = {
 		sessionToken: "",
@@ -78,9 +78,9 @@ beforeEach(() => {
 	};
 });
 
-afterEach(() => {
+afterEach(async () => {
 	cleanup();
-	dom.window.close();
+	await dom.happyDOM.close();
 });
 
 describe("session authorization cache", () => {

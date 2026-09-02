@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { resolve } from "node:path";
 import { cleanup, fireEvent, render, renderHook } from "@testing-library/react";
-import { JSDOM } from "jsdom";
+import { Window } from "happy-dom";
 import { createElement } from "react";
 import { createMemoryRouter, MemoryRouter, RouterProvider } from "react-router";
 import {
@@ -115,7 +115,7 @@ const { EscResolvedValues } = await import("../components/EscResolvedValues");
 const { EscRevisionDiff } = await import("../components/EscRevisionDiff");
 const { EscSessions } = await import("../components/EscSessions");
 
-let dom: JSDOM;
+let dom: Window;
 
 function setMockFetch(fn: FetchFn) {
 	globalThis.fetch = Object.assign(fn, {
@@ -175,24 +175,23 @@ function renderDetailPage() {
 
 describe("ESC UI coverage", () => {
 	beforeEach(() => {
-		dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/" });
-		globalThis.window = dom.window as unknown as typeof globalThis.window;
-		globalThis.document = dom.window.document as unknown as typeof globalThis.document;
-		globalThis.localStorage = dom.window.localStorage;
-		globalThis.navigator = dom.window.navigator as unknown as Navigator;
-		globalThis.HTMLElement = dom.window.HTMLElement;
-		globalThis.Event = dom.window.Event as unknown as typeof globalThis.Event;
-		globalThis.KeyboardEvent = dom.window
-			.KeyboardEvent as unknown as typeof globalThis.KeyboardEvent;
-		globalThis.MouseEvent = dom.window.MouseEvent as unknown as typeof globalThis.MouseEvent;
+		dom = new Window({ url: "http://localhost/" });
+		globalThis.window = dom as unknown as typeof globalThis.window;
+		globalThis.document = dom.document as unknown as typeof globalThis.document;
+		globalThis.localStorage = dom.localStorage;
+		globalThis.navigator = dom.navigator as unknown as Navigator;
+		globalThis.HTMLElement = dom.HTMLElement;
+		globalThis.Event = dom.Event as unknown as typeof globalThis.Event;
+		globalThis.KeyboardEvent = dom.KeyboardEvent as unknown as typeof globalThis.KeyboardEvent;
+		globalThis.MouseEvent = dom.MouseEvent as unknown as typeof globalThis.MouseEvent;
 		globalThis.confirm = () => true;
 		setMockFetch(mock<FetchFn>(async () => new Response("{}", { status: 200 })));
 		resetQueryState();
 	});
 
-	afterEach(() => {
+	afterEach(async () => {
 		cleanup();
-		dom.window.close();
+		await dom.happyDOM.close();
 	});
 
 	test("useOrg returns dev-org in dev mode without requiring the auth provider", () => {
