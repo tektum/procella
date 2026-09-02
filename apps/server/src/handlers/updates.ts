@@ -92,7 +92,7 @@ export function updateHandlers(
 				github &&
 				(body.status === "succeeded" || body.status === "failed")
 			) {
-				await (async () => {
+				void (async () => {
 					const stackInfo = await stacks.getStackById_systemOnly(completed.stackId);
 					const installation = await github.getInstallation(stackInfo.tenantId);
 					if (!installation) {

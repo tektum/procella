@@ -367,6 +367,7 @@ describe("updateHandlers", () => {
 			getStackByNames_systemOnly: mock(async () => stackWithGithubTags),
 			getStackById_systemOnly: mock(async () => stackWithGithubTags),
 		});
+		const published = Promise.withResolvers<void>();
 		const github = {
 			getInstallation: mock(async () => ({
 				id: "inst-1",
@@ -379,7 +380,7 @@ describe("updateHandlers", () => {
 				updatedAt: new Date(),
 			})),
 			setCommitStatus: mock(async () => {}),
-			postPRComment: mock(async () => {}),
+			postPRComment: mock(async () => published.resolve()),
 			handleWebhookEvent: mock(async () => {}),
 			saveInstallation: mock(async () => {}),
 			removeInstallation: mock(async () => {}),
@@ -399,6 +400,7 @@ describe("updateHandlers", () => {
 			body: JSON.stringify({ status: "succeeded" }),
 		});
 		expect(res.status).toBe(204);
+		await published.promise;
 		expect(github.getInstallation).toHaveBeenCalledWith("t-1");
 		expect(github.setCommitStatus).toHaveBeenCalledWith(
 			999,
@@ -432,6 +434,9 @@ describe("updateHandlers", () => {
 			})),
 		});
 		const stacks = mockStacksService();
+		const firstPublished = Promise.withResolvers<void>();
+		const fallbackPublished = Promise.withResolvers<void>();
+		let publishedCount = 0;
 		const github = {
 			getInstallation: mock(async () => ({
 				id: "inst-2",
@@ -444,7 +449,11 @@ describe("updateHandlers", () => {
 				updatedAt: new Date(),
 			})),
 			setCommitStatus: mock(async () => {}),
-			postPRComment: mock(async () => {}),
+			postPRComment: mock(async () => {
+				publishedCount += 1;
+				if (publishedCount === 1) firstPublished.resolve();
+				if (publishedCount === 2) fallbackPublished.resolve();
+			}),
 			handleWebhookEvent: mock(async () => {}),
 			saveInstallation: mock(async () => {}),
 			removeInstallation: mock(async () => {}),
@@ -465,6 +474,7 @@ describe("updateHandlers", () => {
 		});
 
 		expect(res.status).toBe(204);
+		await firstPublished.promise;
 		expect(stacks.getStackById_systemOnly).toHaveBeenCalledWith("s-1");
 		expect(github.getInstallation).toHaveBeenCalledWith("t-1");
 		expect(github.setCommitStatus).toHaveBeenCalledWith(
@@ -489,6 +499,7 @@ describe("updateHandlers", () => {
 			body: JSON.stringify({ status: "succeeded" }),
 		});
 		expect(fallbackRes.status).toBe(204);
+		await fallbackPublished.promise;
 		expect(github.setCommitStatus).toHaveBeenLastCalledWith(
 			999,
 			"octocat",
@@ -502,17 +513,21 @@ describe("updateHandlers", () => {
 	test("completeUpdate skips GitHub when tags and update metadata are missing", async () => {
 		const updates = mockUpdatesService();
 		const stacks = mockStacksService();
+		const installationChecked = Promise.withResolvers<void>();
 		const github = {
-			getInstallation: mock(async () => ({
-				id: "inst-2",
-				installationId: 999,
-				tenantId: "t-1",
-				accountLogin: "octocat",
-				accountType: "Organization" as const,
-				repositorySelection: "all" as const,
-				createdAt: new Date(),
-				updatedAt: new Date(),
-			})),
+			getInstallation: mock(async () => {
+				installationChecked.resolve();
+				return {
+					id: "inst-2",
+					installationId: 999,
+					tenantId: "t-1",
+					accountLogin: "octocat",
+					accountType: "Organization" as const,
+					repositorySelection: "all" as const,
+					createdAt: new Date(),
+					updatedAt: new Date(),
+				};
+			}),
 			setCommitStatus: mock(async () => {}),
 			postPRComment: mock(async () => {}),
 			handleWebhookEvent: mock(async () => {}),
@@ -533,7 +548,10 @@ describe("updateHandlers", () => {
 			body: JSON.stringify({ status: "succeeded" }),
 		});
 		expect(res.status).toBe(204);
+		await installationChecked.promise;
+		await Promise.resolve();
 		// No stack tags or persisted update metadata -> no GitHub notification.
 		expect(github.setCommitStatus).not.toHaveBeenCalled();
+		expect(github.postPRComment).not.toHaveBeenCalled();
 	});
 });

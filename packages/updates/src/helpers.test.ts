@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import {
 	BadRequestError,
 	InvalidUpdateTokenError,
@@ -648,6 +648,40 @@ describe("@procella/updates helpers", () => {
 			await svc.createUpdate("stack-1", "preview", undefined, undefined, undefined, environment);
 
 			expect(capturedEnvironment).toEqual(environment);
+		});
+	});
+
+	describe("completeUpdate", () => {
+		test("returns the persisted environment and stack ID", async () => {
+			const environment = {
+				"vcs.owner": "octocat",
+				"ci.pr.number": "42",
+			};
+			const selectedUpdate = { stackId: "stack-1", status: "running", environment };
+			const selectChain = {
+				from: () => selectChain,
+				where: () => Promise.resolve([selectedUpdate]),
+			};
+			const updateChain = {
+				set: () => updateChain,
+				where: () => Promise.resolve([]),
+			};
+			const transaction = mock(async (callback: (tx: unknown) => Promise<unknown>) =>
+				callback({ select: () => selectChain, update: () => updateChain }),
+			);
+			const db = {
+				transaction,
+				execute: () => Promise.resolve(),
+			} as never;
+			const svc = new PostgresUpdatesService({
+				db,
+				storage: {} as never,
+				crypto: {} as never,
+			});
+
+			const completed = await svc.completeUpdate("update-1", { status: "succeeded" });
+
+			expect(completed).toEqual({ stackId: "stack-1", environment });
 		});
 	});
 
