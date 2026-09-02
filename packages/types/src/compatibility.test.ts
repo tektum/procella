@@ -125,27 +125,28 @@ describe("validateCompatibilityManifest", () => {
 		);
 	});
 
-	test("rejects an invalid classification status", () => {
-		const errors = validateCompatibilityManifest(
-			{ capabilities: REAL_CAPABILITIES, routes: REAL_ROUTES },
-			{
-				capabilityPolicy: [
-					...PULUMI_CAPABILITY_POLICY.filter((entry) => entry.id !== "begin-update"),
-					// Deliberately malformed status to exercise runtime validation; not a real CompatibilityStatus.
-					{
-						id: "begin-update",
-						status: "not-a-real-status" as unknown as CompatibilityStatus,
-						note: "malformed",
-					},
-				],
-				routePolicy: PULUMI_ROUTE_POLICY,
-				localCapabilityExtensions: [],
-			},
-		);
-		expect(errors).toContain(
-			'invalid capability classification status "not-a-real-status" for "begin-update"',
-		);
-	});
+	for (const invalidStatus of ["not-a-real-status", "toString"]) {
+		test(`rejects invalid classification status ${invalidStatus}`, () => {
+			const errors = validateCompatibilityManifest(
+				{ capabilities: REAL_CAPABILITIES, routes: REAL_ROUTES },
+				{
+					capabilityPolicy: [
+						...PULUMI_CAPABILITY_POLICY.filter((entry) => entry.id !== "begin-update"),
+						{
+							id: "begin-update",
+							status: invalidStatus as unknown as CompatibilityStatus,
+							note: "malformed",
+						},
+					],
+					routePolicy: PULUMI_ROUTE_POLICY,
+					localCapabilityExtensions: [],
+				},
+			);
+			expect(errors).toContain(
+				`invalid capability classification status "${invalidStatus}" for "begin-update"`,
+			);
+		});
+	}
 
 	test("journaling-v1 is only classified as a local extension, never in the upstream capability policy", () => {
 		expect(REAL_CAPABILITIES).not.toContain("journaling-v1");

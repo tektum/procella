@@ -464,7 +464,7 @@ function analyzeInventory(
 	}
 
 	for (const entry of entries) {
-		if (!VALID_STATUSES[entry.status]) {
+		if (!Object.hasOwn(VALID_STATUSES, entry.status)) {
 			errors.push(`invalid ${kind} classification status "${entry.status}" for "${entry.id}"`);
 		}
 	}
