@@ -55,7 +55,8 @@ function mockUpdatesService(overrides?: Partial<UpdatesService>): UpdatesService
 	return {
 		createUpdate: mock(async () => mockCreateResult as never),
 		startUpdate: mock(async () => mockStartResult as never),
-		completeUpdate: mock(async () => ({ stackId: "s-1", environment: {} })),
+		completeUpdate: mock(async () => {}),
+		getUpdateContext: mock(async () => ({ stackId: "s-1", environment: {} })),
 		cancelUpdate: mock(async () => {}),
 		patchCheckpoint: mock(async () => {}),
 		patchCheckpointVerbatim: mock(async () => {}),
@@ -343,7 +344,7 @@ describe("updateHandlers", () => {
 
 	test("completeUpdate triggers GitHub status when tags present", async () => {
 		const updates = mockUpdatesService({
-			completeUpdate: mock(async () => ({
+			getUpdateContext: mock(async () => ({
 				stackId: "s-1",
 				environment: {
 					"vcs.owner": "metadata-owner",
@@ -421,7 +422,7 @@ describe("updateHandlers", () => {
 
 	test("completeUpdate uses persisted GitHub Actions metadata when tags are missing", async () => {
 		const updates = mockUpdatesService({
-			completeUpdate: mock(async (updateId: string) => ({
+			getUpdateContext: mock(async (updateId: string) => ({
 				stackId: "s-1",
 				environment: {
 					"vcs.owner": "octocat",

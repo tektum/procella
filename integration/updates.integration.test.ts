@@ -76,11 +76,10 @@ describe("PostgresUpdatesService — integration", () => {
 			);
 			await updatesService.startUpdate(created.updateID, {});
 
-			const completed = await updatesService.completeUpdate(created.updateID, {
-				status: "succeeded",
-			});
+			await updatesService.completeUpdate(created.updateID, { status: "succeeded" });
+			const context = await updatesService.getUpdateContext(created.updateID);
 
-			expect(completed).toEqual({ stackId: stack.id, environment });
+			expect(context).toEqual({ stackId: stack.id, environment });
 		});
 
 		test("rejects second active update on same stack (unique constraint)", async () => {

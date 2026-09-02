@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import {
 	BadRequestError,
 	InvalidUpdateTokenError,
@@ -440,6 +440,7 @@ describe("@procella/updates helpers", () => {
 				createUpdate: noop,
 				startUpdate: noop,
 				completeUpdate: noop,
+				getUpdateContext: noop,
 				cancelUpdate: noop,
 				patchCheckpoint: noop,
 				patchCheckpointVerbatim: noop,
@@ -459,7 +460,7 @@ describe("@procella/updates helpers", () => {
 				verifyLeaseToken: noop,
 				verifyUpdateOwnership: noop,
 			};
-			expect(Object.keys(mock)).toHaveLength(21);
+			expect(Object.keys(mock)).toHaveLength(22);
 		});
 	});
 
@@ -651,37 +652,26 @@ describe("@procella/updates helpers", () => {
 		});
 	});
 
-	describe("completeUpdate", () => {
+	describe("getUpdateContext", () => {
 		test("returns the persisted environment and stack ID", async () => {
 			const environment = {
 				"vcs.owner": "octocat",
 				"ci.pr.number": "42",
 			};
-			const selectedUpdate = { stackId: "stack-1", status: "running", environment };
 			const selectChain = {
 				from: () => selectChain,
-				where: () => Promise.resolve([selectedUpdate]),
+				where: () => Promise.resolve([{ stackId: "stack-1", environment }]),
 			};
-			const updateChain = {
-				set: () => updateChain,
-				where: () => Promise.resolve([]),
-			};
-			const transaction = mock(async (callback: (tx: unknown) => Promise<unknown>) =>
-				callback({ select: () => selectChain, update: () => updateChain }),
-			);
-			const db = {
-				transaction,
-				execute: () => Promise.resolve(),
-			} as never;
+			const db = { select: () => selectChain } as never;
 			const svc = new PostgresUpdatesService({
 				db,
 				storage: {} as never,
 				crypto: {} as never,
 			});
 
-			const completed = await svc.completeUpdate("update-1", { status: "succeeded" });
+			const context = await svc.getUpdateContext("update-1");
 
-			expect(completed).toEqual({ stackId: "stack-1", environment });
+			expect(context).toEqual({ stackId: "stack-1", environment });
 		});
 	});
 

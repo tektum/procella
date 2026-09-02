@@ -76,7 +76,7 @@ export function updateHandlers(
 			const updateCtx = updateContext(c);
 			const updateId = updateCtx.updateId;
 			const body = await c.req.json<CompleteUpdateRequest>();
-			const completed = await updates.completeUpdate(updateId, body);
+			await updates.completeUpdate(updateId, body);
 
 			const caller = c.get("caller");
 			const org = c.req.param("org");
@@ -93,6 +93,7 @@ export function updateHandlers(
 				(body.status === "succeeded" || body.status === "failed")
 			) {
 				void (async () => {
+					const completed = await updates.getUpdateContext(updateId);
 					const stackInfo = await stacks.getStackById_systemOnly(completed.stackId);
 					const installation = await github.getInstallation(stackInfo.tenantId);
 					if (!installation) {

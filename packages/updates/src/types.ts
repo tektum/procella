@@ -43,7 +43,9 @@ export interface UpdatesService {
 
 	startUpdate(updateId: string, request: StartUpdateRequest): Promise<StartUpdateResponse>;
 
-	completeUpdate(updateId: string, request: CompleteUpdateRequest): Promise<CompletedUpdate>;
+	completeUpdate(updateId: string, request: CompleteUpdateRequest): Promise<void>;
+
+	getUpdateContext(updateId: string): Promise<CompletedUpdate>;
 
 	cancelUpdate(updateId: string): Promise<void>;
 

@@ -274,8 +274,9 @@ export class PostgresUpdatesService implements UpdatesService {
 		});
 	}
 
-	async completeUpdate(updateId: string, request: CompleteUpdateRequest): Promise<CompletedUpdate> {
-		const completed = await withDbSpan(
+	async completeUpdate(updateId: string, request: CompleteUpdateRequest): Promise<void> {
+		let notifyStackId: string | undefined;
+		await withDbSpan(
 			"completeUpdate",
 			{ "update.id": updateId, "update.status": request.status },
 			() =>
@@ -291,6 +292,8 @@ export class PostgresUpdatesService implements UpdatesService {
 							`Update ${updateId} is in status "${row.status}", expected "running"`,
 						);
 					}
+
+					notifyStackId = row.stackId;
 
 					await tx
 						.update(updates)
@@ -308,18 +311,28 @@ export class PostgresUpdatesService implements UpdatesService {
 						.update(stacks)
 						.set({ activeUpdateId: null, updatedAt: sql`now()` })
 						.where(eq(stacks.id, row.stackId));
-
-					return {
-						stackId: row.stackId,
-						environment: (row.environment ?? {}) as Record<string, string>,
-					};
 				}),
 		);
 
 		activeUpdatesGauge().add(-1);
 		this.clearUpdateCaches(updateId);
-		this.db.execute(sql`SELECT pg_notify('stack_updates', ${completed.stackId})`).catch(() => {});
-		return completed;
+		if (notifyStackId)
+			this.db.execute(sql`SELECT pg_notify('stack_updates', ${notifyStackId})`).catch(() => {});
+	}
+
+	async getUpdateContext(updateId: string): Promise<CompletedUpdate> {
+		return withDbSpan("getUpdateContext", { "update.id": updateId }, async () => {
+			const [row] = await this.db
+				.select({ stackId: updates.stackId, environment: updates.environment })
+				.from(updates)
+				.where(eq(updates.id, updateId));
+
+			if (!row) {
+				throw new UpdateNotFoundError(updateId);
+			}
+
+			return { stackId: row.stackId, environment: row.environment };
+		});
 	}
 
 	async cancelUpdate(updateId: string): Promise<void> {

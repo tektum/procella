@@ -57,7 +57,8 @@ function mockUpdatesService(overrides?: Partial<UpdatesService>): UpdatesService
 	return {
 		createUpdate: mock(async () => ({ updateID: "", requiredPolicies: [] }) as never),
 		startUpdate: mock(async () => ({}) as never),
-		completeUpdate: mock(async () => ({ stackId: "s-1", environment: {} })),
+		completeUpdate: mock(async () => {}),
+		getUpdateContext: mock(async () => ({ stackId: "s-1", environment: {} })),
 		cancelUpdate: mock(async () => {}),
 		patchCheckpoint: mock(async () => {}),
 		patchCheckpointVerbatim: mock(async () => {}),
