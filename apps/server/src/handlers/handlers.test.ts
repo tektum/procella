@@ -104,7 +104,7 @@ describe("@procella/server handlers", () => {
 			expect(body.status).toBe("error");
 		});
 
-		test("capabilities returns array with expected capabilities", async () => {
+		test("capabilities returns the exact expected wire shape", async () => {
 			const app = new Hono<Env>();
 			const health = healthHandlers({ db: mockDb });
 			app.get("/capabilities", health.capabilities);
@@ -112,13 +112,13 @@ describe("@procella/server handlers", () => {
 			const res = await app.request("/capabilities");
 			expect(res.status).toBe(200);
 			const body = await res.json();
-			expect(body.capabilities).toBeArray();
-			expect(body.capabilities).toHaveLength(3);
-
-			const names = body.capabilities.map((c: { capability: string }) => c.capability);
-			expect(names).toContain("batch-encrypt");
-			expect(names).toContain("deployment-schema-version");
-			expect(names).toContain("journaling-v1");
+			expect(body).toEqual({
+				capabilities: [
+					{ capability: "batch-encrypt" },
+					{ capability: "deployment-schema-version", version: 1, configuration: { version: 3 } },
+					{ capability: "journaling-v1", version: 1 },
+				],
+			});
 		});
 
 		test("cliVersion returns version info", async () => {
