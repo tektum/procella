@@ -230,6 +230,12 @@ describe("classifyCliVersion", () => {
 		expect(classifyCliVersion("pulumi-cli")).toBe("unknown");
 	});
 
+	test("bounds work for oversized untrusted user agents", () => {
+		const oversized = `pulumi-cli/1 (${" ".repeat(512)}3.233.0; linux)`;
+		expect(classifyCliVersion(oversized)).toBe("unknown");
+		expect(classifyCliMajorMinor(oversized)).toBe("unknown");
+	});
+
 	test("never leaks the raw user agent into the returned bucket", () => {
 		const secretLikeUa = "pulumi-cli/1 (3.9.0; linux) token=super-secret-value";
 		const bucket = classifyCliVersion(secretLikeUa);

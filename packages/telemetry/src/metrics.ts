@@ -149,47 +149,94 @@ export type CompatResult =
 	| "unsupported-version"
 	| "server-error";
 
-// Current upstream Pulumi SDK: `pulumi-cli/1 (<semver>; <os>; ...)`. The
-// leading "1" is a User-Agent *format* version, not the CLI version — the
-// CLI semver is the first parenthesized field, terminated by `;` or `)`.
-const CLI_UA_CURRENT_PATTERN = /pulumi-cli\/1\s*\(\s*([^;()]+?)\s*(?:;|\))/i;
-// Legacy observed form: `pulumi-cli/<semver>` with no wrapping parens. Capture
-// one delimited candidate and let the strictly anchored SemVer parser below be
-// the sole validator. This prevents prefix truncation while accepting every
-// valid prerelease/build identifier shape.
-const CLI_UA_LEGACY_PATTERN = /pulumi-cli\/([^\s;),]+)/i;
+// User-Agent is untrusted input. Bound all parsing work before scanning it.
+const MAX_CLI_USER_AGENT_LENGTH = 512;
+const PULUMI_CLI_PREFIX = "pulumi-cli/";
 
-function extractCliVersion(userAgent: string | undefined | null): string | null {
-	if (!userAgent) return null;
-	const current = CLI_UA_CURRENT_PATTERN.exec(userAgent);
-	if (current?.[1]) return current[1].trim();
-	const legacy = CLI_UA_LEGACY_PATTERN.exec(userAgent);
-	return legacy?.[1] ?? null;
+function isAsciiWhitespace(char: string): boolean {
+	return char === " " || char === "\t" || char === "\r" || char === "\n" || char === "\f";
 }
 
-// Strictly anchored (^...$) SemVer 2.0.0 grammar (https://semver.org), with
-// the patch component made optional (defaults to 0) to accept the legacy
-// `<major>.<minor>` shape some older Pulumi CLI User-Agents send. A loose
-// prefix-style regex would accept things it must not:
-//   - "3.233.0evil"        — garbage directly appended, no "-"/"+" separator
-//   - "3.233.0-" / "...+"  — an empty prerelease/build suffix
-//   - "3.233.0-beta..1"    — an empty dot-separated identifier
-//   - "3.03.0" / "...-01"  — a leading zero in a numeric identifier
-// It still accepts combined prerelease + build metadata, e.g.
-// "3.233.0-beta.1+build.7". Numeric-identifier alternatives ("0|[1-9]\d*")
-// reject leading zeros; build identifiers have no such restriction, per spec.
-const SEMVER_PATTERN =
-	/^(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\.(0|[1-9]\d*))?(?:-(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\+[0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*)?$/;
+function extractCliVersion(userAgent: string | undefined | null): string | null {
+	if (!userAgent || userAgent.length > MAX_CLI_USER_AGENT_LENGTH) return null;
+	const prefixIndex = userAgent.toLowerCase().indexOf(PULUMI_CLI_PREFIX);
+	if (prefixIndex < 0) return null;
+
+	let cursor = prefixIndex + PULUMI_CLI_PREFIX.length;
+	if (userAgent[cursor] === "1") {
+		let currentCursor = cursor + 1;
+		while (isAsciiWhitespace(userAgent[currentCursor] ?? "")) currentCursor++;
+		if (userAgent[currentCursor] === "(") {
+			currentCursor++;
+			while (isAsciiWhitespace(userAgent[currentCursor] ?? "")) currentCursor++;
+			const start = currentCursor;
+			while (
+				currentCursor < userAgent.length &&
+				userAgent[currentCursor] !== ";" &&
+				userAgent[currentCursor] !== ")"
+			) {
+				if (userAgent[currentCursor] === "(") return null;
+				currentCursor++;
+			}
+			if (currentCursor === userAgent.length) return null;
+			return userAgent.slice(start, currentCursor).trim() || null;
+		}
+	}
+
+	const start = cursor;
+	while (cursor < userAgent.length && !isAsciiWhitespace(userAgent[cursor] ?? "")) {
+		if (userAgent[cursor] === ";" || userAgent[cursor] === ")" || userAgent[cursor] === ",") break;
+		cursor++;
+	}
+	return userAgent.slice(start, cursor) || null;
+}
+
+function parseNumericIdentifier(value: string): number | null {
+	if (!value || (value.length > 1 && value[0] === "0")) return null;
+	for (let index = 0; index < value.length; index++) {
+		const code = value.charCodeAt(index);
+		if (code < 48 || code > 57) return null;
+	}
+	const parsed = Number(value);
+	return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+function validateIdentifiers(value: string, allowNumericLeadingZero: boolean): boolean {
+	for (const identifier of value.split(".")) {
+		if (!identifier) return false;
+		let numeric = true;
+		for (let index = 0; index < identifier.length; index++) {
+			const code = identifier.charCodeAt(index);
+			const digit = code >= 48 && code <= 57;
+			if (!digit && (code < 65 || code > 90) && (code < 97 || code > 122) && code !== 45) {
+				return false;
+			}
+			if (!digit) numeric = false;
+		}
+		if (!allowNumericLeadingZero && numeric && identifier.length > 1 && identifier[0] === "0") {
+			return false;
+		}
+	}
+	return true;
+}
 
 function parseSemverTuple(version: string): [number, number, number] | null {
-	const match = SEMVER_PATTERN.exec(version);
-	if (!match) return null;
-	const tuple: [number, number, number] = [
-		Number.parseInt(match[1], 10),
-		Number.parseInt(match[2], 10),
-		match[3] ? Number.parseInt(match[3], 10) : 0,
-	];
-	return tuple.every(Number.isSafeInteger) ? tuple : null;
+	const plusIndex = version.indexOf("+");
+	if (plusIndex !== version.lastIndexOf("+")) return null;
+	const build = plusIndex >= 0 ? version.slice(plusIndex + 1) : null;
+	if (build !== null && !validateIdentifiers(build, true)) return null;
+
+	const withoutBuild = plusIndex >= 0 ? version.slice(0, plusIndex) : version;
+	const dashIndex = withoutBuild.indexOf("-");
+	const prerelease = dashIndex >= 0 ? withoutBuild.slice(dashIndex + 1) : null;
+	if (prerelease !== null && !validateIdentifiers(prerelease, false)) return null;
+
+	const core = (dashIndex >= 0 ? withoutBuild.slice(0, dashIndex) : withoutBuild).split(".");
+	if (core.length < 2 || core.length > 3) return null;
+	const major = parseNumericIdentifier(core[0] ?? "");
+	const minor = parseNumericIdentifier(core[1] ?? "");
+	const patch = core.length === 3 ? parseNumericIdentifier(core[2] ?? "") : 0;
+	return major === null || minor === null || patch === null ? null : [major, minor, patch];
 }
 
 function compareSemverTuples(a: [number, number, number], b: [number, number, number]): number {
