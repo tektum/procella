@@ -100,6 +100,10 @@ When Procella receives an `update.succeeded` or `update.failed` event for a prev
 
 ## CI/CD Integration
 
+If you don't need the GitHub App's PR comments, use the [Procella GitHub Action](/features/github-action/) and skip the setup and login steps below entirely.
+
+This page's flow needs them because neither the Pulumi CLI nor `pulumi/actions` sets the `github:*` tags, and `pulumi stack tag set` needs an authenticated CLI. The Procella action only logs in as part of running a Pulumi command, so it cannot authenticate the tagging step that has to happen *before* the preview.
+
 Here's a complete GitHub Actions workflow that runs `pulumi preview` on PRs and posts results:
 
 ```yaml
@@ -113,10 +117,10 @@ jobs:
   preview:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Pulumi
-        uses: pulumi/actions@v5
+        uses: pulumi/actions@8e5e406f4007fca908480587cb9893c07090f58d # v7.0.0
 
       - name: Login to Procella
         run: pulumi login https://your-procella.example.com/api
