@@ -3,7 +3,7 @@ title: Procella Documentation
 description: Self-hosted Pulumi backend — own your infrastructure state.
 template: splash
 hero:
-  tagline: A self-hosted Pulumi backend. Full CLI compatibility, multi-tenant auth, and horizontal scaling — on your infrastructure.
+  tagline: A self-hosted Pulumi backend for tested core CLI workflows, with multi-tenant auth and horizontal scaling — on your infrastructure.
   image:
     html: <img src="/storm-petrel.svg" alt="Procella Storm Petrel mascot" width="280" height="280" />
   actions:
@@ -19,8 +19,8 @@ hero:
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
 <CardGrid stagger>
-  <Card title="Full CLI Compatibility" icon="rocket">
-    `pulumi login`, `pulumi up`, `pulumi stack export` — every Pulumi CLI command works against Procella without modification.
+  <Card title="Tested CLI Workflows" icon="rocket">
+    Core login, stack, update, state, and encryption workflows are tested across documented [Pulumi CLI support tiers](getting-started/compatibility/).
   </Card>
   <Card title="Multi-Tenant Auth" icon="setting">
     Dev mode with static tokens for local development. Descope access keys with tenant RBAC for production multi-tenancy.

@@ -1,10 +1,10 @@
 # Procella
 
-A self-hosted [Pulumi](https://www.pulumi.com/) backend. Run `pulumi login`, `pulumi stack init`, `pulumi up`, and every other CLI command against your own infrastructure — no Pulumi Cloud account required.
+A self-hosted [Pulumi](https://www.pulumi.com/) backend for [tested core CLI workflows](apps/docs/src/content/docs/getting-started/compatibility.md), including login, stack management, updates, and state import/export — on your own infrastructure and without a Pulumi Cloud account.
 
 ## Features
 
-- **Full Pulumi CLI compatibility** — login, stack management, updates, previews, refreshes, destroys, state import/export
+- **Tested Pulumi CLI workflows** — login, stack management, updates, previews, refreshes, destroys, and state import/export across documented support tiers
 - **Web dashboard** — React SPA with stack/update/event views, API token management, and admin settings
 - **Admin settings panel** — invite users, manage roles, view audit log, edit tenant profile (Descope mode)
 - **API token management** — create and revoke Descope access keys from the browser dashboard
@@ -112,6 +112,7 @@ All configuration is via `PROCELLA_*` environment variables. Set these as Vercel
 | `PROCELLA_BLOB_S3_ENDPOINT` | | Custom S3 endpoint (MinIO, R2, etc.) |
 | `PROCELLA_BLOB_S3_REGION` | `us-east-1` | S3 region |
 | `PROCELLA_ENCRYPTION_KEY` | *(required)* | 64 hex chars (32 bytes) for AES-256-GCM |
+| `PROCELLA_DELTA_CHECKPOINTS_ENABLED` | `false` | Advertise `delta-checkpoint-uploads-v2`; disable and restart to return clients to full checkpoints |
 | `PROCELLA_CRON_SECRET` | *(required when `/cron/gc` is enabled)* | Bearer token used to authorize the GC cron endpoint |
 | `PROCELLA_CORS_ORIGINS` | *(optional)* | Comma-separated allowed CORS origins; omit for strict same-origin |
 | `PROCELLA_GITHUB_APP_ID` | *(optional)* | GitHub App ID for PR comments and commit status checks |
@@ -156,6 +157,7 @@ bun run docs:build     # Build static docs site
 - [Introduction](apps/docs/src/content/docs/getting-started/introduction.md)
 - [Quick Start](apps/docs/src/content/docs/getting-started/quickstart.md)
 - [Configuration](apps/docs/src/content/docs/getting-started/configuration.md)
+- [Pulumi CLI Compatibility](apps/docs/src/content/docs/getting-started/compatibility.md)
 - [Architecture Overview](apps/docs/src/content/docs/architecture/overview.md)
 - [API Reference](apps/docs/src/content/docs/api/stacks.md)
 

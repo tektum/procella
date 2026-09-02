@@ -16,6 +16,7 @@ import type { DeploymentV3, OperationV2, ResourceV3, SecretsProvidersV1 } from "
 export type {
 	// Update types (updates.go)
 	AISettingsForUpdate,
+	APICapability,
 	// Service / capability types (service.go)
 	APICapabilityConfig,
 	AppendUpdateLogEntryRequest,
@@ -194,18 +195,6 @@ export const MessageSeverity = {
 	Info: "info",
 } as const;
 export type MessageSeverity = (typeof MessageSeverity)[keyof typeof MessageSeverity];
-
-export const APICapability = {
-	DeltaCheckpointUploads: "delta-checkpoint-uploads",
-	DeltaCheckpointUploadsV2: "delta-checkpoint-uploads-v2",
-	BatchEncrypt: "batch-encrypt",
-	CopilotSummarizeError: "copilot-summarize-error",
-	CopilotExplainPreview: "copilot-explain-preview",
-	DeploymentSchemaVersion: "deployment-schema-version",
-	StackPolicyPacks: "stack-policy-packs",
-	Journaling: "journaling-v1",
-} as const;
-export type APICapability = (typeof APICapability)[keyof typeof APICapability];
 
 export const ErrorType = {
 	NotFound: "not_found",

@@ -9,9 +9,7 @@ import type {
 	GetUpdateEventsResponse,
 	ImportStackResponse,
 	JournalEntries,
-	PatchUpdateCheckpointDeltaRequest,
 	PatchUpdateCheckpointRequest,
-	PatchUpdateVerbatimCheckpointRequest,
 	RenewUpdateLeaseRequest,
 	RenewUpdateLeaseResponse,
 	StartUpdateRequest,
@@ -51,12 +49,14 @@ export interface UpdatesService {
 
 	patchCheckpoint(updateId: string, request: PatchUpdateCheckpointRequest): Promise<void>;
 
-	patchCheckpointVerbatim(
-		updateId: string,
-		request: PatchUpdateVerbatimCheckpointRequest,
-	): Promise<void>;
+	/**
+	 * Persist a verbatim checkpoint. `request.untypedDeploymentText` must be the exact JSON
+	 * text the client sent, because subsequent deltas are textual edits against those bytes.
+	 */
+	patchCheckpointVerbatim(updateId: string, request: VerbatimCheckpointSave): Promise<void>;
 
-	patchCheckpointDelta(updateId: string, request: PatchUpdateCheckpointDeltaRequest): Promise<void>;
+	/** Apply a textual delta against the exact text retained by the last verbatim/delta save. */
+	patchCheckpointDelta(updateId: string, request: DeltaCheckpointSave): Promise<void>;
 
 	appendJournalEntries(updateId: string, entries: JournalEntries): Promise<void>;
 
@@ -109,6 +109,22 @@ export const GC_STALE_THRESHOLD_MS = 3_600_000; // 1 hour
 /** PostgreSQL advisory lock ID for cluster-safe GC. */
 export const GC_ADVISORY_LOCK_ID = 93_874_835_275_587n; // 0x5472617461_4743 (historic, do not change)
 
+/**
+ * Highest Pulumi deployment schema version Procella can persist and re-export without loss.
+ * Kept in lockstep with the `deployment-schema-version` capability Procella advertises.
+ */
+export const SUPPORTED_DEPLOYMENT_SCHEMA_VERSION = 3;
+
+/**
+ * Reserved `checkpoints.version` holding the delta baseline sidecar row for an update.
+ *
+ * Real checkpoint versions start at 1 (`COALESCE(MAX(version), 0) + 1`), so version 0 is
+ * invisible to version allocation and to every `MAX(version)` reader. The row carries
+ * `is_delta = true` so canonical readers (export, journal replay) skip it. Rolling the delta
+ * capability back therefore needs no migration: the sidecar becomes inert data.
+ */
+export const DELTA_BASE_CHECKPOINT_VERSION = 0;
+
 // ============================================================================
 // Internal Errors
 // ============================================================================
@@ -118,6 +134,62 @@ export class ImportConflictError extends UpdateConflictError {
 		super(message);
 		this.name = "ImportConflictError";
 	}
+}
+
+/** Rejected because a checkpoint sequence number is stale, conflicting, or out of order. */
+export class CheckpointSequenceError extends UpdateConflictError {
+	constructor(message: string) {
+		super(message);
+		this.name = "CheckpointSequenceError";
+	}
+}
+
+// ============================================================================
+// Checkpoint Save Inputs
+// ============================================================================
+
+/** A point inside a textual deployment diff. `offset` is a UTF-8 byte offset. */
+export interface TextEditSpanPoint {
+	line: number;
+	column: number;
+	offset: number;
+}
+
+export interface TextEditSpan {
+	uri?: string;
+	start: TextEditSpanPoint;
+	end: TextEditSpanPoint;
+}
+
+/** One `gotextdiff.TextEdit` as emitted by the Pulumi CLI's deployment differ. */
+export interface TextEdit {
+	span: TextEditSpan;
+	newText: string;
+}
+
+/** Service-boundary input for `PATCH .../checkpointverbatim`. */
+export interface VerbatimCheckpointSave {
+	/** Deployment schema version declared by the client. */
+	version: number;
+	/** Idempotency/order key, incremented by the client per PATCH within one update. */
+	sequenceNumber: number;
+	/**
+	 * Exact JSON text of the request's `untypedDeployment` member, byte-for-byte as sent.
+	 * Parsing and re-serializing this value would break every subsequent delta.
+	 */
+	untypedDeploymentText: string;
+}
+
+/** Service-boundary input for `PATCH .../checkpointdelta`. */
+export interface DeltaCheckpointSave {
+	/** Deployment schema version declared by the client. */
+	version: number;
+	/** Idempotency/order key, incremented by the client per PATCH within one update. */
+	sequenceNumber: number;
+	/** Required SHA-256 hex digest of the text produced by applying `deploymentDelta`. */
+	checkpointHash: string;
+	/** Textual edits against the exact last-saved deployment text. */
+	deploymentDelta: TextEdit[];
 }
 
 // ============================================================================

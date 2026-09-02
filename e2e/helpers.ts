@@ -122,9 +122,9 @@ export async function cleanupDir(dir: string): Promise<void> {
 	await rm(dir, { recursive: true, force: true });
 }
 
-export async function newProjectDir(name: string): Promise<string> {
+export async function newProjectDir(name: string, runtime = "yaml"): Promise<string> {
 	const dir = await mkdtemp(path.join(tmpdir(), `procella-e2e-${name}-`));
-	await Bun.write(path.join(dir, "Pulumi.yaml"), `name: ${name}\nruntime: yaml\n`);
+	await Bun.write(path.join(dir, "Pulumi.yaml"), `name: ${name}\nruntime: ${runtime}\n`);
 	return dir;
 }
 
@@ -282,13 +282,13 @@ export async function pulumi(args: string[], opts?: PulumiOpts): Promise<PulumiR
 
 export async function apiRequest(
 	path: string,
-	opts?: { method?: string; body?: unknown; token?: string },
+	opts?: { method?: string; body?: unknown; token?: string; accept?: string | null },
 ): Promise<Response> {
 	return fetch(`${BACKEND_URL}/api${path}`, {
 		method: opts?.method ?? "GET",
 		headers: {
 			Authorization: `token ${opts?.token ?? TEST_TOKEN}`,
-			Accept: "application/vnd.pulumi+8",
+			...(opts?.accept !== null ? { Accept: opts?.accept ?? "application/vnd.pulumi+8" } : {}),
 			...(opts?.body ? { "Content-Type": "application/json" } : {}),
 		},
 		body: opts?.body ? JSON.stringify(opts.body) : undefined,

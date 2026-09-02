@@ -2,6 +2,7 @@
 
 import type { Database } from "@procella/db";
 import type { CapabilitiesResponse, CLIVersionResponse } from "@procella/types";
+import { BLOB_THRESHOLD } from "@procella/updates";
 import { sql } from "drizzle-orm";
 import type { Context } from "hono";
 import type { Env } from "../types.js";
@@ -10,7 +11,7 @@ import type { Env } from "../types.js";
 // Health Handlers
 // ============================================================================
 
-export function healthHandlers(deps: { db: Database }) {
+export function healthHandlers(deps: { db: Database; deltaCheckpointsEnabled?: boolean }) {
 	return {
 		health: async (c: Context<Env>) => {
 			try {
@@ -27,6 +28,15 @@ export function healthHandlers(deps: { db: Database }) {
 					{ capability: "batch-encrypt" },
 					{ capability: "deployment-schema-version", version: 1, configuration: { version: 3 } },
 					{ capability: "journaling-v1", version: 1 },
+					...(deps.deltaCheckpointsEnabled
+						? [
+								{
+									capability: "delta-checkpoint-uploads-v2" as const,
+									version: 2,
+									configuration: { checkpointCutoffSizeBytes: BLOB_THRESHOLD },
+								},
+							]
+						: []),
 				],
 			} satisfies CapabilitiesResponse),
 

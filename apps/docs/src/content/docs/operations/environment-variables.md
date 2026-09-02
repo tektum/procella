@@ -23,6 +23,8 @@ All Procella configuration is via environment variables. Variables prefixed with
 | `PROCELLA_BLOB_S3_ENDPOINT` | — | No | Custom S3 endpoint |
 | `PROCELLA_BLOB_S3_REGION` | `us-east-1` | No | S3 region |
 | `PROCELLA_ENCRYPTION_KEY` | *(auto in dev)* | If non-dev | 64 hex chars (32 bytes) |
+| `PROCELLA_DELTA_CHECKPOINTS_ENABLED` | `false` | No | Advertise `delta-checkpoint-uploads-v2` with a 1 MiB cutoff |
+| `PROCELLA_OTEL_ENABLED` | `false` | No | Export OpenTelemetry traces, metrics, and operator-local compatibility buckets |
 | `PROCELLA_CORS_ORIGINS` | *(unrestricted)* | No | Comma-separated allowed origins |
 | `PROCELLA_TRUST_PROXY` | `false` | No | Trust `X-Forwarded-For` / `X-Real-IP` only when running behind a trusted reverse proxy |
 | `AWS_ACCESS_KEY_ID` | — | If custom endpoint | S3 access key |
@@ -50,6 +52,22 @@ Common `sslmode` values:
 - `disable` — no SSL (development only)
 - `require` — encrypted connection, no certificate verification
 - `verify-full` — encrypted + verified certificate (production recommended)
+
+## Pulumi Compatibility
+
+### PROCELLA_DELTA_CHECKPOINTS_ENABLED
+
+Controls advertisement of the optional `delta-checkpoint-uploads-v2` capability. Accepted enabled values are `true` and `1`; `false`, `0`, or omission leave it disabled.
+
+When enabled and the server is restarted, compatible clients can use delta checkpoint uploads for checkpoint bodies beyond the advertised `checkpointCutoffSizeBytes` of `1048576` bytes (1 MiB, derived from `BLOB_THRESHOLD`). The delta endpoint also requires `Accept: application/vnd.pulumi+8` or newer and a prior verbatim checkpoint baseline. Procella validates and applies deltas while retaining a canonical full checkpoint.
+
+Rollback is one setting change: set the variable to `false` and restart. The capability is no longer advertised, clients use full checkpoint uploads, existing canonical checkpoints remain valid, and no state rewrite or database migration is needed.
+
+### PROCELLA_OTEL_ENABLED
+
+Enables OpenTelemetry export. Compatibility observations are operator-local and use the support bucket, a closed CLI release-line bucket (`3.9`, `3.233`, `other-legacy`, `other-supported`, or `unknown`), API-version bucket, route class, and result class. They do not include patch/prerelease/build data, exact user agents, customer identifiers, stack names, tokens, or resolved path parameters. When this setting is disabled, compatibility metrics are no-ops.
+
+The structured `pulumi-compatibility-policy` startup log plus these metrics are the compatibility diagnostic. Procella does not keep process-local fleet state or expose a public compatibility diagnostic endpoint, because either would diverge across replicas. See [Pulumi CLI Compatibility](../getting-started/compatibility/#operator-local-compatibility-telemetry) for the exact attributes.
 
 ## Authentication
 

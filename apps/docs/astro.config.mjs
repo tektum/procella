@@ -33,6 +33,7 @@ export default defineConfig({
             { label: 'Introduction', slug: 'getting-started/introduction' },
             { label: 'Quick Start', slug: 'getting-started/quickstart' },
             { label: 'Configuration', slug: 'getting-started/configuration' },
+            { label: 'Pulumi CLI Compatibility', slug: 'getting-started/compatibility' },
             { label: 'Migrating to Procella', slug: 'getting-started/migration' },
             { label: 'Migration Tool', slug: 'getting-started/migration-tool' },
           ],

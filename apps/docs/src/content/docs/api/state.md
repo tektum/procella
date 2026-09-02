@@ -8,6 +8,8 @@ State operations allow exporting and importing infrastructure state. These are t
 All endpoints require `Authorization: token <api-token>`. State export and
 import remain compatible with clients that omit the Pulumi `Accept` header.
 
+Procella's deployment schema boundary is version 3. Schema v4 and non-empty deployment feature markers are rejected rather than accepted with possible data loss. Delta uploads, when enabled, are always materialized into canonical full checkpoints, so export does not depend on the delta capability remaining enabled.
+
 ## Export Stack
 
 ```

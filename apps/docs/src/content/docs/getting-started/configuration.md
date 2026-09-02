@@ -71,6 +71,16 @@ When using `s3` with a custom endpoint, you must also set the standard AWS crede
 Local blob storage stores checkpoints on the server's filesystem. This does **not** work with multiple replicas — use S3 for horizontal scaling.
 :::
 
+## Pulumi Compatibility
+
+| Variable | Default | Description |
+|---|---|---|
+| `PROCELLA_DELTA_CHECKPOINTS_ENABLED` | `false` | Advertise the `delta-checkpoint-uploads-v2` capability with a 1 MiB cutoff |
+
+Delta checkpoint uploads require all of the following: this setting enabled, a server restart, a compatible client that negotiates `delta-checkpoint-uploads-v2`, `Accept: application/vnd.pulumi+8` or newer on the delta route, and an established verbatim checkpoint baseline. Procella applies each validated delta and still stores a canonical full checkpoint.
+
+To roll back, set `PROCELLA_DELTA_CHECKPOINTS_ENABLED=false` and restart. This removes the capability advertisement, returns clients to full checkpoint uploads, and requires no database migration or state rewrite. Existing full checkpoints remain usable. See [Pulumi CLI Compatibility](../compatibility/) for the tested versions and protocol boundaries.
+
 ## Encryption
 
 | Variable | Default | Description |

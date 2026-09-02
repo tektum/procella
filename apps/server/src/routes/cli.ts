@@ -57,6 +57,7 @@ export interface CliAppDeps {
 	github: GitHubService | null;
 	githubWebhookSecret?: string;
 	oidc?: OidcService | null;
+	deltaCheckpointsEnabled?: boolean;
 }
 
 export function createCliApp(deps: CliAppDeps): Hono<Env> {
@@ -79,7 +80,10 @@ export function createCliApp(deps: CliAppDeps): Hono<Env> {
 	});
 
 	// Handler instances
-	const health = healthHandlers({ db: deps.db });
+	const health = healthHandlers({
+		db: deps.db,
+		deltaCheckpointsEnabled: deps.deltaCheckpointsEnabled,
+	});
 	const user = userHandlers(deps.stacks);
 	const stackH = stackHandlers(deps.stacks, deps.webhooks);
 	const auditH = auditHandlers({ audit: deps.audit });

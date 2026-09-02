@@ -221,6 +221,43 @@ jobs:
           PROCELLA_DATABASE_URL: postgres://procella:procella@localhost:5432/procella?sslmode=disable
         run: bun test --timeout 60000 --preload ./e2e/setup.ts e2e/esc-cli.test.ts
 
+  pulumi-versions:
+    name: Resolve Pulumi CLI Versions
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      contract_version: ${{ steps.versions.outputs.contract_version }}
+      compatibility_matrix: ${{ steps.versions.outputs.compatibility_matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Resolve compatibility versions
+        id: versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          contract_version="$(sed -nE 's|^require github\.com/pulumi/pulumi/sdk/v3 (v[0-9]+\.[0-9]+\.[0-9]+)$|\1|p' packages/types/tygo/go.mod)"
+          legacy_version="$(sed -nE 's/^export const PULUMI_LEGACY_SMOKE_VERSION = "([0-9]+\.[0-9]+\.[0-9]+)";$/\1/p' packages/types/src/compatibility.ts)"
+          minimum_version="$(sed -nE 's/^export const PULUMI_FULLY_SUPPORTED_MIN_VERSION = "([0-9]+\.[0-9]+\.[0-9]+)";$/\1/p' packages/types/src/compatibility.ts)"
+
+          if [[ -z "$contract_version" || -z "$legacy_version" || -z "$minimum_version" ]]; then
+            echo "::error::Could not resolve Pulumi CLI compatibility versions from their source files."
+            exit 1
+          fi
+
+          compatibility_matrix="$(jq -cn \
+            --arg legacy "$legacy_version" \
+            --arg minimum "$minimum_version" \
+            '{include: [
+              {lane: "legacy", name: "Legacy compatibility", version: $legacy},
+              {lane: "minimum", name: "Minimum supported", version: $minimum},
+              {lane: "latest", name: "Latest canary", version: "latest"}
+            ]}')"
+          echo "contract_version=$contract_version" >> "$GITHUB_OUTPUT"
+          echo "compatibility_matrix=$compatibility_matrix" >> "$GITHUB_OUTPUT"
+
   types-freshness:
     name: Verify Pulumi Types Freshness
     runs-on: ubuntu-latest
@@ -236,6 +273,8 @@ jobs:
           cache-dependency-path: packages/types/tygo/go.sum
       - name: Regenerate types from Pulumi SDK
         run: bun run types:generate
+      - name: Check Pulumi compatibility manifest
+        run: bun run types:check-compatibility
       - name: Check for uncommitted type changes
         run: |
           if ! git diff --exit-code packages/types/; then
@@ -254,7 +293,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       id-token: write
-    needs: [check]
+    needs: [check, pulumi-versions]
     strategy:
       fail-fast: false
       matrix:
@@ -286,6 +325,17 @@ jobs:
           persist-credentials: false
       - uses: $/.github/actions/setup-bun
       - uses: pulumi/setup-pulumi@b374ceb6168550de27c6eba92e01c1a774040e11 # v2
+        with:
+          pulumi-version: ${{ needs.pulumi-versions.outputs.contract_version }}
+      - name: Record Pulumi CLI version
+        run: |
+          {
+            echo "### Contract E2E Pulumi CLI"
+            echo
+            echo '```text'
+            pulumi version
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Run E2E tests (shard ${{ matrix.shard }}/3)
         env:
           PROCELLA_DATABASE_URL: postgres://procella:procella@localhost:5432/procella?sslmode=disable
@@ -308,12 +358,16 @@ jobs:
         env:
           OTEL_SERVICE_NAME: procella-ci-e2e
         run: bun run bench/analyze-traces.ts
-  security-e2e:
-    name: Security E2E Tests
+  pulumi-compatibility:
+    name: Pulumi Compatibility (${{ matrix.name }})
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
-      id-token: write
-    needs: [check]
+      contents: read
+    needs: [check, pulumi-versions]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.pulumi-versions.outputs.compatibility_matrix) }}
     services:
       postgres:
         image: postgres:18-alpine
@@ -334,6 +388,54 @@ jobs:
           persist-credentials: false
       - uses: $/.github/actions/setup-bun
       - uses: pulumi/setup-pulumi@b374ceb6168550de27c6eba92e01c1a774040e11 # v2
+        with:
+          pulumi-version: ${{ matrix.version }}
+      - name: Record Pulumi CLI version
+        env:
+          COMPATIBILITY_NAME: ${{ matrix.name }}
+        run: |
+          {
+            echo "### $COMPATIBILITY_NAME"
+            echo
+            echo '```text'
+            pulumi version
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Run ${{ matrix.name }} smoke tests
+        env:
+          CI: "1"
+          PROCELLA_DATABASE_URL: postgres://procella:procella@localhost:5432/procella?sslmode=disable
+          PROCELLA_PULUMI_COMPATIBILITY_LANE: ${{ matrix.lane }}
+        run: bun test --timeout 120000 --preload ./e2e/setup.ts e2e/compatibility-smoke.test.ts
+
+  security-e2e:
+    name: Security E2E Tests
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    needs: [check, pulumi-versions]
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: procella
+          POSTGRES_PASSWORD: procella
+          POSTGRES_DB: procella
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U procella"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: $/.github/actions/setup-bun
+      - uses: pulumi/setup-pulumi@b374ceb6168550de27c6eba92e01c1a774040e11 # v2
+        with:
+          pulumi-version: ${{ needs.pulumi-versions.outputs.contract_version }}
       - name: Run security E2E tests
         env:
           PROCELLA_DATABASE_URL: postgres://procella:procella@localhost:5432/procella?sslmode=disable
@@ -353,7 +455,7 @@ jobs:
   e2e-ui:
     name: E2E UI Tests (Playwright)
     runs-on: ubuntu-latest
-    needs: [check]
+    needs: [check, pulumi-versions]
     services:
       postgres:
         image: postgres:18-alpine
@@ -374,6 +476,8 @@ jobs:
           persist-credentials: false
       - uses: $/.github/actions/setup-bun
       - uses: pulumi/setup-pulumi@b374ceb6168550de27c6eba92e01c1a774040e11 # v2
+        with:
+          pulumi-version: ${{ needs.pulumi-versions.outputs.contract_version }}
       - name: Install Playwright browsers
         run: bunx playwright install chromium --with-deps
       - name: Run Playwright UI tests
@@ -399,7 +503,7 @@ jobs:
   bench:
     name: Performance Benchmark
     runs-on: ubuntu-latest
-    needs: [check]
+    needs: [check, pulumi-versions]
     services:
       postgres:
         image: postgres:18-alpine
@@ -432,6 +536,8 @@ jobs:
           persist-credentials: false
       - uses: $/.github/actions/setup-bun
       - uses: pulumi/setup-pulumi@b374ceb6168550de27c6eba92e01c1a774040e11 # v2
+        with:
+          pulumi-version: ${{ needs.pulumi-versions.outputs.contract_version }}
       - name: Run benchmark tests
         run: bun test bench/
       - name: Run benchmark
@@ -711,7 +817,7 @@ jobs:
     name: Integration Tests (Deployed Preview)
     if: github.event_name == 'pull_request' && needs.preview-deploy.result == 'success' && needs.preview-deploy.outputs.descope_project_id != ''
     runs-on: ubuntu-latest
-    needs: [preview-deploy]
+    needs: [preview-deploy, pulumi-versions]
     permissions:
       id-token: write
       contents: read
@@ -728,6 +834,8 @@ jobs:
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
           restore-keys: bun-${{ runner.os }}-
       - uses: pulumi/setup-pulumi@b374ceb6168550de27c6eba92e01c1a774040e11 # v2
+        with:
+          pulumi-version: ${{ needs.pulumi-versions.outputs.contract_version }}
       - run: bun install --frozen-lockfile
       - name: Run integration tests against deployed preview
         env:
@@ -742,7 +850,7 @@ jobs:
     name: OIDC Pulumi Deploy (real end-to-end)
     if: github.event_name == 'pull_request' && needs.preview-deploy.result == 'success' && needs.preview-integration.result == 'success'
     runs-on: ubuntu-latest
-    needs: [preview-deploy, preview-integration]
+    needs: [preview-deploy, preview-integration, pulumi-versions]
     permissions:
       id-token: write
       contents: read
@@ -756,6 +864,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: pulumi/setup-pulumi@b374ceb6168550de27c6eba92e01c1a774040e11 # v2
+        with:
+          pulumi-version: ${{ needs.pulumi-versions.outputs.contract_version }}
 
       - uses: pulumi/auth-actions@141415910c3beb54e03b48e9057c204c97b956f2 # v2
         with:
@@ -832,7 +942,9 @@ jobs:
       - integration
       - esc-cli-e2e
       - types-freshness
+      - pulumi-versions
       - e2e
+      - pulumi-compatibility
       - security-e2e
       - e2e-ui
       - bench

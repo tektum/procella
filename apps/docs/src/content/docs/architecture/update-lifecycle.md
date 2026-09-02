@@ -3,7 +3,7 @@ title: Update Lifecycle
 description: The four-phase Pulumi update protocol — create, start, execute, complete.
 ---
 
-When you run `pulumi up`, the CLI follows a structured protocol to communicate with the backend. Procella implements this protocol exactly as the Pulumi Service API defines it.
+When you run a supported update command, the CLI follows a structured protocol to communicate with the backend. Procella implements the core create, start, execute, and complete workflow covered by its [compatibility test lanes](../getting-started/compatibility/).
 
 ## The Four Phases
 
@@ -44,6 +44,9 @@ The CLI signals that execution is about to begin.
   - `token` — the lease token for execution-phase auth
   - `version` — the current checkpoint version
   - `tokenExpiration` — when the lease expires
+  - `journalVersion` — returned as `1` when the request asks for journaling version 1 or newer
+
+Journaling is negotiated through `StartUpdateRequest.journalVersion` and `StartUpdateResponse.journalVersion`. The Procella-local `journaling-v1` capability remains advertised for compatibility; it is not an upstream Pulumi capability.
 
 The update status transitions from `not started` → `running`.
 
@@ -59,9 +62,11 @@ The CLI periodically saves infrastructure state:
 
 - `PATCH .../checkpoint` — standard checkpoint (full deployment JSON)
 - `PATCH .../checkpointverbatim` — verbatim checkpoint (preserves exact JSON, with sequence number for idempotency)
-- `PATCH .../checkpointdelta` — delta checkpoint (only the changed resources, applied against the last full checkpoint)
+- `PATCH .../checkpointdelta` — optional textual delta, available only after `PROCELLA_DELTA_CHECKPOINTS_ENABLED=true`, restart, capability negotiation, an `Accept` version of 8 or newer, and a verbatim baseline
 
 Each checkpoint increments the stack's `last_checkpoint_version`.
+
+When enabled, Procella advertises `delta-checkpoint-uploads-v2` with a `1048576`-byte (1 MiB) cutoff. Every accepted delta is validated and materialized as a canonical full checkpoint. To roll back, set the flag to `false` and restart; no state rewrite or database migration is required.
 
 #### Event Streaming
 

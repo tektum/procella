@@ -27,14 +27,15 @@ function sdkVersionToMonorepoTag(sdkVersion: string): string {
 	return `sdk/${sdkVersion}`;
 }
 
-async function fetchGoFile(tag: string, path: string): Promise<string> {
+export async function fetchGoFile(tag: string, path: string): Promise<string> {
 	const url = `https://raw.githubusercontent.com/pulumi/pulumi/${tag}/${path}`;
 	const res = await fetch(url);
 	if (!res.ok) {
-		const fallbackUrl = `https://raw.githubusercontent.com/pulumi/pulumi/master/${path}`;
-		const fallback = await fetch(fallbackUrl);
-		if (!fallback.ok) throw new Error(`Failed to fetch ${path} from tag ${tag} or master`);
-		return fallback.text();
+		throw new Error(
+			`Failed to fetch ${path} from pinned tag ${tag} (HTTP ${res.status} ${res.statusText}). ` +
+				"Refusing to fall back to the master branch: routes must be generated from the exact " +
+				"Pulumi SDK version pinned in go.mod, or generation must fail closed.",
+		);
 	}
 	return res.text();
 }
@@ -108,7 +109,9 @@ async function main() {
 	console.log(`✓ Generated ${OUT_FILE}`);
 }
 
-main().catch((e) => {
-	console.error(e);
-	process.exit(1);
-});
+if (import.meta.main) {
+	main().catch((e) => {
+		console.error(e);
+		process.exit(1);
+	});
+}

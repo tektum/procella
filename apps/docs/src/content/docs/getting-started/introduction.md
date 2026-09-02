@@ -3,11 +3,11 @@ title: Introduction
 description: What Procella is, why self-host your Pulumi backend, and what's included.
 ---
 
-Procella is a self-hosted backend for [Pulumi](https://www.pulumi.com/), the infrastructure-as-code platform. It implements the Pulumi Service API so that the standard Pulumi CLI works against it without modification — `pulumi login`, `pulumi stack init`, `pulumi up`, `pulumi destroy`, state import/export, secret encryption, and more.
+Procella is a self-hosted backend for [Pulumi](https://www.pulumi.com/), the infrastructure-as-code platform. It implements the Pulumi Service API routes needed by tested core CLI workflows, including `pulumi login`, `pulumi stack init`, `pulumi up`, `pulumi destroy`, state import/export, and secret encryption.
 
 ## Why Self-Host?
 
-Pulumi Cloud is the default backend for managing state, secrets, and collaboration. For teams that need to keep infrastructure state within their own network boundary — whether for compliance, data sovereignty, or cost — Procella provides a drop-in replacement.
+Pulumi Cloud is the default backend for managing state, secrets, and collaboration. For teams that need to keep infrastructure state within their own network boundary — whether for compliance, data sovereignty, or cost — Procella provides a self-hosted backend for the [documented core workflows](../compatibility/). Pulumi Cloud-only services are intentionally outside that contract.
 
 - **Data sovereignty** — state and secrets never leave your infrastructure
 - **No vendor dependency** — run on your own PostgreSQL and S3-compatible storage
@@ -16,7 +16,7 @@ Pulumi Cloud is the default backend for managing state, secrets, and collaborati
 
 ## What Works
 
-Procella implements the Pulumi Service API surface that the CLI uses:
+Procella implements and tests the following core workflows. This is not a promise that every Pulumi CLI command or Pulumi Cloud API works; see [Pulumi CLI Compatibility](../compatibility/) for version tiers and unsupported areas.
 
 | Feature | Status |
 |---|---|
@@ -30,7 +30,7 @@ Procella implements the Pulumi Service API surface that the CLI uses:
 | `pulumi cancel` | ✅ |
 | Concurrent update protection | ✅ |
 | Checkpoint versioning | ✅ |
-| Delta checkpoints | ✅ |
+| Delta checkpoints (operator opt-in) | ✅ |
 | Update event history | ✅ |
 | Orphan update garbage collection | ✅ |
 | Web dashboard | ✅ |
@@ -59,5 +59,6 @@ Procella implements the Pulumi Service API surface that the CLI uses:
 
 - [Quick Start](../quickstart/) — get a local instance running in under 5 minutes
 - [Configuration](../configuration/) — all environment variables and their defaults
+- [Pulumi CLI Compatibility](../compatibility/) — tested versions, optional capabilities, and unsupported Cloud-only areas
 - [Architecture Overview](../../architecture/overview/) — how the pieces fit together
 - [Web Dashboard](../../architecture/dashboard/) — pages, navigation, and Descope management widgets
