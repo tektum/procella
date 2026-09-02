@@ -2,6 +2,7 @@
 
 import { router } from "../trpc.js";
 import { auditRouter } from "./audit.js";
+import { authRouter } from "./auth.js";
 import { escRouter } from "./esc.js";
 import { eventsRouter } from "./events.js";
 import { githubRouter } from "./github.js";
@@ -16,6 +17,7 @@ import { webhooksRouter } from "./webhooks.js";
 // ============================================================================
 
 export const appRouter = router({
+	auth: authRouter,
 	stacks: stacksRouter,
 	audit: auditRouter,
 	updates: updatesRouter,

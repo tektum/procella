@@ -1,12 +1,5 @@
-import {
-	AuditManagement,
-	RoleManagement,
-	TenantProfile,
-	UserManagement,
-	useSession,
-} from "@descope/react-sdk";
+import { AuditManagement, RoleManagement, TenantProfile, UserManagement } from "@descope/react-sdk";
 import { useEffect, useState } from "react";
-import { rolesFromClaims, tenantFromClaims } from "../auth/claims";
 import { useAuthConfig } from "../hooks/useAuthConfig";
 import { trpc } from "../trpc";
 
@@ -27,7 +20,11 @@ function getTab(): SettingsTab {
 
 export function Settings() {
 	const { config } = useAuthConfig();
-	const { claims } = useSession();
+	const {
+		data: caller,
+		isLoading: isCallerLoading,
+		error: callerError,
+	} = trpc.auth.current.useQuery(undefined, { enabled: config?.mode === "descope" });
 	const [tab, setTab] = useState<SettingsTab>(getTab);
 
 	useEffect(() => {
@@ -38,22 +35,32 @@ export function Settings() {
 
 	if (config?.mode !== "descope") return null;
 
-	// Claims-based — works even when the session JWT is an HttpOnly cookie.
-	const tenantId = tenantFromClaims(claims);
-	const roles = rolesFromClaims(claims, tenantId);
-	const isAdmin = roles.includes("admin");
+	const tenantId = caller?.tenantId ?? "";
+	const isAdmin = caller?.roles.includes("admin") ?? false;
 
 	const selectTab = (t: SettingsTab) => {
 		window.location.hash = t;
 		setTab(t);
 	};
 
-	if (!tenantId) {
+	if (isCallerLoading) {
 		return (
 			<div className="space-y-6">
 				<h1 className="text-2xl font-bold text-mist">Settings</h1>
 				<div className="bg-slate-brand/50 border border-cloud/20 rounded-lg p-12 text-center">
 					<p className="text-cloud">Loading session…</p>
+				</div>
+			</div>
+		);
+	}
+
+	if (callerError || !caller) {
+		return (
+			<div className="space-y-6">
+				<h1 className="text-2xl font-bold text-mist">Settings</h1>
+				<div className="bg-slate-brand/50 border border-cloud/20 rounded-lg p-12 text-center">
+					<p className="text-mist/80 font-medium">Unable to verify access</p>
+					<p className="text-cloud text-sm mt-1">Refresh the page and sign in again.</p>
 				</div>
 			</div>
 		);

@@ -1,19 +1,16 @@
 import { useDescope, useSession, useUser } from "@descope/react-sdk";
 import { Suspense, useEffect, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router";
-import { rolesFromClaims, tenantFromClaims } from "../auth/claims";
 import { useAuthConfig } from "../hooks/useAuthConfig";
+import { trpc } from "../trpc";
 import { CommandBar, openCommandBar } from "./CommandBar";
 import { PageSkeleton } from "./PageSkeleton";
 import { ProcellaLogo } from "./ProcellaLogo";
 
 /** Descope-only nav items — only rendered inside AuthProvider. */
 function DescopeNav({ onNav }: { onNav?: () => void }) {
-	// Derive RBAC from session claims — works even when the JWT itself lives in
-	// an HttpOnly cookie and is invisible to JS.
-	const { claims } = useSession();
-	const tenantId = tenantFromClaims(claims);
-	const isAdmin = !!tenantId && rolesFromClaims(claims, tenantId).includes("admin");
+	const { data: caller } = trpc.auth.current.useQuery();
+	const isAdmin = caller?.roles.includes("admin") ?? false;
 
 	return (
 		<>

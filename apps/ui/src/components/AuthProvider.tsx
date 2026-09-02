@@ -1,17 +1,23 @@
 import { AuthProvider, useSession } from "@descope/react-sdk";
-import { type ReactNode, useEffect } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { type ReactNode, useEffect, useRef } from "react";
 import { setStoredDescopeSessionClaims, setStoredDescopeSessionToken } from "../auth/sessionToken";
 import { useAuthConfig } from "../hooks/useAuthConfig";
 
 function DescopeSessionTokenBridge() {
 	const { sessionToken, claims } = useSession();
-
+	const queryClient = useQueryClient();
+	const previousClaims = useRef(claims);
 	useEffect(() => {
 		// sessionToken is empty when the project manages tokens in HttpOnly
-		// cookies — claims remain available in both modes and carry tenant/roles.
+		// cookies; retain the SDK claims for tenant identification outside hooks.
 		setStoredDescopeSessionToken(sessionToken);
 		setStoredDescopeSessionClaims(claims);
-	}, [sessionToken, claims]);
+		if (previousClaims.current !== claims) {
+			previousClaims.current = claims;
+			void queryClient.resetQueries();
+		}
+	}, [sessionToken, claims, queryClient]);
 
 	return null;
 }

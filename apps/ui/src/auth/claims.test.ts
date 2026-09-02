@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { rolesFromClaims, tenantFromClaims } from "./claims";
+import { tenantFromClaims } from "./claims";
 
 describe("tenantFromClaims", () => {
 	test("returns empty string for null/undefined claims", () => {
@@ -28,37 +28,5 @@ describe("tenantFromClaims", () => {
 
 	test("returns empty string when tenants is not an object", () => {
 		expect(tenantFromClaims({ tenants: "nope" })).toBe("");
-	});
-});
-
-describe("rolesFromClaims", () => {
-	test("returns empty array for null/undefined claims", () => {
-		expect(rolesFromClaims(null, "tenant-1")).toEqual([]);
-		expect(rolesFromClaims(undefined, "tenant-1")).toEqual([]);
-	});
-
-	test("prefers tenant-scoped roles", () => {
-		const claims = {
-			roles: ["viewer"],
-			tenants: { "tenant-1": { roles: ["admin", "member"] } },
-		};
-		expect(rolesFromClaims(claims, "tenant-1")).toEqual(["admin", "member"]);
-	});
-
-	test("falls back to top-level roles when tenant has none", () => {
-		expect(rolesFromClaims({ roles: ["viewer"], tenants: {} }, "tenant-1")).toEqual(["viewer"]);
-	});
-
-	test("falls back to top-level roles when no tenantId is given", () => {
-		expect(rolesFromClaims({ roles: ["member"] }, "")).toEqual(["member"]);
-	});
-
-	test("filters non-string entries out of role arrays", () => {
-		const claims = { tenants: { "tenant-1": { roles: ["admin", 42, null, "viewer"] } } };
-		expect(rolesFromClaims(claims, "tenant-1")).toEqual(["admin", "viewer"]);
-	});
-
-	test("returns empty array when no roles anywhere", () => {
-		expect(rolesFromClaims({ tenants: { "tenant-1": {} } }, "tenant-1")).toEqual([]);
 	});
 });
