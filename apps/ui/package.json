@@ -9,7 +9,7 @@
 		"typecheck": "tsc --noEmit"
 	},
 	"dependencies": {
-		"@descope/react-sdk": "^2.26.7",
+		"@descope/react-sdk": "^3.0.0",
 		"@fontsource/jetbrains-mono": "^5.2.8",
 		"@procella/api": "workspace:*",
 		"@procella/types": "workspace:*",
