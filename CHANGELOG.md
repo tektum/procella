@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.0](https://github.com/tektum/procella/compare/procella-v0.3.4...procella-v0.4.0) (2026-09-02)
+
+
+### Features
+
+* **ci:** add deployment safety checks ([#235](https://github.com/tektum/procella/issues/235)) ([5951302](https://github.com/tektum/procella/commit/5951302dfc358dbf0716118ce1ac9dec78fa6532))
+
+
+### Bug Fixes
+
+* **auth:** source UI roles from verified caller ([#240](https://github.com/tektum/procella/issues/240)) ([afe88e8](https://github.com/tektum/procella/commit/afe88e878efc867f9d58e41d14d5b5d0d81ee11e))
+* **ci:** preserve historical deployment refs ([#238](https://github.com/tektum/procella/issues/238)) ([8ea94fb](https://github.com/tektum/procella/commit/8ea94fb440b88525407cb7e99b0b9e183bfee9a7))
+* resolve ESC creator identity display ([#232](https://github.com/tektum/procella/issues/232)) ([cd8c345](https://github.com/tektum/procella/commit/cd8c345b198aee6ba23820094eff8b91b5efa068))
+
 ## [0.3.4](https://github.com/tektum/procella/compare/procella-v0.3.3...procella-v0.3.4) (2026-09-01)
 
 
