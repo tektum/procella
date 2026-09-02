@@ -11,14 +11,17 @@ describe("health and capabilities", () => {
 		expect(body).toEqual({ status: "ok" });
 	});
 
-	test("GET /api/capabilities returns expected capabilities", async () => {
+	test("GET /api/capabilities returns the exact expected wire shape", async () => {
 		const res = await fetch(`${BACKEND_URL}/api/capabilities`);
 		expect(res.status).toBe(200);
 		const body = await res.json();
-		expect(body.capabilities).toBeArray();
-		const names = body.capabilities.map((c: { capability: string }) => c.capability);
-		expect(names).toContain("batch-encrypt");
-		expect(names).toContain("deployment-schema-version");
+		expect(body).toEqual({
+			capabilities: [
+				{ capability: "batch-encrypt" },
+				{ capability: "deployment-schema-version", version: 1, configuration: { version: 3 } },
+				{ capability: "journaling-v1", version: 1 },
+			],
+		});
 	});
 
 	test("GET /api/cli/version returns version info", async () => {
