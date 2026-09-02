@@ -129,7 +129,7 @@ async function cancelDirectUpdate(stackPath: string, accept: string | null): Pro
 		method: "POST",
 		accept,
 	});
-	expectApiStatus(cancelUpdate, 200);
+	expectApiStatus(cancelUpdate, 204);
 }
 
 async function runCommonCompatibilityChecks(args: {
@@ -303,7 +303,7 @@ describeCompatibility("Pulumi CLI compatibility smoke", () => {
 				method: "POST",
 				accept: "application/vnd.pulumi+9",
 			});
-			expectApiStatus(cancelUpdate, 200);
+			expectApiStatus(cancelUpdate, 204);
 
 			await runPulumi(["stack", "rm", "--yes", stackPath], opts);
 		},
