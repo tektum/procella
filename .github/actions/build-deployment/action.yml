@@ -1,25 +1,46 @@
 name: Build Deployment Binaries
 description: Build and verify every binary and migration asset packaged by SST
 
+inputs:
+  build-esc-eval:
+    description: Build the ESC evaluator instead of using a prebuilt artifact
+    required: false
+    default: "true"
+
 runs:
   using: composite
   steps:
     - name: Build and verify deployment artifacts
       shell: bash
+      env:
+        BUILD_ESC_EVAL: ${{ inputs.build-esc-eval }}
       run: |
         set -euo pipefail
 
         mkdir -p .build/cli-api .build/web-api .build/gc .build/migrate
 
-        (
-          cd esc-eval
-          make build
-        )
+        if [[ "$BUILD_ESC_EVAL" == "true" ]]; then
+          (
+            cd esc-eval
+            make build
+          )
+        else
+          chmod +x .build/esc-eval/bootstrap
+        fi
 
-        bun build --compile --target=bun-linux-x64 --production --sourcemap --compile-exec-argv="--smol" apps/server/src/lambda-cli.ts --outfile .build/cli-api/bootstrap
-        bun build --compile --target=bun-linux-x64 --production --sourcemap --compile-exec-argv="--smol" apps/server/src/lambda-web.ts --outfile .build/web-api/bootstrap
-        bun build --compile --target=bun-linux-x64 --production --sourcemap --compile-exec-argv="--smol" apps/server/src/gc-bootstrap.ts --outfile .build/gc/bootstrap
-        bun build --compile --target=bun-linux-x64 --production --sourcemap --compile-exec-argv="--smol" apps/server/src/migrate-bootstrap.ts --outfile .build/migrate/bootstrap
+        compile_flags=(
+          --compile
+          --target=bun-linux-x64
+          --production
+          --sourcemap
+          --compile-exec-argv=--smol
+          --no-compile-autoload-dotenv
+          --no-compile-autoload-bunfig
+        )
+        bun build "${compile_flags[@]}" apps/server/src/lambda-cli.ts --outfile .build/cli-api/bootstrap
+        bun build "${compile_flags[@]}" apps/server/src/lambda-web.ts --outfile .build/web-api/bootstrap
+        bun build "${compile_flags[@]}" apps/server/src/gc-bootstrap.ts --outfile .build/gc/bootstrap
+        bun build "${compile_flags[@]}" apps/server/src/migrate-bootstrap.ts --outfile .build/migrate/bootstrap
         cp -rf packages/db/drizzle .build/migrate/drizzle
 
         for binary in \
