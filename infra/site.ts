@@ -1,3 +1,4 @@
+import { api } from "./api";
 import { router } from "./router";
 import { webApi } from "./web-api";
 
@@ -26,10 +27,12 @@ export const site = new sst.aws.StaticSite("ProcellaSite", {
 // Root domain serves the same UI
 router.route(rootDomain, site.url);
 
-// tRPC + Descope auth routes go to the Web Lambda (streaming, no cache)
+// tRPC + Descope auth routes go to the Web Lambda; ESC routes go to the CLI Lambda.
 // SST Router uses prefix matching — do NOT use /* (the * is stored literally
 // and startsWith() in the CloudFront Function won't treat it as a wildcard).
 router.route(`app.${rootDomain}/trpc`, webApi.url);
 router.route(`app.${rootDomain}/api/auth`, webApi.url);
+router.route(`app.${rootDomain}/api/esc`, api.url);
 router.route(`${rootDomain}/trpc`, webApi.url);
 router.route(`${rootDomain}/api/auth`, webApi.url);
+router.route(`${rootDomain}/api/esc`, api.url);
