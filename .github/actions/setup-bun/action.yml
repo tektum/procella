@@ -16,5 +16,5 @@ runs:
         key: bun-v2-${{ runner.os }}-${{ hashFiles('bun.lock', 'bunfig.toml') }}
         restore-keys: bun-v2-${{ runner.os }}-
 
-    - run: bun install --frozen-lockfile
+    - run: bun install --frozen-lockfile && bun prune
       shell: bash

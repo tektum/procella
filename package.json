@@ -70,8 +70,5 @@
 		"*.{json,jsonl,css}": [
 			"biome format --write --no-errors-on-unmatched"
 		]
-	},
-	"overrides": {
-		"astro>vite": "^7.3.2"
 	}
 }
