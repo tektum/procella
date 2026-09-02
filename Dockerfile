@@ -8,6 +8,9 @@ COPY package.json bun.lock ./
 COPY --parents ./*/*/package.json ./
 RUN bun install --frozen-lockfile
 
+FROM deps AS prod-deps
+RUN bun prune --production
+
 FROM base AS ui
 COPY --from=deps /usr/src/app/node_modules ./node_modules
 COPY packages/ packages/
@@ -28,7 +31,7 @@ RUN bun build --compile \
 FROM base AS lambda
 WORKDIR /var/task
 COPY --from=adapter /lambda-adapter /opt/extensions/lambda-adapter
-COPY --from=deps /usr/src/app/node_modules ./node_modules
+COPY --from=prod-deps /usr/src/app ./
 COPY packages/ packages/
 COPY apps/server/ apps/server/
 COPY tsconfig.json tsconfig.base.json ./
