@@ -529,7 +529,7 @@ describe("[security] HIGH regressions (vulns.txt H1-H9)", () => {
 	test("[H9] applyTextEdits rejects out-of-bounds spans", () => {
 		// H9 exploit attempt: replace the whole checkpoint JSON with an out-of-bounds span and require BadRequest rejection.
 		expect(() =>
-			applyTextEdits("abcdef", [
+			applyTextEdits(new TextEncoder().encode("abcdef"), [
 				{
 					span: {
 						start: { line: 0, column: 0, offset: 2 },

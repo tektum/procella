@@ -202,6 +202,7 @@ describe("@procella/server routes", () => {
 			cronSecret?: string;
 			issueSubscriptionTicket?: (caller: Caller) => Promise<string>;
 			verifySubscriptionTicket?: (ticket: string) => Promise<Caller>;
+			deltaCheckpointsEnabled?: boolean;
 		},
 	) {
 		return createApp({
@@ -220,6 +221,7 @@ describe("@procella/server routes", () => {
 			stacks: mockStacksService(),
 			updates: mockUpdatesService(),
 			webhooks: mockWebhooksService(),
+			deltaCheckpointsEnabled: opts?.deltaCheckpointsEnabled,
 			verifySubscriptionTicket:
 				opts?.verifySubscriptionTicket ??
 				((ticket: string) => subscriptionTickets.verifyTicket(ticket)),
@@ -291,6 +293,37 @@ describe("@procella/server routes", () => {
 			expect(res.status).toBe(200);
 			const body = await res.json();
 			expect(body.capabilities).toBeArray();
+		});
+
+		test("GET /api/capabilities is byte-equivalent to the pre-opt-in response when delta checkpoints are disabled (default)", async () => {
+			const app = makeApp();
+			const res = await app.request("/api/capabilities");
+			const body = await res.json();
+			expect(body).toEqual({
+				capabilities: [
+					{ capability: "batch-encrypt" },
+					{ capability: "deployment-schema-version", version: 1, configuration: { version: 3 } },
+					{ capability: "journaling-v1", version: 1 },
+				],
+			});
+		});
+
+		test("GET /api/capabilities appends delta-checkpoint-uploads-v2 when enabled", async () => {
+			const app = makeApp(undefined, { deltaCheckpointsEnabled: true });
+			const res = await app.request("/api/capabilities");
+			const body = await res.json();
+			expect(body).toEqual({
+				capabilities: [
+					{ capability: "batch-encrypt" },
+					{ capability: "deployment-schema-version", version: 1, configuration: { version: 3 } },
+					{ capability: "journaling-v1", version: 1 },
+					{
+						capability: "delta-checkpoint-uploads-v2",
+						version: 2,
+						configuration: { checkpointCutoffSizeBytes: 1_048_576 },
+					},
+				],
+			});
 		});
 
 		test("GET /api/cli/version returns 200 without auth", async () => {
@@ -535,6 +568,149 @@ describe("@procella/server routes", () => {
 				body: JSON.stringify({}),
 			});
 			expect(res.status).toBe(400);
+		});
+	});
+
+	// ========================================================================
+	// Route parity: only checkpointdelta/batch-encrypt/batch-decrypt remain
+	// version-gated. No Accept requirement was added to any legacy route.
+	// ========================================================================
+
+	describe("route parity — pulumiAccept coverage is not widened", () => {
+		const apiTokenAuth = { Authorization: "token valid-token" };
+		const updateTokenAuth = {
+			Authorization:
+				"update-token update:upd-1:sid-1:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+		};
+
+		test("legacy routes remain non-415 without an Accept header", async () => {
+			const app = makeApp();
+			const legacyRequests: Array<[string, RequestInit]> = [
+				["/api/capabilities", { method: "GET" }],
+				["/api/cli/version", { method: "GET" }],
+				["/healthz", { method: "GET" }],
+				["/api/user", { method: "GET", headers: apiTokenAuth }],
+				["/api/user/stacks", { method: "GET", headers: apiTokenAuth }],
+				["/api/stacks", { method: "GET", headers: apiTokenAuth }],
+				[
+					"/api/stacks/myorg/myproj",
+					{
+						method: "POST",
+						headers: { ...apiTokenAuth, "Content-Type": "application/json" },
+						body: "{}",
+					},
+				],
+				["/api/stacks/myorg/myproj/dev", { method: "GET", headers: apiTokenAuth }],
+				["/api/stacks/myorg/myproj/dev/export", { method: "GET", headers: apiTokenAuth }],
+				[
+					"/api/stacks/myorg/myproj/dev/encrypt",
+					{
+						method: "POST",
+						headers: { ...apiTokenAuth, "Content-Type": "application/json" },
+						body: JSON.stringify({ plaintext: "YQ==" }),
+					},
+				],
+				[
+					"/api/stacks/myorg/myproj/dev/decrypt",
+					{
+						method: "POST",
+						headers: { ...apiTokenAuth, "Content-Type": "application/json" },
+						body: JSON.stringify({ ciphertext: "YQ==" }),
+					},
+				],
+				[
+					"/api/stacks/myorg/myproj/dev/update/upd-1",
+					{
+						method: "POST",
+						headers: { ...apiTokenAuth, "Content-Type": "application/json" },
+						body: "{}",
+					},
+				],
+				["/api/stacks/myorg/myproj/dev/updates", { method: "GET", headers: apiTokenAuth }],
+				[
+					"/api/stacks/myorg/myproj/dev/update/upd-1/checkpoint",
+					{
+						method: "PATCH",
+						headers: { ...updateTokenAuth, "Content-Type": "application/json" },
+						body: "{}",
+					},
+				],
+				[
+					"/api/stacks/myorg/myproj/dev/update/upd-1/checkpointverbatim",
+					{
+						method: "PATCH",
+						headers: { ...updateTokenAuth, "Content-Type": "application/json" },
+						body: "{}",
+					},
+				],
+				[
+					"/api/stacks/myorg/myproj/dev/update/upd-1/events/batch",
+					{
+						method: "POST",
+						headers: { ...updateTokenAuth, "Content-Type": "application/json" },
+						body: JSON.stringify({ events: [] }),
+					},
+				],
+				[
+					"/api/stacks/myorg/myproj/dev/update/upd-1/complete",
+					{
+						method: "POST",
+						headers: { ...updateTokenAuth, "Content-Type": "application/json" },
+						body: JSON.stringify({ status: "succeeded" }),
+					},
+				],
+				[
+					"/api/auth/cli-token",
+					{
+						method: "POST",
+						headers: { ...apiTokenAuth, "Content-Type": "application/json" },
+						body: JSON.stringify({ name: "route-parity-test" }),
+					},
+				],
+			];
+
+			for (const [path, init] of legacyRequests) {
+				const res = await app.request(path, init);
+				expect(
+					res.status,
+					`${init.method} ${path} must not be Accept-gated (got ${res.status})`,
+				).not.toBe(415);
+			}
+		});
+
+		test("exactly batch-encrypt, batch-decrypt, and checkpointdelta return 415 without Accept", async () => {
+			const app = makeApp();
+			const gatedRequests: Array<[string, RequestInit]> = [
+				[
+					"/api/stacks/myorg/myproj/dev/batch-encrypt",
+					{
+						method: "POST",
+						headers: { ...apiTokenAuth, "Content-Type": "application/json" },
+						body: JSON.stringify({ plaintexts: ["YQ=="] }),
+					},
+				],
+				[
+					"/api/stacks/myorg/myproj/dev/batch-decrypt",
+					{
+						method: "POST",
+						headers: { ...apiTokenAuth, "Content-Type": "application/json" },
+						body: JSON.stringify({ ciphertexts: ["YQ=="] }),
+					},
+				],
+				[
+					"/api/stacks/myorg/myproj/dev/update/upd-1/checkpointdelta",
+					{
+						method: "PATCH",
+						headers: { ...updateTokenAuth, "Content-Type": "application/json" },
+						body: "{}",
+					},
+				],
+			];
+
+			for (const [path, init] of gatedRequests) {
+				const res = await app.request(path, init);
+				expect(res.status, `${init.method} ${path} must be Accept-gated`).toBe(415);
+			}
 		});
 	});
 

@@ -47,6 +47,23 @@ E2E tests exercise the full Pulumi CLI lifecycle against a real Procella server.
 - Pulumi CLI installed
 - `PROCELLA_DATABASE_URL` environment variable
 
+### Pulumi CLI Compatibility Lanes
+
+CI separates the support policy into four lanes:
+
+| Lane | CLI version | Coverage |
+|---|---|---|
+| Legacy smoke | `v3.9.0` | Login/`whoami`; stack CRUD; preview/update/refresh/destroy with an empty Node.js program; direct cancellation; secret config; synthetic export/import; no-`Accept` legacy checks |
+| Fully supported minimum | `v3.233.0` | All legacy/common checks plus API v9 behavior, batch crypto, journaling negotiation, and tolerant `SecretValue` decoding |
+| SDK-matched contract | Derived during CI from `packages/types/tygo/go.mod` | Complete E2E suite against the CLI version matching generated Pulumi SDK contracts |
+| Latest canary | `latest` | Login, stack initialization, preview, update, export, destroy, and stack removal |
+
+The legacy and minimum lanes use the workspace's installed `@pulumi/pulumi` package through a direct temporary symlink. Their empty Node.js program has no provider resources or plugins, so the lanes require neither YAML support nor network dependency/plugin installation.
+
+The focused delta load integration test starts with an exact-text checkpoint larger than 1 MiB and applies 16 accepted deltas. It deterministically asserts canonical checkpoint rows, the single sidecar row, exported state, and bounded blob storage: canonical blobs plus only the current sidecar baseline. Superseded sidecar blobs are deleted only after commit, and cleanup failure cannot invalidate committed state. The test reports elapsed time, CPU time, RSS/heap observations, database row shape, and blob-file counts without a wall-clock pass/fail threshold.
+
+The canary detects upstream changes but does not move the supported minimum. The minimum is a testing and support policy, not a global runtime version lockout. See [Pulumi CLI Compatibility](../getting-started/compatibility/) for unsupported areas and opt-in capabilities.
+
 ### Test Files
 
 | File | Coverage |

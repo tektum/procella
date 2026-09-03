@@ -1,3 +1,4 @@
+import { SUPPORTED_DEPLOYMENT_SCHEMA_VERSION } from "@procella/updates";
 import { z } from "zod";
 
 export const MAX_JSON_DEPTH = 32;
@@ -71,7 +72,27 @@ function withJsonBounds<T extends z.ZodTypeAny>(schema: T): T {
 	}) as T;
 }
 
-const FeatureListSchema = z.array(BoundedString(MAX_STRING_LENGTH)).max(MAX_FEATURE_COUNT);
+/**
+ * Procella advertises `deployment-schema-version` 3, so a compliant CLI downgrades to v3 and
+ * drops `features` before sending. Anything else would be accepted here and then silently
+ * re-exported as v3 with the feature data lost, so it is rejected at the wire boundary.
+ */
+const DeploymentSchemaVersion = z
+	.number()
+	.int()
+	.nonnegative()
+	.max(
+		SUPPORTED_DEPLOYMENT_SCHEMA_VERSION,
+		`Unsupported deployment schema version: Procella supports up to version ${SUPPORTED_DEPLOYMENT_SCHEMA_VERSION}`,
+	);
+
+const FeatureListSchema = z
+	.array(BoundedString(MAX_STRING_LENGTH))
+	.max(MAX_FEATURE_COUNT)
+	.max(
+		0,
+		`Unsupported deployment features: Procella supports up to deployment schema version ${SUPPORTED_DEPLOYMENT_SCHEMA_VERSION}`,
+	);
 
 const JournalEntrySchema = z
 	.object({
@@ -106,7 +127,7 @@ export const PatchUpdateCheckpointRequestSchema = withJsonBounds(
 	z
 		.object({
 			isInvalid: z.boolean().default(false),
-			version: z.number().int().nonnegative(),
+			version: DeploymentSchemaVersion,
 			deployment: BoundedJSON,
 			features: FeatureListSchema.optional(),
 		})
@@ -116,7 +137,7 @@ export const PatchUpdateCheckpointRequestSchema = withJsonBounds(
 export const PatchUpdateVerbatimCheckpointRequestSchema = withJsonBounds(
 	z
 		.object({
-			version: z.number().int().nonnegative(),
+			version: DeploymentSchemaVersion,
 			untypedDeployment: BoundedJSON,
 			sequenceNumber: z.number().int().nonnegative(),
 		})
@@ -126,8 +147,11 @@ export const PatchUpdateVerbatimCheckpointRequestSchema = withJsonBounds(
 export const PatchUpdateCheckpointDeltaRequestSchema = withJsonBounds(
 	z
 		.object({
-			version: z.number().int().nonnegative(),
-			checkpointHash: BoundedString(MAX_STRING_LENGTH),
+			version: DeploymentSchemaVersion,
+			// Required: the delta is only safe to apply if the client states the expected result.
+			checkpointHash: z
+				.string()
+				.regex(/^[0-9a-fA-F]{64}$/, "checkpointHash must be a 64-character SHA-256 hex digest"),
 			sequenceNumber: z.number().int().nonnegative(),
 			deploymentDelta: z.array(BoundedJSON),
 		})
@@ -145,7 +169,7 @@ export const JournalEntriesSchema = withJsonBounds(
 export const UntypedDeploymentSchema = withJsonBounds(
 	z
 		.object({
-			version: z.number().int().min(1).max(4).optional(),
+			version: DeploymentSchemaVersion.min(1).optional(),
 			features: FeatureListSchema.optional(),
 			deployment: BoundedJSON,
 		})

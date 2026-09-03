@@ -5,6 +5,8 @@ description: Export, import, and versioned state retrieval.
 
 Procella supports the Pulumi CLI's state management commands: `pulumi stack export`, `pulumi stack import`, and versioned checkpoint retrieval.
 
+Procella persists and exports deployment schema v3. Schema v4 and non-empty deployment feature markers are rejected until every state path can round-trip them without loss.
+
 ## Export
 
 ```
@@ -95,4 +97,6 @@ PATCH .../checkpointverbatim
 ```
 PATCH .../checkpointdelta
 ```
-Only the changed resources. The server applies the delta against the last full checkpoint to produce a complete state. This reduces network bandwidth for large stacks where only a few resources changed.
+Delta uploads are optional and disabled by default. With `PROCELLA_DELTA_CHECKPOINTS_ENABLED=true` and a restart, Procella advertises `delta-checkpoint-uploads-v2` with a 1 MiB cutoff. A compatible API v8-or-newer client first establishes an exact verbatim baseline, then sends textual edits plus a sequence number and SHA-256 result hash. Procella applies each delta transactionally and stores the result as a canonical full checkpoint.
+
+Set the flag to `false` and restart to remove the advertisement and return clients to full uploads. Existing canonical checkpoints remain valid; no state rewrite or migration is required.

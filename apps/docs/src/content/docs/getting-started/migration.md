@@ -1,9 +1,9 @@
 ---
 title: Migrating to Procella
-description: Move your existing Pulumi stacks from any backend to Procella with zero downtime and full state integrity.
+description: Move Pulumi stack state to Procella using supported export and import workflows.
 ---
 
-Procella is a drop-in replacement for any Pulumi state backend. The Pulumi CLI handles migration natively through `pulumi stack export` and `pulumi stack import` — no custom tooling required. This guide covers every source backend, secrets handling, validation, and rollback procedures.
+Procella supports migration through the Pulumi CLI's `pulumi stack export` and `pulumi stack import` workflows — no custom state format is required. This guide covers common source backends, secrets handling, validation, and rollback procedures. Confirm your CLI version and workflow against the [compatibility policy](../compatibility/) before migrating.
 
 ## How Migration Works
 

@@ -3,11 +3,9 @@ title: Update API
 description: Update lifecycle endpoints — create, start, execute, and complete.
 ---
 
-The update API implements the Pulumi Service API protocol for managing infrastructure deployments. See [Update Lifecycle](../architecture/update-lifecycle/) for the conceptual overview.
+The update API implements the core Pulumi Service API update protocol used by Procella's tested CLI workflows. See [Update Lifecycle](../architecture/update-lifecycle/) for the conceptual overview and [Pulumi CLI Compatibility](../getting-started/compatibility/) for version tiers and unsupported surfaces.
 
-Most update endpoints are compatible with clients that omit the Pulumi
-`Accept` header. The delta checkpoint endpoint below requires
-`Accept: application/vnd.pulumi+8` or newer.
+Most update endpoints are compatible with clients that omit the Pulumi `Accept` header. Delta checkpoint uploads require `PROCELLA_DELTA_CHECKPOINTS_ENABLED=true`, a server restart, negotiated `delta-checkpoint-uploads-v2`, and `Accept: application/vnd.pulumi+8` or newer.
 
 ## Create Update
 
@@ -76,6 +74,8 @@ Transitions the update from `not started` to `running` and issues a lease token.
 - `token` — lease token for execution-phase authentication
 - `tokenExpiration` — when the lease expires (renew before this time)
 
+If the request includes `journalVersion` 1 or newer, Procella negotiates `journalVersion: 1` in this response. Journaling is selected through this request/response exchange. The Procella-local `journaling-v1` capability remains advertised only for compatibility.
+
 ## Get Update Status
 
 ```
@@ -129,16 +129,9 @@ Returns engine events for an update, optionally filtered by continuation token.
 }
 ```
 
-## Get Latest Update
+## Unsupported Update Inspection Routes
 
-```
-GET /api/stacks/{org}/{project}/{stack}/updates/latest
-```
-
-Returns the most recent update for a stack.
-
-**Auth**: `Authorization: token <api-token>`
-**Required role**: `viewer`
+Procella does not register the upstream `GET .../updates/latest`, per-version `GET .../updates/{version}`, or update content-file retrieval routes. Use the supported update list and event history workflows below; do not assume every Pulumi Cloud update-inspection endpoint is available.
 
 ## List Updates
 
@@ -186,9 +179,11 @@ Saves a checkpoint preserving exact JSON formatting. Uses `sequenceNumber` for i
 PATCH /api/stacks/{org}/{project}/{stack}/update/{updateID}/checkpointdelta
 ```
 
-Saves only changed resources. The server applies the delta against the last full checkpoint.
+Applies textual edits against the exact prior verbatim checkpoint baseline. Procella validates the sequence number and required SHA-256 checkpoint hash, applies the delta in a transaction, and materializes a canonical full checkpoint.
 
-**Required header**: `Accept: application/vnd.pulumi+8` or newer.
+**Preconditions**: `PROCELLA_DELTA_CHECKPOINTS_ENABLED=true` followed by a restart; client negotiation of `delta-checkpoint-uploads-v2`; an advertised cutoff of `1048576` bytes (1 MiB); an existing verbatim baseline; and `Accept: application/vnd.pulumi+8` or newer.
+
+Disabling the setting and restarting removes the capability advertisement. Clients return to full checkpoint uploads, while existing canonical checkpoints remain usable without a state rewrite or migration.
 
 ### Record Events
 

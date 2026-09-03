@@ -22,9 +22,7 @@ import type {
 	JournalEntries,
 	JournalEntry,
 	OperationV2,
-	PatchUpdateCheckpointDeltaRequest,
 	PatchUpdateCheckpointRequest,
-	PatchUpdateVerbatimCheckpointRequest,
 	RenewUpdateLeaseRequest,
 	RenewUpdateLeaseResponse,
 	ResourceV3,
@@ -53,17 +51,34 @@ import {
 	UpdateNotFoundError,
 } from "@procella/types";
 import { and, desc, eq, gt, max, ne, sql } from "drizzle-orm";
-import type { TextEdit } from "./helpers.js";
 import {
-	applyTextEdits,
+	applyDeploymentDelta,
+	assertSupportedDeploymentEnvelope,
+	classifyCheckpointSequence,
 	emptyDeployment,
 	formatBlobKey,
+	formatDeltaBaseBlobKey,
 	generateLeaseToken,
+	hashDeploymentText,
 	leaseExpiresAt,
+	parseDeploymentText,
+	parseTextEdits,
+	requireCheckpointHash,
+	requireSequenceNumber,
 	safeTokenCompare,
 } from "./helpers.js";
-import type { CompletedUpdate, UpdatesService } from "./types.js";
-import { BLOB_THRESHOLD, ImportConflictError, LEASE_DURATION_SECONDS } from "./types.js";
+import type {
+	CompletedUpdate,
+	DeltaCheckpointSave,
+	UpdatesService,
+	VerbatimCheckpointSave,
+} from "./types.js";
+import {
+	BLOB_THRESHOLD,
+	DELTA_BASE_CHECKPOINT_VERSION,
+	ImportConflictError,
+	LEASE_DURATION_SECONDS,
+} from "./types.js";
 
 const MAX_JOURNAL_ENTRIES = 10_000;
 const MAX_EVENT_BATCH_SIZE = 1_000;
@@ -79,6 +94,16 @@ interface LockedUpdateRow {
 
 interface StackLockRow {
 	activeUpdateId: string | null;
+}
+
+/**
+ * Delta baseline for one update: the exact text the client last had accepted, plus the
+ * sequence number that produced it.
+ */
+interface DeltaBaseState {
+	sequenceNumber: number;
+	text: string;
+	blobKey: string | null;
 }
 
 interface NextCheckpointVersionRow {
@@ -276,16 +301,15 @@ export class PostgresUpdatesService implements UpdatesService {
 
 	async completeUpdate(updateId: string, request: CompleteUpdateRequest): Promise<void> {
 		let notifyStackId: string | undefined;
+		let deltaBaseBlobKey: string | null = null;
 		await withDbSpan(
 			"completeUpdate",
 			{ "update.id": updateId, "update.status": request.status },
 			() =>
 				this.db.transaction(async (tx) => {
-					const [row] = await tx.select().from(updates).where(eq(updates.id, updateId));
-
-					if (!row) {
-						throw new UpdateNotFoundError(updateId);
-					}
+					const row = await this.lockUpdateForWrite(tx, updateId, {
+						requireRunningLease: false,
+					});
 
 					if (row.status !== "running") {
 						throw new UpdateConflictError(
@@ -294,6 +318,7 @@ export class PostgresUpdatesService implements UpdatesService {
 					}
 
 					notifyStackId = row.stackId;
+					deltaBaseBlobKey = await this.deleteDeltaBaseInTransaction(tx, updateId);
 
 					await tx
 						.update(updates)
@@ -316,6 +341,7 @@ export class PostgresUpdatesService implements UpdatesService {
 
 		activeUpdatesGauge().add(-1);
 		this.clearUpdateCaches(updateId);
+		await this.deleteSupersededDeltaBase(deltaBaseBlobKey);
 		if (notifyStackId)
 			this.db.execute(sql`SELECT pg_notify('stack_updates', ${notifyStackId})`).catch(() => {});
 	}
@@ -337,13 +363,11 @@ export class PostgresUpdatesService implements UpdatesService {
 
 	async cancelUpdate(updateId: string): Promise<void> {
 		let notifyStackId: string | undefined;
+		let deltaBaseBlobKey: string | null = null;
 		const wasRunning = await withDbSpan("cancelUpdate", { "update.id": updateId }, () =>
 			this.db.transaction(async (tx) => {
-				const [row] = await tx.select().from(updates).where(eq(updates.id, updateId));
-
-				if (!row) {
-					throw new UpdateNotFoundError(updateId);
-				}
+				const row = await this.lockUpdateForWrite(tx, updateId, { requireRunningLease: false });
+				deltaBaseBlobKey = await this.deleteDeltaBaseInTransaction(tx, updateId);
 
 				if (row.status === "cancelled" || row.status === "succeeded" || row.status === "failed") {
 					return false;
@@ -376,6 +400,7 @@ export class PostgresUpdatesService implements UpdatesService {
 			activeUpdatesGauge().add(-1);
 		}
 		this.clearUpdateCaches(updateId);
+		await this.deleteSupersededDeltaBase(deltaBaseBlobKey);
 		if (notifyStackId)
 			this.db.execute(sql`SELECT pg_notify('stack_updates', ${notifyStackId})`).catch(() => {});
 	}
@@ -430,75 +455,87 @@ export class PostgresUpdatesService implements UpdatesService {
 
 	async patchCheckpoint(updateId: string, request: PatchUpdateCheckpointRequest): Promise<void> {
 		return withDbSpan("patchCheckpoint", { "update.id": updateId }, async () => {
-			const deployment = (request as { deployment?: unknown }).deployment;
-			await this.upsertCheckpoint(updateId, deployment);
+			assertSupportedDeploymentEnvelope(request, "checkpoint");
+			await this.upsertCheckpoint(updateId, request.deployment);
 		});
 	}
 
-	async patchCheckpointVerbatim(
-		updateId: string,
-		request: PatchUpdateVerbatimCheckpointRequest,
-	): Promise<void> {
+	/**
+	 * Persist a full checkpoint from the exact text the client sent and retain those bytes as
+	 * the baseline for subsequent deltas.
+	 */
+	async patchCheckpointVerbatim(updateId: string, request: VerbatimCheckpointSave): Promise<void> {
 		return withDbSpan("patchCheckpointVerbatim", { "update.id": updateId }, async () => {
-			const wrapper = (request as { untypedDeployment?: { deployment?: unknown } })
-				.untypedDeployment;
-			const rawDeployment = wrapper?.deployment ?? wrapper;
-			await this.upsertCheckpoint(updateId, rawDeployment);
+			const sequenceNumber = requireSequenceNumber(request.sequenceNumber);
+			assertSupportedDeploymentEnvelope({ version: request.version }, "verbatim checkpoint");
+			const text = request.untypedDeploymentText;
+			const deployment = parseDeploymentText(text, "verbatim checkpoint");
+
+			const supersededBlobKey = await this.db.transaction(async (tx) => {
+				// Lock first: the baseline read, delta application, and both writes must be one
+				// serialized critical section so concurrent replicas cannot interleave.
+				const lockedUpdate = await this.lockUpdateForWrite(tx, updateId);
+				const base = await this.readDeltaBase(tx, updateId);
+
+				const decision = classifyCheckpointSequence({
+					storedSequenceNumber: base?.sequenceNumber,
+					requestSequenceNumber: sequenceNumber,
+					isStoredResult: () => base?.text === text,
+				});
+				if (decision === "replay") return null;
+
+				await this.upsertCheckpointInTransaction(tx, updateId, deployment);
+				await this.writeDeltaBase(tx, lockedUpdate.stackId, updateId, sequenceNumber, text);
+				return base?.blobKey ?? null;
+			});
+			await this.deleteSupersededDeltaBase(supersededBlobKey);
 		});
 	}
 
-	async patchCheckpointDelta(
-		updateId: string,
-		request: PatchUpdateCheckpointDeltaRequest,
-	): Promise<void> {
+	/**
+	 * Apply a textual delta against the exact retained baseline, verify the client's required
+	 * SHA-256, materialize a canonical full checkpoint, and retain the result as the next
+	 * baseline — all under the update row lock.
+	 */
+	async patchCheckpointDelta(updateId: string, request: DeltaCheckpointSave): Promise<void> {
 		return withDbSpan("patchCheckpointDelta", { "update.id": updateId }, async () => {
-			// Fetch latest non-delta checkpoint for this update
-			const [baseCheckpoint] = await this.db
-				.select()
-				.from(checkpoints)
-				.where(and(eq(checkpoints.updateId, updateId), eq(checkpoints.isDelta, false)))
-				.orderBy(desc(checkpoints.version))
-				.limit(1);
+			const sequenceNumber = requireSequenceNumber(request.sequenceNumber);
+			const expectedHash = requireCheckpointHash(request.checkpointHash);
+			assertSupportedDeploymentEnvelope({ version: request.version }, "checkpoint delta");
+			const edits = parseTextEdits(request.deploymentDelta);
 
-			let baseDeployment: unknown;
-			if (baseCheckpoint) {
-				if (baseCheckpoint.blobKey) {
-					const data = await this.storage.get(baseCheckpoint.blobKey);
-					if (!data) {
-						throw new Error("Checkpoint blob data missing from storage");
-					}
-					baseDeployment = JSON.parse(new TextDecoder().decode(data));
-				} else {
-					baseDeployment = baseCheckpoint.data;
-				}
-			} else {
-				baseDeployment = {};
-			}
-
-			const baseJson = JSON.stringify(baseDeployment);
-
-			const edits = (request as { deploymentDelta?: unknown }).deploymentDelta;
-			if (!Array.isArray(edits)) {
-				throw new BadRequestError("deploymentDelta must be an array of TextEdit");
-			}
-
-			const newJson = applyTextEdits(baseJson, edits as TextEdit[]);
-
-			const expectedHash = (request as { checkpointHash?: string }).checkpointHash;
-			if (expectedHash) {
-				const hashBuffer = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(newJson));
-				const actualHash = Array.from(new Uint8Array(hashBuffer))
-					.map((b) => b.toString(16).padStart(2, "0"))
-					.join("");
-				if (actualHash !== expectedHash) {
+			const supersededBlobKey = await this.db.transaction(async (tx) => {
+				const lockedUpdate = await this.lockUpdateForWrite(tx, updateId);
+				const base = await this.readDeltaBase(tx, updateId);
+				if (!base) {
+					// The CLI falls back to a full verbatim upload on any delta error, so this is a
+					// recoverable divergence rather than a failed update.
 					throw new BadRequestError(
-						`Checkpoint hash mismatch: expected ${expectedHash}, got ${actualHash}`,
+						"No verbatim checkpoint baseline exists for this update; resend the full checkpoint",
 					);
 				}
-			}
 
-			const merged = JSON.parse(newJson);
-			await this.upsertCheckpoint(updateId, merged);
+				const decision = classifyCheckpointSequence({
+					storedSequenceNumber: base.sequenceNumber,
+					requestSequenceNumber: sequenceNumber,
+					isStoredResult: () => hashDeploymentText(base.text) === expectedHash,
+				});
+				if (decision === "replay") return null;
+
+				const applied = applyDeploymentDelta(base.text, edits);
+				if (applied.hash !== expectedHash) {
+					throw new BadRequestError(
+						`Checkpoint hash mismatch: expected ${expectedHash}, got ${applied.hash}`,
+					);
+				}
+
+				const deployment = parseDeploymentText(applied.text, "checkpoint delta");
+
+				await this.upsertCheckpointInTransaction(tx, updateId, deployment);
+				await this.writeDeltaBase(tx, lockedUpdate.stackId, updateId, sequenceNumber, applied.text);
+				return base.blobKey;
+			});
+			await this.deleteSupersededDeltaBase(supersededBlobKey);
 		});
 	}
 
@@ -656,7 +693,14 @@ export class PostgresUpdatesService implements UpdatesService {
 				const rows = await this.db
 					.select()
 					.from(checkpoints)
-					.where(and(eq(checkpoints.stackId, stackId), eq(checkpoints.version, version)))
+					.where(
+						and(
+							eq(checkpoints.stackId, stackId),
+							eq(checkpoints.version, version),
+							// Never export the delta baseline sidecar row.
+							eq(checkpoints.isDelta, false),
+						),
+					)
 					.orderBy(desc(checkpoints.version))
 					.limit(1);
 				checkpoint = rows[0];
@@ -754,6 +798,124 @@ export class PostgresUpdatesService implements UpdatesService {
 
 		const nextVersion = row?.nextVersion ?? 1;
 		return Number(nextVersion);
+	}
+
+	/**
+	 * Read the delta baseline sidecar row for an update. Must be called after
+	 * `lockUpdateForWrite` so the baseline cannot move under an in-flight apply.
+	 */
+	private async readDeltaBase(
+		tx: DbTransaction,
+		updateId: string,
+	): Promise<DeltaBaseState | undefined> {
+		const [row] = await tx
+			.select()
+			.from(checkpoints)
+			.where(
+				and(
+					eq(checkpoints.updateId, updateId),
+					eq(checkpoints.version, DELTA_BASE_CHECKPOINT_VERSION),
+				),
+			)
+			.limit(1);
+
+		if (!row) return undefined;
+
+		const meta = row.data;
+		if (typeof meta !== "object" || meta === null || Array.isArray(meta)) {
+			throw new Error("Delta checkpoint baseline row has no metadata");
+		}
+		const sequenceNumber = "sequenceNumber" in meta ? Number(meta.sequenceNumber) : Number.NaN;
+		if (!Number.isInteger(sequenceNumber)) {
+			throw new Error("Delta checkpoint baseline row is missing its sequence number");
+		}
+
+		if (row.blobKey) {
+			const raw = await this.storage.get(row.blobKey);
+			if (!raw) {
+				throw new Error("Delta checkpoint baseline blob missing from storage");
+			}
+			return {
+				sequenceNumber,
+				text: new TextDecoder("utf-8", { fatal: true }).decode(raw),
+				blobKey: row.blobKey,
+			};
+		}
+
+		const text = "text" in meta ? meta.text : undefined;
+		if (typeof text !== "string") {
+			throw new Error("Delta checkpoint baseline row is missing its deployment text");
+		}
+		return { sequenceNumber, text, blobKey: null };
+	}
+
+	private async deleteDeltaBaseInTransaction(
+		tx: DbTransaction,
+		updateId: string,
+	): Promise<string | null> {
+		const [deleted] = await tx
+			.delete(checkpoints)
+			.where(
+				and(
+					eq(checkpoints.updateId, updateId),
+					eq(checkpoints.version, DELTA_BASE_CHECKPOINT_VERSION),
+				),
+			)
+			.returning({ blobKey: checkpoints.blobKey });
+		return deleted?.blobKey ?? null;
+	}
+
+	/**
+	 * Retain the exact accepted text as the next delta baseline.
+	 *
+	 * Large payloads go to blob storage under a sequence-keyed name so a rolled-back
+	 * transaction can never leave the committed row pointing at overwritten bytes.
+	 */
+	private async writeDeltaBase(
+		tx: DbTransaction,
+		stackId: string,
+		updateId: string,
+		sequenceNumber: number,
+		text: string,
+	): Promise<void> {
+		const bytes = new TextEncoder().encode(text);
+		let blobKey: string | null = null;
+		let data: unknown = { sequenceNumber, text };
+
+		if (bytes.length > BLOB_THRESHOLD) {
+			blobKey = formatDeltaBaseBlobKey(stackId, updateId, sequenceNumber);
+			await this.storage.put(blobKey, bytes);
+			data = { sequenceNumber };
+		}
+
+		await tx
+			.insert(checkpoints)
+			.values({
+				updateId,
+				stackId,
+				version: DELTA_BASE_CHECKPOINT_VERSION,
+				data,
+				blobKey,
+				// Not a canonical materialized checkpoint: export and journal replay skip it.
+				isDelta: true,
+				createdAt: sql`clock_timestamp()`,
+			})
+			.onConflictDoUpdate({
+				target: [checkpoints.updateId, checkpoints.version],
+				set: { data, blobKey, isDelta: true, createdAt: sql`clock_timestamp()` },
+			});
+	}
+
+	/** Delete only the baseline blob replaced by a committed sidecar update.
+	 * Cleanup is best-effort: a storage failure may leave an orphan, but must not
+	 * turn a committed canonical checkpoint and sidecar into an apparent failure. */
+	private async deleteSupersededDeltaBase(blobKey: string | null): Promise<void> {
+		if (!blobKey) return;
+		try {
+			await this.storage.delete(blobKey);
+		} catch {
+			// The committed sidecar points at the new blob and remains readable.
+		}
 	}
 
 	private clearUpdateCaches(updateId: string): void {

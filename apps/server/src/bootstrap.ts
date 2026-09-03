@@ -25,8 +25,10 @@ import {
 import { PostgresStacksService } from "@procella/stacks";
 import { createBlobStorage } from "@procella/storage";
 import { initTelemetry } from "@procella/telemetry";
+import { PULUMI_FULLY_SUPPORTED_MIN_VERSION, PULUMI_LEGACY_SMOKE_VERSION } from "@procella/types";
 import { PostgresUpdatesService } from "@procella/updates";
 import { PostgresWebhooksService } from "@procella/webhooks";
+import { logger } from "./logger.js";
 import { createCliApp } from "./routes/cli.js";
 import { createApp } from "./routes/index.js";
 import { createWebApp } from "./routes/web.js";
@@ -46,11 +48,29 @@ export function requireExplicitEncryptionKey(encryptionKey: string | undefined):
 	return encryptionKey;
 }
 
+/**
+ * Emit a single structured startup log stating the configured Pulumi CLI
+ * compatibility support tiers (legacy smoke floor, fully supported minimum).
+ * Called once from bootstrapServices() so every deployment mode (local dev,
+ * Vercel/Lambda server, CLI-only, web-only) logs the same policy values.
+ */
+export function logCompatibilityPolicy(deltaCheckpointsEnabled: boolean): void {
+	logger.info(
+		{
+			legacySmokeVersion: PULUMI_LEGACY_SMOKE_VERSION,
+			fullySupportedMinVersion: PULUMI_FULLY_SUPPORTED_MIN_VERSION,
+			deltaCheckpointsEnabled,
+		},
+		"pulumi-compatibility-policy",
+	);
+}
+
 async function bootstrapServices() {
 	const config = loadConfig();
 	const encryptionKey = requireExplicitEncryptionKey(config.encryptionKey);
 
 	initTelemetry({ enabled: config.otelEnabled, serviceName: "procella" });
+	logCompatibilityPolicy(config.deltaCheckpointsEnabled);
 
 	const { db, client } = await createDb({ url: config.databaseUrl, max: config.databasePoolMax });
 
@@ -131,6 +151,7 @@ async function bootstrapServices() {
 		audit: auditService,
 		corsOrigins: config.corsOrigins,
 		cronSecret: config.cronSecret,
+		deltaCheckpointsEnabled: config.deltaCheckpointsEnabled,
 		db,
 		dbUrl: config.databaseUrl,
 		client,

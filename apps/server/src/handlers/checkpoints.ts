@@ -1,12 +1,8 @@
 // @procella/server — Checkpoint patch handlers.
 
-import type {
-	JournalEntries,
-	PatchUpdateCheckpointDeltaRequest,
-	PatchUpdateCheckpointRequest,
-	PatchUpdateVerbatimCheckpointRequest,
-} from "@procella/types";
-import type { UpdatesService } from "@procella/updates";
+import type { JournalEntries, PatchUpdateCheckpointRequest } from "@procella/types";
+import type { DeltaCheckpointSave, UpdatesService } from "@procella/updates";
+import { extractRawJsonMember, parseTextEdits } from "@procella/updates";
 import type { Context } from "hono";
 import type { Env } from "../types.js";
 import { updateContext } from "./params.js";
@@ -47,11 +43,18 @@ export function checkpointHandlers(updates: UpdatesService) {
 			return c.body(null, 200);
 		},
 
+		/**
+		 * The delta protocol diffs and hashes the exact `untypedDeployment` text the CLI cached,
+		 * so the value is sliced straight out of the request body. Parsing and re-serializing it
+		 * would change key order, number formatting, and string escapes, and every subsequent
+		 * delta would then fail its hash check.
+		 */
 		patchCheckpointVerbatim: async (c: Context<Env>) => {
 			const updateCtx = updateContext(c);
+			const body = await c.req.text();
 			let raw: unknown;
 			try {
-				raw = await c.req.json();
+				raw = JSON.parse(body);
 			} catch {
 				return c.json(INVALID_JSON_RESPONSE, 400);
 			}
@@ -59,10 +62,15 @@ export function checkpointHandlers(updates: UpdatesService) {
 			if (!parseResult.success) {
 				return c.json({ code: "invalid_request", message: parseResult.error.message }, 400);
 			}
-			await updates.patchCheckpointVerbatim(
-				updateCtx.updateId,
-				parseResult.data as PatchUpdateVerbatimCheckpointRequest,
-			);
+			const untypedDeploymentText = extractRawJsonMember(body, "untypedDeployment");
+			if (untypedDeploymentText === undefined) {
+				return c.json({ code: "invalid_request", message: "untypedDeployment is required" }, 400);
+			}
+			await updates.patchCheckpointVerbatim(updateCtx.updateId, {
+				version: parseResult.data.version,
+				sequenceNumber: parseResult.data.sequenceNumber,
+				untypedDeploymentText,
+			});
 			return c.body(null, 200);
 		},
 
@@ -78,10 +86,13 @@ export function checkpointHandlers(updates: UpdatesService) {
 			if (!parseResult.success) {
 				return c.json({ code: "invalid_request", message: parseResult.error.message }, 400);
 			}
-			await updates.patchCheckpointDelta(
-				updateCtx.updateId,
-				parseResult.data as PatchUpdateCheckpointDeltaRequest,
-			);
+			const request: DeltaCheckpointSave = {
+				version: parseResult.data.version,
+				sequenceNumber: parseResult.data.sequenceNumber,
+				checkpointHash: parseResult.data.checkpointHash,
+				deploymentDelta: parseTextEdits(parseResult.data.deploymentDelta),
+			};
+			await updates.patchCheckpointDelta(updateCtx.updateId, request);
 			return c.body(null, 200);
 		},
 

@@ -56,6 +56,7 @@ describe("@procella/config", () => {
 			expect(config.ticketSigningKey).toBe("ticket-signing-key-ticket-signing-key");
 			expect(config.blobBackend).toBe("local");
 			expect(config.blobLocalPath).toBe("./data/blobs");
+			expect(config.deltaCheckpointsEnabled).toBe(false);
 		});
 
 		test("loads full config with all overrides", () => {
@@ -77,6 +78,24 @@ describe("@procella/config", () => {
 			expect(config.blobS3Bucket).toBe("my-bucket");
 			expect(config.blobS3Endpoint).toBe("http://localhost:9000");
 			expect(config.encryptionKey).toBe("a".repeat(64));
+		});
+
+		test("parses PROCELLA_DELTA_CHECKPOINTS_ENABLED true/false/1/0 and defaults false", () => {
+			clearProcellaEnv();
+			setMinimalEnv();
+			expect(loadConfig().deltaCheckpointsEnabled).toBe(false);
+
+			Bun.env.PROCELLA_DELTA_CHECKPOINTS_ENABLED = "true";
+			expect(loadConfig().deltaCheckpointsEnabled).toBe(true);
+
+			Bun.env.PROCELLA_DELTA_CHECKPOINTS_ENABLED = "1";
+			expect(loadConfig().deltaCheckpointsEnabled).toBe(true);
+
+			Bun.env.PROCELLA_DELTA_CHECKPOINTS_ENABLED = "false";
+			expect(loadConfig().deltaCheckpointsEnabled).toBe(false);
+
+			Bun.env.PROCELLA_DELTA_CHECKPOINTS_ENABLED = "0";
+			expect(loadConfig().deltaCheckpointsEnabled).toBe(false);
 		});
 
 		test("throws on missing database URL", () => {

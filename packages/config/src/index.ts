@@ -83,6 +83,12 @@ const configSchema = z
 			.default("true")
 			.transform((v) => v === "true" || v === "1"),
 
+		// Pulumi compatibility — delta checkpoint capability advertisement
+		deltaCheckpointsEnabled: z
+			.enum(["true", "false", "1", "0"])
+			.default("false")
+			.transform((v) => v === "true" || v === "1"),
+
 		githubAppId: z.string().optional(),
 		githubAppPrivateKey: z
 			.string()
@@ -174,6 +180,7 @@ const envMapping = {
 	cronSecret: "PROCELLA_CRON_SECRET",
 	otelEnabled: "PROCELLA_OTEL_ENABLED",
 	oidcEnabled: "PROCELLA_OIDC_ENABLED",
+	deltaCheckpointsEnabled: "PROCELLA_DELTA_CHECKPOINTS_ENABLED",
 	githubAppId: "PROCELLA_GITHUB_APP_ID",
 	githubAppPrivateKey: "PROCELLA_GITHUB_APP_PRIVATE_KEY",
 	githubAppWebhookSecret: "PROCELLA_GITHUB_APP_WEBHOOK_SECRET",

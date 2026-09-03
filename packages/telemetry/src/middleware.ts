@@ -13,7 +13,11 @@ import {
 	trace,
 } from "@opentelemetry/api";
 import type { MiddlewareHandler } from "hono";
-import { httpActiveRequestsGauge, httpRequestDuration } from "./metrics.js";
+import {
+	httpActiveRequestsGauge,
+	httpRequestDuration,
+	recordCompatibilityRequest,
+} from "./metrics.js";
 
 /**
  * Hono middleware that wraps each request in an OTLP span.
@@ -84,6 +88,12 @@ export function tracingMiddleware(): MiddlewareHandler {
 						"http.method": method,
 						"http.route": route,
 						"http.status_code": status,
+					});
+					recordCompatibilityRequest({
+						userAgent: c.req.header("user-agent"),
+						accept: c.req.header("accept"),
+						routePattern: routePath,
+						status,
 					});
 					activeGauge.add(-1);
 					span.end();

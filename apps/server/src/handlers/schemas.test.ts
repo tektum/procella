@@ -121,7 +121,7 @@ describe("Pulumi request schemas", () => {
 			PatchUpdateCheckpointRequestSchema.safeParse({
 				isInvalid: false,
 				version: 3,
-				features: ["secrets-providers"],
+				features: [],
 				deployment: { resources: [] },
 			}).success,
 		).toBe(true);
@@ -137,7 +137,7 @@ describe("Pulumi request schemas", () => {
 		expect(
 			PatchUpdateCheckpointDeltaRequestSchema.safeParse({
 				version: 1,
-				checkpointHash: "abc123",
+				checkpointHash: "a".repeat(64),
 				sequenceNumber: 1,
 				deploymentDelta: [{ span: { start: { offset: 0 }, end: { offset: 0 } }, newText: "{}" }],
 			}).success,
@@ -190,5 +190,73 @@ describe("Pulumi request schemas", () => {
 		expect(
 			RenewUpdateLeaseRequestSchema.safeParse({ token: "lease-token", duration: 300 }).success,
 		).toBe(true);
+	});
+
+	test("accepts deployment schema v1 through v3", () => {
+		for (const version of [1, 2, 3]) {
+			expect(
+				PatchUpdateCheckpointRequestSchema.safeParse({ version, deployment: {} }).success,
+			).toBe(true);
+			expect(
+				PatchUpdateVerbatimCheckpointRequestSchema.safeParse({
+					version,
+					sequenceNumber: 1,
+					untypedDeployment: { version, deployment: {} },
+				}).success,
+			).toBe(true);
+			expect(UntypedDeploymentSchema.safeParse({ version, deployment: {} }).success).toBe(true);
+		}
+	});
+
+	test("rejects deployment schema v4 on every checkpoint and import path", () => {
+		expect(
+			PatchUpdateCheckpointRequestSchema.safeParse({ version: 4, deployment: {} }).success,
+		).toBe(false);
+		expect(
+			PatchUpdateVerbatimCheckpointRequestSchema.safeParse({
+				version: 4,
+				sequenceNumber: 1,
+				untypedDeployment: { version: 4, deployment: {} },
+			}).success,
+		).toBe(false);
+		expect(
+			PatchUpdateCheckpointDeltaRequestSchema.safeParse({
+				version: 4,
+				checkpointHash: "a".repeat(64),
+				sequenceNumber: 1,
+				deploymentDelta: [],
+			}).success,
+		).toBe(false);
+		expect(UntypedDeploymentSchema.safeParse({ version: 4, deployment: {} }).success).toBe(false);
+	});
+
+	test("rejects non-empty deployment features", () => {
+		expect(
+			PatchUpdateCheckpointRequestSchema.safeParse({
+				version: 3,
+				features: ["snippets"],
+				deployment: {},
+			}).success,
+		).toBe(false);
+		expect(
+			UntypedDeploymentSchema.safeParse({
+				version: 3,
+				features: ["extensionRef"],
+				deployment: {},
+			}).success,
+		).toBe(false);
+	});
+
+	test("requires a SHA-256 checkpointHash on delta requests", () => {
+		for (const checkpointHash of [undefined, "", "hash", "z".repeat(64)]) {
+			expect(
+				PatchUpdateCheckpointDeltaRequestSchema.safeParse({
+					version: 3,
+					checkpointHash,
+					sequenceNumber: 1,
+					deploymentDelta: [],
+				}).success,
+			).toBe(false);
+		}
 	});
 });

@@ -14,12 +14,22 @@ import {
 } from "@procella/types";
 import {
 	applyDelta,
+	applyDeploymentDelta,
 	applyTextEdits,
+	assertSupportedDeploymentEnvelope,
+	classifyCheckpointSequence,
 	emptyDeployment,
+	extractRawJsonMember,
 	formatBlobKey,
+	formatDeltaBaseBlobKey,
 	generateLeaseToken,
+	hashDeploymentText,
 	leaseExpiresAt,
+	parseDeploymentText,
 	parseLeaseToken,
+	parseTextEdits,
+	requireCheckpointHash,
+	requireSequenceNumber,
 	safeTokenCompare,
 } from "./helpers.js";
 import {
@@ -33,10 +43,12 @@ import {
 import type { UpdatesService } from "./types.js";
 import {
 	BLOB_THRESHOLD,
+	CheckpointSequenceError,
 	GC_ADVISORY_LOCK_ID,
 	GC_INTERVAL_MS,
 	GC_STALE_THRESHOLD_MS,
 	LEASE_DURATION_SECONDS,
+	type TextEdit,
 } from "./types.js";
 
 describe("@procella/updates helpers", () => {
@@ -173,9 +185,32 @@ describe("@procella/updates helpers", () => {
 	});
 
 	describe("applyTextEdits (gotextdiff)", () => {
+		// applyTextEdits works on UTF-8 bytes (Go byte offsets); these cases are ASCII, so a
+		// decode wrapper keeps them readable.
+		const applyToText = (before: string, edits: TextEdit[]): string =>
+			new TextDecoder().decode(applyTextEdits(new TextEncoder().encode(before), edits));
+
+		test("resolves offsets as UTF-8 byte offsets, not UTF-16 code units", () => {
+			// "é" is 2 UTF-8 bytes but 1 JS string index; a UTF-16-based implementation would
+			// splice one byte early and corrupt the payload.
+			const before = new TextEncoder().encode('{"a":"é","b":1}');
+			const edits: TextEdit[] = [
+				{
+					span: {
+						start: { line: 1, column: 0, offset: 14 },
+						end: { line: 1, column: 0, offset: 15 },
+					},
+					newText: "2",
+				},
+			];
+			expect(new TextDecoder().decode(applyTextEdits(before, edits))).toBe('{"a":"é","b":2}');
+			// In UTF-16 the digit sits at index 13, so a string-index implementation writes over ':'.
+			expect('{"a":"é","b":1}'.indexOf("1")).toBe(13);
+		});
+
 		test("returns original when edits array is empty", () => {
 			const before = '{"resources":[]}';
-			expect(applyTextEdits(before, [])).toBe(before);
+			expect(applyToText(before, [])).toBe(before);
 		});
 
 		test("replaces a substring at given offsets", () => {
@@ -190,7 +225,7 @@ describe("@procella/updates helpers", () => {
 					newText: '{"urn":"test"}',
 				},
 			];
-			expect(applyTextEdits(before, edits)).toBe('{"resources":[{"urn":"test"}]}');
+			expect(applyToText(before, edits)).toBe('{"resources":[{"urn":"test"}]}');
 		});
 
 		test("inserts text (start === end)", () => {
@@ -204,7 +239,7 @@ describe("@procella/updates helpers", () => {
 					newText: "X",
 				},
 			];
-			expect(applyTextEdits(before, edits)).toBe("aXbc");
+			expect(applyToText(before, edits)).toBe("aXbc");
 		});
 
 		test("deletes text (newText is empty)", () => {
@@ -218,7 +253,7 @@ describe("@procella/updates helpers", () => {
 					newText: "",
 				},
 			];
-			expect(applyTextEdits(before, edits)).toBe("abef");
+			expect(applyToText(before, edits)).toBe("abef");
 		});
 
 		test("applies multiple non-overlapping edits in order", () => {
@@ -239,7 +274,7 @@ describe("@procella/updates helpers", () => {
 					newText: "Y",
 				},
 			];
-			expect(applyTextEdits(before, edits)).toBe("aXcdYf");
+			expect(applyToText(before, edits)).toBe("aXcdYf");
 		});
 
 		test("rejects negative spans", () => {
@@ -254,7 +289,7 @@ describe("@procella/updates helpers", () => {
 				},
 			];
 
-			expect(() => applyTextEdits(before, edits)).toThrow(BadRequestError);
+			expect(() => applyToText(before, edits)).toThrow(BadRequestError);
 		});
 
 		test("rejects out-of-bounds spans", () => {
@@ -269,7 +304,7 @@ describe("@procella/updates helpers", () => {
 				},
 			];
 
-			expect(() => applyTextEdits(before, edits)).toThrow(BadRequestError);
+			expect(() => applyToText(before, edits)).toThrow(BadRequestError);
 		});
 
 		test("rejects overlapping spans after sorting", () => {
@@ -291,7 +326,7 @@ describe("@procella/updates helpers", () => {
 				},
 			];
 
-			expect(() => applyTextEdits(before, edits)).toThrow(BadRequestError);
+			expect(() => applyToText(before, edits)).toThrow(BadRequestError);
 		});
 
 		test("handles edit at start of string (offset 0)", () => {
@@ -305,7 +340,7 @@ describe("@procella/updates helpers", () => {
 					newText: "hello ",
 				},
 			];
-			expect(applyTextEdits(before, edits)).toBe("hello world");
+			expect(applyToText(before, edits)).toBe("hello world");
 		});
 
 		test("handles edit at end of string", () => {
@@ -319,7 +354,7 @@ describe("@procella/updates helpers", () => {
 					newText: " world",
 				},
 			];
-			expect(applyTextEdits(before, edits)).toBe("hello world");
+			expect(applyToText(before, edits)).toBe("hello world");
 		});
 
 		test("handles full string replacement", () => {
@@ -333,7 +368,7 @@ describe("@procella/updates helpers", () => {
 					newText: "xyz",
 				},
 			];
-			expect(applyTextEdits(before, edits)).toBe("xyz");
+			expect(applyToText(before, edits)).toBe("xyz");
 		});
 
 		test("sorts edits by start offset regardless of input order", () => {
@@ -354,7 +389,271 @@ describe("@procella/updates helpers", () => {
 					newText: "X",
 				},
 			];
-			expect(applyTextEdits(before, edits)).toBe("aXcdYf");
+			expect(applyToText(before, edits)).toBe("aXcdYf");
+		});
+	});
+
+	// ========================================================================
+	// Delta checkpoint integrity
+	// ========================================================================
+
+	describe("extractRawJsonMember", () => {
+		test("returns the exact source text, preserving key order and number formatting", () => {
+			// JSON.parse + JSON.stringify would emit {"version":3,...,"n":1e+30} and reorder
+			// nothing but renormalize the number, breaking every later delta.
+			const body =
+				'{"version":3,"untypedDeployment":{"version":3,"deployment":{"z":1,"a":1.0,"n":1e30}},"sequenceNumber":1}';
+			const raw = extractRawJsonMember(body, "untypedDeployment");
+			expect(raw).toBe('{"version":3,"deployment":{"z":1,"a":1.0,"n":1e30}}');
+			expect(raw).not.toBe(JSON.stringify(JSON.parse(raw as string)));
+		});
+
+		test("preserves escaped characters byte-for-byte", () => {
+			const body = '{"untypedDeployment":{"s":"a\\u0041\\"b\\\\c\\/d"},"sequenceNumber":1}';
+			expect(extractRawJsonMember(body, "untypedDeployment")).toBe('{"s":"a\\u0041\\"b\\\\c\\/d"}');
+		});
+
+		test("tolerates whitespace and finds members in any position", () => {
+			const body = '{\n  "sequenceNumber" : 4 ,\n  "untypedDeployment" : [1, 2]\n}';
+			expect(extractRawJsonMember(body, "untypedDeployment")).toBe("[1, 2]");
+			expect(extractRawJsonMember(body, "sequenceNumber")).toBe("4");
+		});
+
+		test("is not confused by braces or quotes inside strings", () => {
+			const body = '{"a":"}{\\"","untypedDeployment":{"k":"v"}}';
+			expect(extractRawJsonMember(body, "untypedDeployment")).toBe('{"k":"v"}');
+		});
+
+		test("returns undefined for an absent member", () => {
+			expect(extractRawJsonMember('{"version":3}', "untypedDeployment")).toBeUndefined();
+			expect(extractRawJsonMember("{}", "untypedDeployment")).toBeUndefined();
+		});
+
+		test("resolves duplicate keys to the last occurrence, matching JSON.parse", () => {
+			const body = '{"untypedDeployment":1,"untypedDeployment":2}';
+			expect(extractRawJsonMember(body, "untypedDeployment")).toBe("2");
+		});
+	});
+
+	describe("applyDeploymentDelta", () => {
+		test("returns the applied text and the digest the CLI computes over it", () => {
+			const base = '{"version":3,"deployment":{"resources":[]}}';
+			const next = '{"version":3,"deployment":{"resources":[1]}}';
+			const edits: TextEdit[] = [
+				{
+					span: {
+						start: { line: 1, column: 0, offset: base.indexOf("[]") + 1 },
+						end: { line: 1, column: 0, offset: base.indexOf("[]") + 1 },
+					},
+					newText: "1",
+				},
+			];
+			const applied = applyDeploymentDelta(base, edits);
+			expect(applied.text).toBe(next);
+			expect(applied.hash).toBe(hashDeploymentText(next));
+		});
+
+		test("preserves multi-byte content and hashes the produced bytes", () => {
+			const base = '{"deployment":{"note":"héllo","n":1}}';
+			const digitOffset = new TextEncoder().encode(base).lastIndexOf(0x31);
+			const edits: TextEdit[] = [
+				{
+					span: {
+						start: { line: 1, column: 0, offset: digitOffset },
+						end: { line: 1, column: 0, offset: digitOffset + 1 },
+					},
+					newText: "2",
+				},
+			];
+			const applied = applyDeploymentDelta(base, edits);
+			expect(applied.text).toBe('{"deployment":{"note":"héllo","n":2}}');
+			expect(applied.hash).toBe(hashDeploymentText(applied.text));
+		});
+	});
+
+	describe("hashDeploymentText", () => {
+		test("matches Go's hex.EncodeToString(sha256.Sum256(...))", () => {
+			// echo -n "" | sha256sum
+			expect(hashDeploymentText("")).toBe(
+				"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+			);
+		});
+	});
+
+	describe("requireCheckpointHash", () => {
+		test("requires a 64-character hex digest and normalizes case", () => {
+			const upper = "A".repeat(64);
+			expect(requireCheckpointHash(upper)).toBe("a".repeat(64));
+			expect(() => requireCheckpointHash("")).toThrow(BadRequestError);
+			expect(() => requireCheckpointHash(undefined)).toThrow(BadRequestError);
+			expect(() => requireCheckpointHash("abc")).toThrow(BadRequestError);
+			expect(() => requireCheckpointHash("z".repeat(64))).toThrow(BadRequestError);
+		});
+	});
+
+	describe("requireSequenceNumber", () => {
+		test("requires a non-negative integer", () => {
+			expect(requireSequenceNumber(0)).toBe(0);
+			expect(requireSequenceNumber(7)).toBe(7);
+			expect(() => requireSequenceNumber(-1)).toThrow(BadRequestError);
+			expect(() => requireSequenceNumber(1.5)).toThrow(BadRequestError);
+			expect(() => requireSequenceNumber("1")).toThrow(BadRequestError);
+		});
+	});
+
+	describe("parseTextEdits", () => {
+		test("accepts well-formed edits", () => {
+			const parsed = parseTextEdits([
+				{ span: { start: { offset: 0 }, end: { offset: 1 } }, newText: "x" },
+			]);
+			expect(parsed[0].span.start.offset).toBe(0);
+			expect(parsed[0].newText).toBe("x");
+		});
+
+		test("rejects malformed payloads", () => {
+			expect(() => parseTextEdits("nope")).toThrow(BadRequestError);
+			expect(() => parseTextEdits([1])).toThrow(BadRequestError);
+			expect(() => parseTextEdits([{ span: {}, newText: "x" }])).toThrow(BadRequestError);
+			expect(() =>
+				parseTextEdits([{ span: { start: { offset: -1 }, end: { offset: 0 } }, newText: "x" }]),
+			).toThrow(BadRequestError);
+			expect(() =>
+				parseTextEdits([{ span: { start: { offset: 0 }, end: { offset: 1 } } }]),
+			).toThrow(BadRequestError);
+		});
+	});
+
+	describe("assertSupportedDeploymentEnvelope", () => {
+		test("accepts schema v1 through v3 with no features", () => {
+			for (const version of [1, 2, 3]) {
+				expect(() => assertSupportedDeploymentEnvelope({ version }, "ctx")).not.toThrow();
+			}
+			expect(() =>
+				assertSupportedDeploymentEnvelope({ version: 3, features: [] }, "ctx"),
+			).not.toThrow();
+			expect(() => assertSupportedDeploymentEnvelope({}, "ctx")).not.toThrow();
+		});
+
+		test("rejects schema v4 and non-empty features", () => {
+			expect(() => assertSupportedDeploymentEnvelope({ version: 4 }, "ctx")).toThrow(
+				BadRequestError,
+			);
+			expect(() =>
+				assertSupportedDeploymentEnvelope({ version: 3, features: ["snippets"] }, "ctx"),
+			).toThrow(BadRequestError);
+			expect(() => assertSupportedDeploymentEnvelope({ version: "3" }, "ctx")).toThrow(
+				BadRequestError,
+			);
+		});
+	});
+
+	describe("parseDeploymentText", () => {
+		test("unwraps the UntypedDeployment envelope", () => {
+			expect(parseDeploymentText('{"version":3,"deployment":{"resources":[]}}', "ctx")).toEqual({
+				resources: [],
+			});
+		});
+
+		test("treats an envelope-less payload as the deployment itself", () => {
+			expect(parseDeploymentText('{"resources":[]}', "ctx")).toEqual({ resources: [] });
+		});
+
+		test("rejects unsupported envelopes and invalid JSON", () => {
+			expect(() => parseDeploymentText('{"version":4,"deployment":{}}', "ctx")).toThrow(
+				BadRequestError,
+			);
+			expect(() =>
+				parseDeploymentText('{"version":3,"features":["x"],"deployment":{}}', "ctx"),
+			).toThrow(BadRequestError);
+			expect(() => parseDeploymentText("{oops", "ctx")).toThrow(BadRequestError);
+		});
+	});
+
+	describe("classifyCheckpointSequence", () => {
+		test("applies the first write for any sequence number", () => {
+			expect(
+				classifyCheckpointSequence({
+					storedSequenceNumber: undefined,
+					requestSequenceNumber: 1,
+					isStoredResult: () => false,
+				}),
+			).toBe("apply");
+		});
+
+		test("applies the next sequence number", () => {
+			expect(
+				classifyCheckpointSequence({
+					storedSequenceNumber: 2,
+					requestSequenceNumber: 3,
+					isStoredResult: () => false,
+				}),
+			).toBe("apply");
+		});
+
+		test("treats an identical retry of the stored sequence as a replay", () => {
+			let probed = false;
+			expect(
+				classifyCheckpointSequence({
+					storedSequenceNumber: 2,
+					requestSequenceNumber: 2,
+					isStoredResult: () => {
+						probed = true;
+						return true;
+					},
+				}),
+			).toBe("replay");
+			expect(probed).toBe(true);
+		});
+
+		test("rejects different content at an already-used sequence number", () => {
+			expect(() =>
+				classifyCheckpointSequence({
+					storedSequenceNumber: 2,
+					requestSequenceNumber: 2,
+					isStoredResult: () => false,
+				}),
+			).toThrow(CheckpointSequenceError);
+		});
+
+		test("rejects stale and out-of-order sequence numbers", () => {
+			expect(() =>
+				classifyCheckpointSequence({
+					storedSequenceNumber: 5,
+					requestSequenceNumber: 4,
+					isStoredResult: () => true,
+				}),
+			).toThrow(CheckpointSequenceError);
+			expect(() =>
+				classifyCheckpointSequence({
+					storedSequenceNumber: 5,
+					requestSequenceNumber: 7,
+					isStoredResult: () => true,
+				}),
+			).toThrow(CheckpointSequenceError);
+		});
+
+		test("does not hash the stored payload unless the sequence numbers match", () => {
+			let probed = false;
+			classifyCheckpointSequence({
+				storedSequenceNumber: 2,
+				requestSequenceNumber: 3,
+				isStoredResult: () => {
+					probed = true;
+					return true;
+				},
+			});
+			expect(probed).toBe(false);
+		});
+	});
+
+	describe("formatDeltaBaseBlobKey", () => {
+		test("keys the baseline by sequence number so rollback cannot clobber it", () => {
+			expect(formatDeltaBaseBlobKey("stack-1", "update-1", 4)).toBe(
+				"checkpoints/stack-1/update-1/base-4",
+			);
+			expect(formatDeltaBaseBlobKey("stack-1", "update-1", 4)).not.toBe(
+				formatBlobKey("stack-1", "update-1", 4),
+			);
 		});
 	});
 

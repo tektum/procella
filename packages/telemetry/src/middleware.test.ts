@@ -68,6 +68,65 @@ describe("@procella/telemetry middleware", () => {
 	});
 });
 
+describe("@procella/telemetry middleware — compatibility telemetry wiring", () => {
+	function createApp() {
+		const app = new Hono();
+		app.use("*", tracingMiddleware());
+		app.get("/api/stacks/:org/:project/:stack", (c) => c.json({ ok: true }));
+		app.post(
+			"/api/stacks/:org/:project/:stack/batch-encrypt",
+			(c) => c.json({ ok: true }, 415), // simulates pulumiAccept()'s 415 rejection downstream
+		);
+		return app;
+	}
+
+	test("records without altering the response for a current-format Pulumi CLI request", async () => {
+		const app = createApp();
+		const res = await app.request("/api/stacks/acme/proj/dev", {
+			headers: {
+				"User-Agent": "pulumi-cli/1 (3.233.0; linux)",
+				Accept: "application/vnd.pulumi+9",
+			},
+		});
+		expect(res.status).toBe(200);
+	});
+
+	test("records without altering the response for a legacy Pulumi CLI request with no Accept header", async () => {
+		const app = createApp();
+		const res = await app.request("/api/stacks/acme/proj/dev", {
+			headers: { "User-Agent": "pulumi-cli/3.9.0" },
+		});
+		expect(res.status).toBe(200);
+	});
+
+	test("records without altering a version-gated route's 415 rejection", async () => {
+		const app = createApp();
+		const res = await app.request("/api/stacks/acme/proj/dev/batch-encrypt", {
+			method: "POST",
+			headers: { "User-Agent": "pulumi-cli/3.9.0" },
+		});
+		expect(res.status).toBe(415);
+	});
+
+	test("records without throwing for non-CLI, malformed, and unmatched requests", async () => {
+		const app = createApp();
+		const malformedAccept = await app.request("/api/stacks/acme/proj/dev", {
+			headers: { Accept: "application/vnd.pulumi+abc" },
+		});
+		expect(malformedAccept.status).toBe(200);
+
+		const nonCli = await app.request("/api/stacks/acme/proj/dev", {
+			headers: { "User-Agent": "Mozilla/5.0" },
+		});
+		expect(nonCli.status).toBe(200);
+
+		const unmatched = await app.request("/nonexistent", {
+			headers: { "User-Agent": "pulumi-cli/1 (3.9.0; linux)" },
+		});
+		expect(unmatched.status).toBe(404);
+	});
+});
+
 describe("activeContext", () => {
 	test("returns a context object", () => {
 		const ctx = activeContext();

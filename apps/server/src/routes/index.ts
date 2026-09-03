@@ -69,6 +69,7 @@ export function createApp(deps: {
 	oidc?: OidcService | null;
 	oidcPolicies?: TrustPolicyRepository | null;
 	verifySubscriptionTicket?: (ticket: string) => Promise<import("@procella/types").Caller>;
+	deltaCheckpointsEnabled?: boolean;
 }): Hono<Env> {
 	const app = new Hono<Env>();
 	const R = PulumiRoutes;
@@ -99,7 +100,10 @@ export function createApp(deps: {
 	});
 
 	// Create handler instances
-	const health = healthHandlers({ db: deps.db });
+	const health = healthHandlers({
+		db: deps.db,
+		deltaCheckpointsEnabled: deps.deltaCheckpointsEnabled,
+	});
 	const user = userHandlers(deps.stacks);
 	const stackH = stackHandlers(deps.stacks, deps.webhooks);
 	const auditH = auditHandlers({ audit: deps.audit });
