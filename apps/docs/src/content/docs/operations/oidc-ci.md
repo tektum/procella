@@ -79,7 +79,7 @@ To further restrict to the `prod` environment on the `main` branch:
 
 ## GitHub Actions Workflow
 
-Replace `YOUR_ORG` with your Procella organization slug and `YOUR_STACK` with your stack name. The audience format `urn:pulumi:org:YOUR_ORG` is required and matches what Pulumi Cloud uses.
+The Procella composite Pulumi action performs the OIDC exchange before running Pulumi. Replace `YOUR_ORG` with your Procella organization slug and set `cloud-url` to your Procella backend URL ending in `/api`. The action builds the required `urn:pulumi:org:YOUR_ORG` audience from the explicit organization input.
 
 ```yaml
 name: Deploy
@@ -88,34 +88,29 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+  id-token: write
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
     environment: prod
-    permissions:
-      id-token: write
-      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - name: Authenticate to Procella
-        id: auth
-        run: |
-          TOKEN=$(curl -sLS \
-            -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=urn:pulumi:org:YOUR_ORG" \
-            | jq -r .value)
-          pulumi login --oidc-token "$TOKEN" --oidc-org YOUR_ORG https://procella.example.com
-
-      - name: Deploy
-        run: pulumi up --yes --stack YOUR_ORG/YOUR_PROJECT/YOUR_STACK
+      - name: Deploy with Procella OIDC
+        uses: tektum/procella/actions/pulumi@main
+        with:
+          command: up
+          stack-name: YOUR_ORG/YOUR_PROJECT/YOUR_STACK
+          oidc-organization: YOUR_ORG
+          cloud-url: https://procella.example.com/api
 ```
 
-The token request and `pulumi login` happen in a single step so the short-lived Actions token doesn't expire between them. The exchange token Procella issues is stored in `~/.pulumi/credentials.json` for the remainder of the job.
+No `PULUMI_ACCESS_TOKEN` secret is required. `oidc-organization` explicitly enables the pinned `pulumi/auth-actions@v2` step, which requests `urn:pulumi:token-type:access_token:organization` and exports the resulting short-lived token for the subsequent Pulumi step. The job must grant `permissions: id-token: write`; `contents: read` is required by `actions/checkout`.
 
-:::note
-`jq` is pre-installed on all `ubuntu-latest` runners. If you use a self-hosted runner, install it with `apt-get install -y jq`.
-:::
+Pin `tektum/procella/actions/pulumi` to a release tag or full commit SHA in production workflows instead of tracking `@main`.
 
 ## Claim Conditions Reference
 

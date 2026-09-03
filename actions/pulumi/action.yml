@@ -1,8 +1,8 @@
 # Generated from pulumi/actions v7.0.0 (8e5e406f4007fca908480587cb9893c07090f58d) action.yml.
-# The input surface below mirrors the pinned upstream action exactly, except for
-# `cloud-url`, which defaults to Procella instead of Pulumi Cloud. Bumping the
-# pinned SHA below requires re-syncing these inputs; scripts/pulumi-action.test.ts
-# asserts the two stay in lockstep.
+# The upstream input surface below is mirrored exactly, except that `cloud-url`
+# defaults to Procella. `oidc-organization` is the only Procella-specific input.
+# Bumping the pinned SHA below requires re-syncing the upstream inputs;
+# scripts/pulumi-action.test.ts asserts the two stay in lockstep.
 name: 'Procella Pulumi'
 description: 'Run the official Pulumi CLI action against Procella, a self-hosted Pulumi backend.'
 author: 'Procella'
@@ -141,6 +141,10 @@ inputs:
     required: false
     default: 'false'
 
+  oidc-organization:
+    description: 'Procella organization to authenticate to with GitHub Actions OIDC. When set, requires id-token: write permission and replaces any static PULUMI_ACCESS_TOKEN for this action.'
+    required: false
+
 outputs:
   output:
     description: 'Output from running command'
@@ -149,6 +153,15 @@ outputs:
 runs:
   using: composite
   steps:
+    - id: procella-auth
+      if: ${{ inputs.oidc-organization != '' }}
+      uses: pulumi/auth-actions@141415910c3beb54e03b48e9057c204c97b956f2 # v2.1.0
+      with:
+        organization: ${{ inputs.oidc-organization }}
+        requested-token-type: urn:pulumi:token-type:access_token:organization
+        export-environment-variables: 'true'
+        cloud-url: ${{ inputs.cloud-url }}
+
     - id: pulumi
       uses: pulumi/actions@8e5e406f4007fca908480587cb9893c07090f58d # v7.0.0
       with:

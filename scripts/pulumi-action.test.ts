@@ -15,6 +15,9 @@ const ACTION_PATH = new URL("../actions/pulumi/action.yml", import.meta.url).pat
 const PROCELLA_CLOUD_URL = "https://api.procella.cloud/api";
 const PINNED_UPSTREAM_SHA = "8e5e406f4007fca908480587cb9893c07090f58d";
 const PINNED_UPSTREAM_TAG = "v7.0.0";
+const PINNED_AUTH_SHA = "141415910c3beb54e03b48e9057c204c97b956f2";
+const PINNED_AUTH_TAG = "v2.1.0";
+const PROCELLA_ONLY_INPUTS = ["oidc-organization"];
 
 /**
  * Input surface of `pulumi/actions` at {@link PINNED_UPSTREAM_SHA}; `null` means
@@ -79,6 +82,7 @@ interface InputSpec {
 
 interface CompositeStep {
 	id?: string;
+	if?: string;
 	uses?: string;
 	with?: Record<string, string>;
 }
@@ -93,7 +97,8 @@ interface ActionMetadata {
 
 const source = await Bun.file(ACTION_PATH).text();
 const action = Bun.YAML.parse(source) as ActionMetadata;
-const step = action.runs.steps[0] as CompositeStep;
+const authStep = action.runs.steps[0] as CompositeStep;
+const pulumiStep = action.runs.steps[1] as CompositeStep;
 
 const EXPRESSION = /\$\{\{\s*([A-Za-z]+)\.([A-Za-z0-9_-]+)\s*\}\}/g;
 
@@ -108,12 +113,8 @@ function evaluate(template: string, scopes: Record<string, Record<string, string
 	});
 }
 
-/**
- * Resolves the inputs the nested official action receives for a given caller
- * `with:` block, the way the composite runner does: declared defaults fill
- * omitted inputs, then the step's `with` expressions are evaluated.
- */
-function forwardedInputs(callerWith: Record<string, string> = {}): Record<string, string> {
+/** Resolves the composite inputs after applying defaults and caller values. */
+function resolvedActionInputs(callerWith: Record<string, string> = {}): Record<string, string> {
 	const undeclared = Object.keys(callerWith).filter((name) => !(name in action.inputs));
 	if (undeclared.length > 0) {
 		throw new Error(`composite actions cannot forward undeclared inputs: ${undeclared.join(", ")}`);
@@ -129,7 +130,15 @@ function forwardedInputs(callerWith: Record<string, string> = {}): Record<string
 					? ""
 					: evaluate(spec.default, { github: GITHUB_CONTEXT });
 	}
+	return inputs;
+}
 
+/** Resolves the `with` values a nested action step receives. */
+function stepInputs(
+	step: CompositeStep,
+	callerWith: Record<string, string> = {},
+): Record<string, string> {
+	const inputs = resolvedActionInputs(callerWith);
 	const resolved: Record<string, string> = {};
 	for (const [name, template] of Object.entries(step.with ?? {})) {
 		resolved[name] = evaluate(String(template), { inputs, github: GITHUB_CONTEXT });
@@ -137,16 +146,24 @@ function forwardedInputs(callerWith: Record<string, string> = {}): Record<string
 	return resolved;
 }
 
+function forwardedInputs(callerWith: Record<string, string> = {}): Record<string, string> {
+	return stepInputs(pulumiStep, callerWith);
+}
+
 describe("actions/pulumi delegation", () => {
-	test("runs the official Pulumi action as a single SHA-pinned composite step", () => {
+	test("authenticates before running the official Pulumi action", () => {
 		expect(action.runs.using).toBe("composite");
-		expect(action.runs.steps).toHaveLength(1);
-		expect(step.id).toBe("pulumi");
-		expect(step.uses).toBe(`pulumi/actions@${PINNED_UPSTREAM_SHA}`);
-		expect(step.uses).toMatch(/^pulumi\/actions@[0-9a-f]{40}$/);
+		expect(action.runs.steps).toHaveLength(2);
+		expect(authStep.id).toBe("procella-auth");
+		expect(authStep.uses).toBe(`pulumi/auth-actions@${PINNED_AUTH_SHA}`);
+		expect(authStep.uses).toMatch(/^pulumi\/auth-actions@[0-9a-f]{40}$/);
+		expect(pulumiStep.id).toBe("pulumi");
+		expect(pulumiStep.uses).toBe(`pulumi/actions@${PINNED_UPSTREAM_SHA}`);
+		expect(pulumiStep.uses).toMatch(/^pulumi\/actions@[0-9a-f]{40}$/);
 	});
 
-	test("annotates the pin with the upstream release it tracks", () => {
+	test("annotates both pins with their upstream releases", () => {
+		expect(source).toContain(`uses: pulumi/auth-actions@${PINNED_AUTH_SHA} # ${PINNED_AUTH_TAG}`);
 		expect(source).toContain(
 			`uses: pulumi/actions@${PINNED_UPSTREAM_SHA} # ${PINNED_UPSTREAM_TAG}`,
 		);
@@ -155,6 +172,32 @@ describe("actions/pulumi delegation", () => {
 	test("re-exports the upstream command output", () => {
 		// biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression, not a JS template
 		expect(action.outputs.output?.value).toBe("${{ steps.pulumi.outputs.output }}");
+	});
+});
+
+describe("actions/pulumi OIDC authentication", () => {
+	test("enables OIDC only when an organization is explicitly supplied", () => {
+		expect(action.inputs["oidc-organization"]?.required).toBe(false);
+		expect(action.inputs["oidc-organization"]?.default).toBeUndefined();
+		// biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression, not a JS template
+		expect(authStep.if).toBe("${{ inputs.oidc-organization != '' }}");
+		expect(stepInputs(authStep, { "stack-name": "acme/project/dev" }).organization).toBe("");
+	});
+
+	test("requests an organization token and exports it for the Pulumi step", () => {
+		expect(stepInputs(authStep, { "oidc-organization": "acme" })).toEqual({
+			organization: "acme",
+			"requested-token-type": "urn:pulumi:token-type:access_token:organization",
+			"export-environment-variables": "true",
+			"cloud-url": PROCELLA_CLOUD_URL,
+		});
+	});
+
+	test("forwards the configured backend URL to OIDC authentication", () => {
+		const cloudUrl = "https://procella.internal.example.com/api";
+		expect(
+			stepInputs(authStep, { "oidc-organization": "acme", "cloud-url": cloudUrl })["cloud-url"],
+		).toBe(cloudUrl);
 	});
 });
 
@@ -175,17 +218,21 @@ describe("actions/pulumi cloud-url", () => {
 		expect(forwardedInputs({ "cloud-url": "" })["cloud-url"]).toBe("");
 	});
 
-	test("cloud-url is the only declared default that diverges from upstream", () => {
-		const diverging = Object.entries(action.inputs)
-			.filter(([name, spec]) => (spec.default ?? null) !== UPSTREAM_INPUT_DEFAULTS[name])
+	test("cloud-url is the only upstream default that diverges", () => {
+		const diverging = Object.entries(UPSTREAM_INPUT_DEFAULTS)
+			.filter(([name, defaultValue]) => (action.inputs[name]?.default ?? null) !== defaultValue)
 			.map(([name]) => name);
 		expect(diverging).toEqual(["cloud-url"]);
 	});
 });
 
 describe("actions/pulumi forwarding surface", () => {
-	test("declares exactly the pinned upstream input surface", () => {
-		expect(Object.keys(action.inputs).sort()).toEqual(Object.keys(UPSTREAM_INPUT_DEFAULTS).sort());
+	test("declares the pinned upstream surface plus explicit Procella-only inputs", () => {
+		const upstreamInputs = Object.keys(UPSTREAM_INPUT_DEFAULTS);
+		expect(Object.keys(action.inputs).filter((name) => !upstreamInputs.includes(name))).toEqual(
+			PROCELLA_ONLY_INPUTS,
+		);
+		expect(upstreamInputs.every((name) => name in action.inputs)).toBe(true);
 	});
 
 	test("declares every input as optional, matching upstream", () => {
@@ -195,12 +242,15 @@ describe("actions/pulumi forwarding surface", () => {
 		expect(required).toEqual([]);
 	});
 
-	test("forwards every declared input to the matching upstream input", () => {
+	test("forwards every upstream input one-to-one and no Procella-only input", () => {
 		const sentinels: Record<string, string> = {};
-		for (const name of Object.keys(action.inputs)) {
+		for (const name of Object.keys(UPSTREAM_INPUT_DEFAULTS)) {
 			sentinels[name] = `sentinel:${name}`;
 		}
 		expect(forwardedInputs(sentinels)).toEqual(sentinels);
+		expect(forwardedInputs({ "oidc-organization": "acme" })).not.toHaveProperty(
+			"oidc-organization",
+		);
 	});
 
 	test("forwards the caller workflow token when github-token is omitted", () => {
