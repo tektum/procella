@@ -61,7 +61,7 @@ jobs:
 
   publish-migrate:
     name: Publish @procella/migrate
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-amd64-4cpu-8ram
     needs: [release-please]
     if: needs.release-please.outputs.migrate_released == 'true'
     permissions:

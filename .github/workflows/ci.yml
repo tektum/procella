@@ -19,7 +19,7 @@ concurrency:
 jobs:
   check:
     name: Lint, Typecheck & Unit Tests
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-amd64-4cpu-8ram
     permissions:
       id-token: write
     steps:
@@ -51,7 +51,7 @@ jobs:
 
   workflow-policy:
     name: Workflow Policy
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-amd64-4cpu-8ram
     timeout-minutes: 10
     permissions:
       contents: read
@@ -65,10 +65,11 @@ jobs:
           cache: false
       - name: Run actionlint
         run: |
-          # actionlint v1.7.12 predates GitHub's $/ self-repository syntax.
+          # actionlint v1.7.12 predates GitHub's $/ syntax and rejects Namespace labels.
           go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 \
             -ignore 'specifying action "\$/.*" in invalid format' \
-            -ignore 'reusable workflow call "\$/.*"'
+            -ignore 'reusable workflow call "\$/.*"' \
+            -ignore 'label "namespace-profile-amd64-4cpu-8ram" is unknown'
       - name: Run zizmor
         uses: zizmorcore/zizmor-action@70fb788f84895a7701f5643d103d587e460b5c99 # v0.6.3
         with:
@@ -78,7 +79,7 @@ jobs:
 
   deployment-package:
     name: Deployment Package
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-amd64-4cpu-8ram
     timeout-minutes: 10
     needs: [check]
     steps:
@@ -95,7 +96,7 @@ jobs:
 
   dependency-hygiene:
     name: Dependency Hygiene
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-amd64-4cpu-8ram
     timeout-minutes: 5
     permissions:
       contents: read
@@ -128,7 +129,7 @@ jobs:
 
   bundle-analysis:
     name: Bundle Analysis
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-amd64-4cpu-8ram
     permissions:
       id-token: write
     needs: [check]
@@ -144,7 +145,7 @@ jobs:
 
   integration:
     name: Integration Tests
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-amd64-4cpu-8ram
     permissions:
       id-token: write
     needs: [check]
@@ -190,7 +191,7 @@ jobs:
           use_oidc: true
   esc-cli-e2e:
     name: ESC CLI E2E
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-amd64-4cpu-8ram
     needs: [check]
     services:
       postgres:
@@ -267,7 +268,7 @@ jobs:
 
   types-freshness:
     name: Verify Pulumi Types Freshness
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-amd64-4cpu-8ram
     # Always runs — the strict ci-required gate fails on any skipped job.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -297,7 +298,7 @@ jobs:
 
   e2e:
     name: E2E Acceptance Tests (shard ${{ matrix.shard }}/3)
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-amd64-4cpu-8ram
     permissions:
       id-token: write
     needs: [check, pulumi-versions]
@@ -367,7 +368,7 @@ jobs:
         run: bun run bench/analyze-traces.ts
   pulumi-compatibility:
     name: Pulumi Compatibility (${{ matrix.name }})
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-amd64-4cpu-8ram
     timeout-minutes: 15
     permissions:
       contents: read
@@ -417,7 +418,7 @@ jobs:
 
   security-e2e:
     name: Security E2E Tests
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-amd64-4cpu-8ram
     permissions:
       id-token: write
     needs: [check, pulumi-versions]
@@ -461,7 +462,7 @@ jobs:
 
   e2e-ui:
     name: E2E UI Tests (Playwright)
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-amd64-4cpu-8ram
     needs: [check, pulumi-versions]
     services:
       postgres:
@@ -509,7 +510,7 @@ jobs:
 
   bench:
     name: Performance Benchmark
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-amd64-4cpu-8ram
     needs: [check, pulumi-versions]
     services:
       postgres:
@@ -578,7 +579,7 @@ jobs:
   # =========================================================================
   esc-eval-go:
     name: Go vet, test & build ESC eval
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-amd64-4cpu-8ram
     permissions:
       id-token: write
     steps:
@@ -630,7 +631,7 @@ jobs:
     name: Deploy Preview
     if: github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'deploy-preview')
     needs: [check, esc-eval-go]
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-amd64-4cpu-8ram
     timeout-minutes: 20
     environment: preview
     permissions:
@@ -823,7 +824,7 @@ jobs:
   preview-integration:
     name: Integration Tests (Deployed Preview)
     if: github.event_name == 'pull_request' && needs.preview-deploy.result == 'success' && needs.preview-deploy.outputs.descope_project_id != ''
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-amd64-4cpu-8ram
     needs: [preview-deploy, pulumi-versions]
     permissions:
       id-token: write
@@ -856,7 +857,7 @@ jobs:
   preview-oidc-e2e:
     name: OIDC Pulumi Deploy (real end-to-end)
     if: github.event_name == 'pull_request' && needs.preview-deploy.result == 'success' && needs.preview-integration.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-amd64-4cpu-8ram
     needs: [preview-deploy, preview-integration, pulumi-versions]
     permissions:
       id-token: write
