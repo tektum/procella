@@ -4,7 +4,7 @@ import type { Database } from "@procella/db";
 import { updateEvents, updates } from "@procella/db";
 
 import { TRPCError, tracked } from "@trpc/server";
-import { and, asc, desc, eq, gt, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, ne } from "drizzle-orm";
 import { Client } from "pg";
 import { z } from "zod/v4";
 import { protectedProcedure, router } from "../trpc.js";
@@ -57,7 +57,15 @@ export async function resolveUpdateId(
 	const [row] = await db
 		.select({ id: updates.id })
 		.from(updates)
-		.where(and(eq(updates.stackId, stackId), eq(updates.version, version)))
+		.where(
+			and(
+				eq(updates.stackId, stackId),
+				eq(updates.version, version),
+				// Pulumi preview permalinks use the opaque update ID; numeric permalinks are updates.
+				ne(updates.kind, "preview"),
+			),
+		)
+		.orderBy(desc(updates.createdAt))
 		.limit(1);
 
 	if (!row) {
