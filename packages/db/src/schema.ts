@@ -93,6 +93,9 @@ export const updates = pgTable(
 		uniqueIndex("idx_updates_active")
 			.on(table.stackId)
 			.where(sql`status IN ('not started', 'requested', 'running')`),
+		uniqueIndex("idx_updates_stack_version")
+			.on(table.stackId, table.version)
+			.where(sql`${table.kind} <> 'preview'`),
 	],
 );
 

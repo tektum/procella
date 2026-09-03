@@ -900,7 +900,7 @@ describe("@procella/updates helpers", () => {
 			return expect(svc.createUpdate("stack-1", "update")).rejects.toThrow("unexpected");
 		});
 
-		test("version defaults to 1 when no prior checkpoints exist", async () => {
+		test("first non-preview update starts at version 1", async () => {
 			let capturedVersion = 0;
 			const chainable = {
 				from: () => chainable,

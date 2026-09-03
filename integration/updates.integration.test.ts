@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { AesCryptoService } from "@procella/crypto";
-import { checkpoints, type Database, journalEntries } from "@procella/db";
+import { checkpoints, type Database, journalEntries, updates } from "@procella/db";
 import { PostgresStacksService, type StackInfo } from "@procella/stacks";
 import { type BlobStorage, LocalBlobStorage } from "@procella/storage";
 import {
@@ -25,6 +25,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { getTestDb, truncateTables } from "./setup.js";
+import { resolveUpdateId } from "../packages/api/src/router/updates.js";
 
 let db: Database;
 let stacksService: PostgresStacksService;
@@ -108,6 +109,53 @@ describe("PostgresUpdatesService — integration", () => {
 			const second = await updatesService.createUpdate(stack.id, "update");
 			expect(second.updateID).toBeTruthy();
 			expect(second.updateID).not.toBe(first.updateID);
+		});
+
+		test("keeps non-preview versions immutable while previews reuse the current version", async () => {
+			const stack = await seedStack();
+			const failed = await updatesService.createUpdate(stack.id, "update");
+			const failedStart = await updatesService.startUpdate(failed.updateID, {});
+			expect(failedStart.version).toBe(1);
+			await updatesService.completeUpdate(failed.updateID, { status: "failed" });
+
+			const succeeded = await updatesService.createUpdate(stack.id, "update");
+			const succeededStart = await updatesService.startUpdate(succeeded.updateID, {});
+			expect(succeededStart.version).toBe(2);
+			await updatesService.completeUpdate(succeeded.updateID, { status: "succeeded" });
+
+			const preview = await updatesService.createUpdate(stack.id, "preview");
+			const previewStart = await updatesService.startUpdate(preview.updateID, {});
+			expect(previewStart.version).toBe(2);
+			await updatesService.completeUpdate(preview.updateID, { status: "succeeded" });
+
+			const numericResolution = await resolveUpdateId(db, stack.id, "2");
+			expect(numericResolution).toBe(succeeded.updateID);
+			const previewResolution = await resolveUpdateId(db, stack.id, preview.updateID);
+			expect(previewResolution).toBe(preview.updateID);
+
+			const rows = await db
+				.select({ id: updates.id, version: updates.version })
+				.from(updates)
+				.where(eq(updates.stackId, stack.id))
+				.orderBy(asc(updates.createdAt));
+			expect(rows).toEqual([
+				{ id: failed.updateID, version: 1 },
+				{ id: succeeded.updateID, version: 2 },
+				{ id: preview.updateID, version: 2 },
+			]);
+
+			let duplicateVersionError: unknown;
+			try {
+				await db.insert(updates).values({
+					stackId: stack.id,
+					kind: "refresh",
+					status: "failed",
+					version: 2,
+				});
+			} catch (error) {
+				duplicateVersionError = error;
+			}
+			expect(duplicateVersionError).toMatchObject({ errno: "23505" });
 		});
 	});
 

@@ -172,12 +172,21 @@ export class PostgresUpdatesService implements UpdatesService {
 		environment?: Record<string, string>,
 	): Promise<UpdateProgramResponse> {
 		return withDbSpan("createUpdate", { "update.kind": kind, "stack.id": stackId }, async () => {
+			const versionWhere =
+				kind === "preview"
+					? and(
+							eq(updates.stackId, stackId),
+							ne(updates.kind, "preview"),
+							eq(updates.status, "succeeded"),
+						)
+					: and(eq(updates.stackId, stackId), ne(updates.kind, "preview"));
 			const [versionRow] = await this.db
-				.select({ maxVersion: max(checkpoints.version) })
-				.from(checkpoints)
-				.where(eq(checkpoints.stackId, stackId));
+				.select({ maxVersion: max(updates.version) })
+				.from(updates)
+				.where(versionWhere);
 
-			const version = (versionRow?.maxVersion ?? 0) + 1;
+			const currentVersion = versionRow?.maxVersion ?? 0;
+			const version = kind === "preview" ? currentVersion : currentVersion + 1;
 
 			try {
 				const [row] = await this.db
@@ -745,6 +754,11 @@ export class PostgresUpdatesService implements UpdatesService {
 				if (stackLock.activeUpdateId) {
 					throw new ImportConflictError();
 				}
+				const [versionRow] = await tx
+					.select({ maxVersion: max(updates.version) })
+					.from(updates)
+					.where(and(eq(updates.stackId, stackId), ne(updates.kind, "preview")));
+				const version = (versionRow?.maxVersion ?? 0) + 1;
 
 				const [row] = await tx
 					.insert(updates)
@@ -752,6 +766,7 @@ export class PostgresUpdatesService implements UpdatesService {
 						stackId,
 						kind: "import",
 						status: "succeeded",
+						version,
 						completedAt: sql`now()`,
 					})
 					.returning();
