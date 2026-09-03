@@ -814,18 +814,29 @@ describe("@procella/updates helpers", () => {
 	// ========================================================================
 
 	describe("createUpdate — conflict detection (pgErrorCode)", () => {
-		function makeDb(insertResult: () => Promise<{ id: string }[]>) {
+		function makeDb(
+			insertResult: () => Promise<{ id: string }[]>,
+			onValues?: (values: Record<string, unknown>) => void,
+		) {
 			const chainable = {
 				from: () => chainable,
 				where: () => Promise.resolve([]),
-				values: () => chainable,
+				values: (values: Record<string, unknown>) => {
+					onValues?.(values);
+					return chainable;
+				},
 				returning: insertResult,
+				set: () => chainable,
 			};
-			return {
+			let db: object;
+			db = {
 				select: () => chainable,
 				insert: () => chainable,
-				execute: () => Promise.resolve(),
-			} as never;
+				update: () => chainable,
+				execute: () => Promise.resolve([{ activeUpdateId: null }]),
+				transaction: (callback: (tx: object) => unknown) => callback(db),
+			};
+			return db as never;
 		}
 
 		const noopStorage = {} as never;
@@ -902,20 +913,12 @@ describe("@procella/updates helpers", () => {
 
 		test("first non-preview update starts at version 1", async () => {
 			let capturedVersion = 0;
-			const chainable = {
-				from: () => chainable,
-				where: () => Promise.resolve([]),
-				values: (vals: { version: number }) => {
-					capturedVersion = vals.version;
-					return chainable;
+			const db = makeDb(
+				() => Promise.resolve([{ id: "upd-2" }]),
+				(values) => {
+					capturedVersion = values.version as number;
 				},
-				returning: () => Promise.resolve([{ id: "upd-2" }]),
-			};
-			const db = {
-				select: () => chainable,
-				insert: () => chainable,
-				execute: () => Promise.resolve(),
-			} as never;
+			);
 			const svc = new PostgresUpdatesService({ db, storage: noopStorage, crypto: noopCrypto });
 			await svc.createUpdate("stack-1", "update");
 			expect(capturedVersion).toBe(1);
@@ -923,20 +926,12 @@ describe("@procella/updates helpers", () => {
 
 		test("persists update environment metadata", async () => {
 			let capturedEnvironment: Record<string, string> | undefined;
-			const chainable = {
-				from: () => chainable,
-				where: () => Promise.resolve([]),
-				values: (values: { environment: Record<string, string> }) => {
-					capturedEnvironment = values.environment;
-					return chainable;
+			const db = makeDb(
+				() => Promise.resolve([{ id: "upd-metadata" }]),
+				(values) => {
+					capturedEnvironment = values.environment as Record<string, string>;
 				},
-				returning: () => Promise.resolve([{ id: "upd-metadata" }]),
-			};
-			const db = {
-				select: () => chainable,
-				insert: () => chainable,
-				execute: () => Promise.resolve(),
-			} as never;
+			);
 			const svc = new PostgresUpdatesService({ db, storage: noopStorage, crypto: noopCrypto });
 			const environment = {
 				"vcs.owner": "octocat",

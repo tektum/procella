@@ -20,8 +20,8 @@ import {
 	ImportConflictError,
 	PostgresUpdatesService,
 } from "@procella/updates";
-import { and, asc, eq } from "drizzle-orm";
-import { mkdtemp } from "node:fs/promises";
+import { and, asc, eq, sql } from "drizzle-orm";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { getTestDb, truncateTables } from "./setup.js";
@@ -155,7 +155,94 @@ describe("PostgresUpdatesService — integration", () => {
 			} catch (error) {
 				duplicateVersionError = error;
 			}
-			expect(duplicateVersionError).toMatchObject({ errno: "23505" });
+			let sqlState: unknown;
+			if (duplicateVersionError && typeof duplicateVersionError === "object") {
+				if ("errno" in duplicateVersionError) {
+					sqlState = duplicateVersionError.errno;
+				} else if (
+					"cause" in duplicateVersionError &&
+					duplicateVersionError.cause &&
+					typeof duplicateVersionError.cause === "object" &&
+					"errno" in duplicateVersionError.cause
+				) {
+					sqlState = duplicateVersionError.cause.errno;
+				}
+			}
+			expect(sqlState).toBe("23505");
+		});
+
+		test("never creates a stale preview version while an update completes", async () => {
+			const stack = await seedStack();
+			const update = await updatesService.createUpdate(stack.id, "update");
+			const updateStart = await updatesService.startUpdate(update.updateID, {});
+			expect(updateStart.version).toBe(1);
+
+			const [completion, previewAttempt] = await Promise.allSettled([
+				updatesService.completeUpdate(update.updateID, { status: "succeeded" }),
+				updatesService.createUpdate(stack.id, "preview"),
+			]);
+			expect(completion.status).toBe("fulfilled");
+
+			const preview =
+				previewAttempt.status === "fulfilled"
+					? previewAttempt.value
+					: await updatesService.createUpdate(stack.id, "preview");
+			if (previewAttempt.status === "rejected") {
+				expect(previewAttempt.reason).toBeInstanceOf(UpdateConflictError);
+			}
+
+			const previewStart = await updatesService.startUpdate(preview.updateID, {});
+			expect(previewStart.version).toBe(1);
+		});
+	});
+
+	describe("update version migration", () => {
+		test("preserves unique versions and only moves older collision rows", async () => {
+			const migration = await readFile(
+				new URL("../packages/db/drizzle/0015_immutable_update_versions.sql", import.meta.url),
+				"utf8",
+			);
+			const statements = migration
+				.split("--> statement-breakpoint")
+				.map((statement) => statement.trim())
+				.filter(Boolean);
+
+			await db.transaction(async (tx) => {
+				await tx.execute(sql.raw(`
+					CREATE TEMP TABLE updates (
+						id uuid PRIMARY KEY,
+						stack_id uuid NOT NULL,
+						kind text NOT NULL,
+						status text NOT NULL,
+						version integer NOT NULL,
+						created_at timestamp NOT NULL
+					) ON COMMIT DROP
+				`));
+				await tx.execute(sql.raw(`
+					INSERT INTO updates (id, stack_id, kind, status, version, created_at) VALUES
+						('00000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000000', 'update', 'succeeded', 5, '2026-01-01 00:00:00'),
+						('00000000-0000-4000-8000-000000000002', '10000000-0000-4000-8000-000000000000', 'update', 'failed', 8, '2026-01-02 00:00:00'),
+						('00000000-0000-4000-8000-000000000003', '10000000-0000-4000-8000-000000000000', 'refresh', 'succeeded', 8, '2026-01-03 00:00:00'),
+						('00000000-0000-4000-8000-000000000004', '10000000-0000-4000-8000-000000000000', 'destroy', 'succeeded', 12, '2026-01-04 00:00:00'),
+						('00000000-0000-4000-8000-000000000005', '10000000-0000-4000-8000-000000000000', 'preview', 'succeeded', 8, '2026-01-05 00:00:00')
+				`));
+
+				for (const statement of statements) {
+					await tx.execute(sql.raw(statement));
+				}
+
+				const rows = await tx
+					.select({ id: updates.id, version: updates.version })
+					.from(updates)
+					.orderBy(asc(updates.id));
+				expect(rows).toEqual([
+					{ id: "00000000-0000-4000-8000-000000000001", version: 5 },
+					{ id: "00000000-0000-4000-8000-000000000002", version: 13 },
+					{ id: "00000000-0000-4000-8000-000000000003", version: 8 },
+					{ id: "00000000-0000-4000-8000-000000000004", version: 12 },
+					{ id: "00000000-0000-4000-8000-000000000005", version: 8 },
+				]);
+			});
 		});
 	});
 

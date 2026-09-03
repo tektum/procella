@@ -1,35 +1,28 @@
-WITH numbered_updates AS (
+WITH ranked_updates AS (
 	SELECT
 		id,
-		ROW_NUMBER() OVER (PARTITION BY stack_id ORDER BY created_at, id)::integer AS version
+		stack_id,
+		version,
+		MAX(version) OVER (PARTITION BY stack_id) AS max_version,
+		ROW_NUMBER() OVER (
+			PARTITION BY stack_id, version
+			ORDER BY created_at DESC, id DESC
+		) AS duplicate_rank
 	FROM updates
 	WHERE kind <> 'preview'
-)
-UPDATE updates
-SET version = numbered_updates.version
-FROM numbered_updates
-WHERE updates.id = numbered_updates.id;
---> statement-breakpoint
-WITH preview_versions AS (
+), collision_replacements AS (
 	SELECT
-		preview.id,
-		COALESCE((
-			SELECT MAX(candidate.version)
-			FROM updates AS candidate
-			WHERE candidate.stack_id = preview.stack_id
-				AND candidate.kind <> 'preview'
-				AND candidate.status = 'succeeded'
-				AND (
-					candidate.created_at < preview.created_at
-					OR (candidate.created_at = preview.created_at AND candidate.id < preview.id)
-				)
-		), 0)::integer AS version
-	FROM updates AS preview
-	WHERE preview.kind = 'preview'
+		id,
+		(max_version + ROW_NUMBER() OVER (
+			PARTITION BY stack_id
+			ORDER BY version, id
+		))::integer AS version
+	FROM ranked_updates
+	WHERE duplicate_rank > 1
 )
 UPDATE updates
-SET version = preview_versions.version
-FROM preview_versions
-WHERE updates.id = preview_versions.id;
+SET version = collision_replacements.version
+FROM collision_replacements
+WHERE updates.id = collision_replacements.id;
 --> statement-breakpoint
 CREATE UNIQUE INDEX "idx_updates_stack_version" ON "updates" USING btree ("stack_id", "version") WHERE "updates"."kind" <> 'preview';

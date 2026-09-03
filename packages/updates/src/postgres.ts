@@ -172,45 +172,59 @@ export class PostgresUpdatesService implements UpdatesService {
 		environment?: Record<string, string>,
 	): Promise<UpdateProgramResponse> {
 		return withDbSpan("createUpdate", { "update.kind": kind, "stack.id": stackId }, async () => {
-			const versionWhere =
-				kind === "preview"
-					? and(
-							eq(updates.stackId, stackId),
-							ne(updates.kind, "preview"),
-							eq(updates.status, "succeeded"),
-						)
-					: and(eq(updates.stackId, stackId), ne(updates.kind, "preview"));
-			const [versionRow] = await this.db
-				.select({ maxVersion: max(updates.version) })
-				.from(updates)
-				.where(versionWhere);
-
-			const currentVersion = versionRow?.maxVersion ?? 0;
-			const version = kind === "preview" ? currentVersion : currentVersion + 1;
-
 			try {
-				const [row] = await this.db
-					.insert(updates)
-					.values({
-						stackId,
-						kind,
-						status: "not started",
-						version,
-						config: config ?? null,
-						program: program ?? null,
-						environment: environment ?? {},
-						initiatedBy: caller?.userId || null, // use || so empty string becomes null
-						initiatedByType: caller?.principalType ?? null,
-						initiatedByDisplay: caller?.login ?? null,
-						initiatedByMeta: caller?.workload
-							? (caller.workload as unknown as Record<string, unknown>)
-							: null,
-					})
-					.returning();
+				const result = await this.db.transaction(async (tx) => {
+					const stackLock = await this.lockStackForOperation(tx, stackId);
+					if (stackLock.activeUpdateId) {
+						throw new UpdateConflictError(
+							"Another update is already in progress for this stack. Run `pulumi cancel` to cancel it first.",
+						);
+					}
+
+					const versionWhere =
+						kind === "preview"
+							? and(
+									eq(updates.stackId, stackId),
+									ne(updates.kind, "preview"),
+									eq(updates.status, "succeeded"),
+								)
+							: and(eq(updates.stackId, stackId), ne(updates.kind, "preview"));
+					const [versionRow] = await tx
+						.select({ maxVersion: max(updates.version) })
+						.from(updates)
+						.where(versionWhere);
+
+					const currentVersion = versionRow?.maxVersion ?? 0;
+					const version = kind === "preview" ? currentVersion : currentVersion + 1;
+					const [row] = await tx
+						.insert(updates)
+						.values({
+							stackId,
+							kind,
+							status: "not started",
+							version,
+							config: config ?? null,
+							program: program ?? null,
+							environment: environment ?? {},
+							initiatedBy: caller?.userId || null, // use || so empty string becomes null
+							initiatedByType: caller?.principalType ?? null,
+							initiatedByDisplay: caller?.login ?? null,
+							initiatedByMeta: caller?.workload
+								? (caller.workload as unknown as Record<string, unknown>)
+								: null,
+						})
+						.returning();
+
+					await tx
+						.update(stacks)
+						.set({ activeUpdateId: row.id, updatedAt: sql`now()` })
+						.where(eq(stacks.id, stackId));
+
+					return { updateID: row.id, version } as UpdateProgramResponse;
+				});
 
 				this.db.execute(sql`SELECT pg_notify('stack_updates', ${stackId})`).catch(() => {});
-
-				return { updateID: row.id, version } as UpdateProgramResponse;
+				return result;
 			} catch (err: unknown) {
 				if (pgErrorCode(err) === "23505") {
 					throw new UpdateConflictError(
@@ -750,7 +764,7 @@ export class PostgresUpdatesService implements UpdatesService {
 	async importStack(stackId: string, deployment: UntypedDeployment): Promise<ImportStackResponse> {
 		return withDbSpan("importStack", { "stack.id": stackId }, async () => {
 			const updateRow = await this.db.transaction(async (tx) => {
-				const stackLock = await this.lockStackForImport(tx, stackId);
+				const stackLock = await this.lockStackForOperation(tx, stackId);
 				if (stackLock.activeUpdateId) {
 					throw new ImportConflictError();
 				}
@@ -1072,7 +1086,7 @@ export class PostgresUpdatesService implements UpdatesService {
 		return row;
 	}
 
-	private async lockStackForImport(tx: DbTransaction, stackId: string): Promise<StackLockRow> {
+	private async lockStackForOperation(tx: DbTransaction, stackId: string): Promise<StackLockRow> {
 		const [row] = this.readExecuteRows<StackLockRow>(
 			await tx.execute(sql`
 				SELECT active_update_id AS "activeUpdateId"
