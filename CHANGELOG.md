@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.5.0](https://github.com/tektum/procella/compare/procella-v0.4.0...procella-v0.5.0) (2026-09-03)
+
+
+### Features
+
+* **actions:** add Procella OIDC authentication ([#255](https://github.com/tektum/procella/issues/255)) ([ab56d05](https://github.com/tektum/procella/commit/ab56d05b6366e8fbb3cfc7381bc77b66b071211d))
+* **actions:** add Procella Pulumi GitHub Action ([#246](https://github.com/tektum/procella/issues/246)) ([e036a1d](https://github.com/tektum/procella/commit/e036a1df5937e4ffc351c2fc47b5ea743b7f782e))
+* establish Pulumi CLI compatibility policy ([#253](https://github.com/tektum/procella/issues/253)) ([ea37938](https://github.com/tektum/procella/commit/ea3793847014c57714c12ccd7899ae00d6185a86))
+
+
+### Bug Fixes
+
+* **api:** correct deployment-schema-version capability wire shape ([#244](https://github.com/tektum/procella/issues/244)) ([064d194](https://github.com/tektum/procella/commit/064d1949994a6611ef174f8732f2f96364d3f7b9))
+* **ci:** isolate pull request concurrency from push runs ([#243](https://github.com/tektum/procella/issues/243)) ([38d245b](https://github.com/tektum/procella/commit/38d245b4b19b08feb7ac9e275d740ea8859a1d8d))
+* **deps:** update dependency @descope/react-sdk to v3 ([#227](https://github.com/tektum/procella/issues/227)) ([87bd3fb](https://github.com/tektum/procella/commit/87bd3fbdde6acd36c0fe70556e75ebd788a48bee))
+* **github:** derive PR context from update metadata ([#252](https://github.com/tektum/procella/issues/252)) ([1ceda81](https://github.com/tektum/procella/commit/1ceda8100a1e3f6a0e879f59ee65b6f63352e1ba))
+* **infra:** route ESC web requests to API ([#247](https://github.com/tektum/procella/issues/247)) ([dd4a8ef](https://github.com/tektum/procella/commit/dd4a8efe9b1f4f7c279e5b653e393dd8bf9e63fe))
+* **updates:** preserve numeric permalink identity ([#256](https://github.com/tektum/procella/issues/256)) ([0f402d1](https://github.com/tektum/procella/commit/0f402d14f4e33b5d315bcda2fa2bfcb1a38dad03))
+
 ## [0.4.0](https://github.com/tektum/procella/compare/procella-v0.3.4...procella-v0.4.0) (2026-09-02)
 
 
