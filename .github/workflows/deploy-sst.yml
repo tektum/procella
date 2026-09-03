@@ -37,7 +37,7 @@ permissions:
 jobs:
   deploy:
     name: Deploy to AWS (${{ inputs.stage }})
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-amd64-4cpu-8ram
     timeout-minutes: 20
     environment: ${{ inputs.stage }}
     steps:

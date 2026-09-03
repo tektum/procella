@@ -54,7 +54,7 @@ permissions:
 
 jobs:
   renovate:
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-amd64-4cpu-8ram
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
