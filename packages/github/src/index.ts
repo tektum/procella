@@ -322,19 +322,14 @@ export class OctokitGitHubDeliveryService implements GitHubDeliveryService {
 	async resolveInstallation(
 		target: GitHubRepositoryTarget,
 	): Promise<GitHubInstallationInfo | null> {
-		const rows = await this.db
-			.select()
-			.from(githubInstallations)
-			.where(eq(githubInstallations.tenantId, target.tenantId))
-			.orderBy(desc(githubInstallations.updatedAt));
+		const installations = await this.listInstallations(target.tenantId);
 		try {
 			const { data } = await this.appClient.request("GET /repos/{owner}/{repo}/installation", {
 				owner: target.owner,
 				repo: target.repo,
 			});
 			if (!Number.isSafeInteger(data.id)) return null;
-			const row = rows.find((installation) => installation.installationId === data.id);
-			return row ? mapInstallationRow(row) : null;
+			return installations.find((installation) => installation.installationId === data.id) ?? null;
 		} catch {
 			return null;
 		}
