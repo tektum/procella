@@ -138,9 +138,11 @@ The GC worker acquires a transaction-scoped PostgreSQL advisory lock before scan
 
 ```typescript
 await db.transaction(async (tx) => {
-  const acquired = await tx.execute(
-    sql`SELECT pg_try_advisory_xact_lock(${GC_ADVISORY_LOCK_ID})`
+  const result = await tx.execute(
+    sql`SELECT pg_try_advisory_xact_lock(${GC_ADVISORY_LOCK_ID}) AS acquired`
   );
+  const rows = "rows" in result ? result.rows : result;
+  if (rows[0]?.acquired !== true) return;
   // ... cancel orphaned updates and enqueue running-update publications ...
 });
 ```
@@ -155,12 +157,12 @@ Workers claim rows with `FOR UPDATE SKIP LOCKED` and a short lease, then release
 
 ## Cascade Deletes
 
-Foreign keys use `ON DELETE CASCADE`:
+Foreign keys use `ON DELETE CASCADE` where the schema declares ownership:
 
-- Deleting a **project** cascades to its stacks
-- Deleting an **update** cascades to events, checkpoints, and GitHub outbox rows
+- Deleting a **project** cascades to its stack registry rows.
+- Deleting an **update** cascades to its events, checkpoints, and GitHub outbox rows.
 
-This means `pulumi stack rm` cleanly removes all associated data.
+`updates.stack_id` is intentionally a soft reference. Deleting a stack registry row does not itself delete retained update history or checkpoint data.
 
 ## Migrations
 
