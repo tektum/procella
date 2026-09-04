@@ -84,6 +84,7 @@ export interface GitHubService extends GitHubDeliveryService {
 export const GITHUB_SETUP_STATE_TTL_SECONDS = 10 * 60;
 const GITHUB_SETUP_STATE_ISSUER = "procella";
 const GITHUB_SETUP_STATE_AUDIENCE = "procella:github-app-installation";
+const GITHUB_REQUEST_TIMEOUT_MS = 30_000;
 
 export type GitHubSetupErrorCode =
 	| "invalid_state"
@@ -576,6 +577,7 @@ export class OctokitGitHubService implements GitHubService {
 		return new Octokit({
 			authStrategy: createAppAuth,
 			auth: { appId: this.config.appId, privateKey: this.config.privateKey },
+			request: { timeout: GITHUB_REQUEST_TIMEOUT_MS },
 		});
 	}
 
@@ -587,6 +589,7 @@ export class OctokitGitHubService implements GitHubService {
 				privateKey: this.config.privateKey,
 				installationId,
 			},
+			request: { timeout: GITHUB_REQUEST_TIMEOUT_MS },
 		});
 	}
 }
@@ -614,6 +617,7 @@ export class OctokitGitHubDeliveryService implements GitHubDeliveryService {
 			new Octokit({
 				authStrategy: createAppAuth,
 				auth: { appId: config.appId, privateKey: config.privateKey },
+				request: { timeout: GITHUB_REQUEST_TIMEOUT_MS },
 			});
 		this.installationClientFactory =
 			installationClientFactory ??
@@ -621,6 +625,7 @@ export class OctokitGitHubDeliveryService implements GitHubDeliveryService {
 				new Octokit({
 					authStrategy: createAppAuth,
 					auth: { appId: config.appId, privateKey: config.privateKey, installationId },
+					request: { timeout: GITHUB_REQUEST_TIMEOUT_MS },
 				}));
 	}
 
@@ -868,6 +873,7 @@ export class GitHubOutboxWorker {
 		const { target } = claim;
 		const installation = await this.github.resolveInstallation(target);
 		if (!installation) throw new Error("No authorized GitHub App installation for repository");
+		await this.renewClaim(claim);
 
 		const marker = `<!-- procella:update:${claim.updateId} -->`;
 		const body = buildPRCommentBody({
@@ -878,9 +884,7 @@ export class GitHubOutboxWorker {
 			kind: claim.kind,
 			status: claim.phase === "started" ? "running" : claim.status,
 			resourceChanges:
-				claim.phase === "terminal"
-					? (claim.summary?.resourceChanges as Record<string, number> | undefined)
-					: undefined,
+				claim.phase === "terminal" ? resourceChangesFromSummary(claim.summary) : undefined,
 		});
 
 		let commentId = parseGitHubCommentId(claim.commentId);
@@ -893,6 +897,7 @@ export class GitHubOutboxWorker {
 				marker,
 			);
 		}
+		await this.renewClaim(claim);
 		if (commentId === null) {
 			commentId = await this.github.createPRComment(
 				installation.installationId,
@@ -910,7 +915,7 @@ export class GitHubOutboxWorker {
 				body,
 			);
 		}
-		await this.persistCommentId(claim.updateId, commentId);
+		if (claim.commentId === null) await this.persistCommentId(claim, commentId);
 
 		const status = claim.phase === "started" ? "running" : claim.status;
 		await this.github.setCommitStatus(
@@ -924,11 +929,40 @@ export class GitHubOutboxWorker {
 		);
 	}
 
-	private async persistCommentId(updateId: string, commentId: number): Promise<void> {
-		await this.db
-			.update(updates)
-			.set({ githubCommentId: String(commentId), updatedAt: sql`now()` })
-			.where(and(eq(updates.id, updateId), sql`${updates.githubCommentId} IS NULL`));
+	private async renewClaim(claim: GitHubOutboxClaim): Promise<void> {
+		const rows = await this.db
+			.update(githubUpdateOutbox)
+			.set({
+				claimedUntil: sql`now() + (${GITHUB_OUTBOX_CLAIM_SECONDS} * interval '1 second')`,
+				updatedAt: sql`now()`,
+			})
+			.where(
+				and(eq(githubUpdateOutbox.id, claim.id), eq(githubUpdateOutbox.claimedBy, this.workerId)),
+			)
+			.returning({ id: githubUpdateOutbox.id });
+		if (rows.length === 0) throw new Error("GitHub outbox claim lease lost");
+	}
+
+	private async persistCommentId(claim: GitHubOutboxClaim, commentId: number): Promise<void> {
+		const rows = await this.db.transaction(async (tx) => {
+			const owned = await tx
+				.update(githubUpdateOutbox)
+				.set({
+					claimedUntil: sql`now() + (${GITHUB_OUTBOX_CLAIM_SECONDS} * interval '1 second')`,
+					updatedAt: sql`now()`,
+				})
+				.where(
+					and(eq(githubUpdateOutbox.id, claim.id), eq(githubUpdateOutbox.claimedBy, this.workerId)),
+				)
+				.returning({ id: githubUpdateOutbox.id });
+			if (owned.length === 0) return [];
+			return tx
+				.update(updates)
+				.set({ githubCommentId: String(commentId), updatedAt: sql`now()` })
+				.where(and(eq(updates.id, claim.updateId), sql`${updates.githubCommentId} IS NULL`))
+				.returning({ id: updates.id });
+		});
+		if (rows.length === 0) throw new Error("GitHub outbox claim lease lost");
 	}
 
 	private async ack(claim: GitHubOutboxClaim): Promise<void> {
@@ -991,6 +1025,19 @@ function parseGitHubPublicationTarget(value: unknown): GitHubPublicationTarget {
 	return target as unknown as GitHubPublicationTarget;
 }
 
+function resourceChangesFromSummary(
+	summary: Record<string, unknown> | null,
+): Record<string, number> | undefined {
+	const changes = summary?.resourceChanges;
+	if (!changes || typeof changes !== "object" || Array.isArray(changes)) return undefined;
+	return Object.fromEntries(
+		Object.entries(changes).filter(
+			(entry): entry is [string, number] =>
+				typeof entry[1] === "number" && Number.isFinite(entry[1]),
+		),
+	);
+}
+
 function parseGitHubCommentId(value: string | null): number | null {
 	if (!value || !/^\d+$/.test(value)) return null;
 	const parsed = Number(value);
@@ -1012,7 +1059,7 @@ export function sanitizeDeliveryError(error: unknown): string {
 function readExecuteRows<T>(result: unknown): T[] {
 	if (Array.isArray(result)) return result as T[];
 	if (typeof result === "object" && result !== null && "rows" in result) {
-		const rows = (result as { rows?: unknown }).rows;
+		const rows = result.rows;
 		if (Array.isArray(rows)) return rows as T[];
 	}
 	throw new Error("Unexpected database execute result shape");

@@ -1179,7 +1179,7 @@ export class PostgresUpdatesService implements UpdatesService {
 		}
 
 		if (typeof result === "object" && result !== null && "rows" in result) {
-			const rows = (result as { rows?: unknown }).rows;
+			const rows = result.rows;
 			if (Array.isArray(rows)) {
 				return rows as T[];
 			}
