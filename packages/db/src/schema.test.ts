@@ -195,6 +195,36 @@ describe("@procella/db schema", () => {
 				index?.config.columns.map((column) => ("name" in column ? column.name : undefined)),
 			).toEqual(["org_slug", "issuer"]);
 		});
+
+		test("post-0018 snapshot preserves durable publication and global ownership", async () => {
+			const snapshot = (await Bun.file(
+				new URL("../drizzle/meta/0018_snapshot.json", import.meta.url),
+			).json()) as {
+				tables: Record<
+					string,
+					{
+						columns: Record<string, unknown>;
+						indexes: Record<string, { columns: Array<{ expression: string }>; isUnique: boolean }>;
+					}
+				>;
+			};
+
+			expect(snapshot.tables["public.github_setup_states"]).toBeDefined();
+			expect(snapshot.tables["public.github_update_outbox"]).toBeDefined();
+			const snapshotUpdates = snapshot.tables["public.updates"];
+			expect(snapshotUpdates?.indexes.idx_updates_stack_version).toBeDefined();
+			expect(snapshotUpdates?.columns.github_target).toBeDefined();
+			expect(snapshotUpdates?.columns.github_comment_id).toBeDefined();
+			expect(snapshotUpdates?.columns.summary_sequence).toBeDefined();
+			expect(snapshotUpdates?.columns.summary).toBeDefined();
+			const snapshotIndex =
+				snapshot.tables["public.oidc_trust_policies"]?.indexes.idx_oidc_trust_org_issuer;
+			expect(snapshotIndex?.isUnique).toBe(true);
+			expect(snapshotIndex?.columns.map((column) => column.expression)).toEqual([
+				"org_slug",
+				"issuer",
+			]);
+		});
 	});
 
 	describe("all tables", () => {
