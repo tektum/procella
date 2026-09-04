@@ -1126,8 +1126,6 @@ export class PostgresUpdatesService implements UpdatesService {
 			target: [githubUpdateOutbox.updateId, githubUpdateOutbox.phase],
 			set: {
 				revision: sql`${githubUpdateOutbox.revision} + 1`,
-				claimedBy: null,
-				claimedUntil: null,
 				failedAt: null,
 				attempts: 0,
 				availableAt: sql`now()`,

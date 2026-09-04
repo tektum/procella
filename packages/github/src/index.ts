@@ -39,14 +39,22 @@ export interface GitHubRepositoryTarget {
 	repo: string;
 }
 
+export interface GitHubDeliveryRequestOptions {
+	deadlineMs?: number;
+}
+
 export interface GitHubDeliveryService {
-	resolveInstallation(target: GitHubRepositoryTarget): Promise<GitHubInstallationInfo | null>;
+	resolveInstallation(
+		target: GitHubRepositoryTarget,
+		options?: GitHubDeliveryRequestOptions,
+	): Promise<GitHubInstallationInfo | null>;
 	createPRComment(
 		installationId: number,
 		owner: string,
 		repo: string,
 		prNumber: number,
 		body: string,
+		options?: GitHubDeliveryRequestOptions,
 	): Promise<number>;
 	findPRComment(
 		installationId: number,
@@ -54,6 +62,7 @@ export interface GitHubDeliveryService {
 		repo: string,
 		prNumber: number,
 		marker: string,
+		options?: GitHubDeliveryRequestOptions,
 	): Promise<number | null>;
 	updatePRComment(
 		installationId: number,
@@ -61,6 +70,7 @@ export interface GitHubDeliveryService {
 		repo: string,
 		commentId: number,
 		body: string,
+		options?: GitHubDeliveryRequestOptions,
 	): Promise<void>;
 	setCommitStatus(
 		installationId: number,
@@ -70,6 +80,7 @@ export interface GitHubDeliveryService {
 		state: "pending" | "success" | "failure" | "error",
 		description: string,
 		context?: string,
+		options?: GitHubDeliveryRequestOptions,
 	): Promise<void>;
 }
 
@@ -275,6 +286,17 @@ export function mapUpdateStatusToCommitState(
 	return "error";
 }
 
+class GitHubDeliveryDeadlineError extends Error {}
+
+function githubRequestOptions(options?: GitHubDeliveryRequestOptions) {
+	const remaining =
+		options?.deadlineMs === undefined
+			? GITHUB_REQUEST_TIMEOUT_MS
+			: Math.min(GITHUB_REQUEST_TIMEOUT_MS, options.deadlineMs - Date.now());
+	if (remaining <= 0) throw new GitHubDeliveryDeadlineError("GitHub delivery deadline exceeded");
+	return { request: { signal: AbortSignal.timeout(Math.max(1, Math.floor(remaining))) } };
+}
+
 /** GitHub client used by background delivery workers. It needs only App signing credentials. */
 export class OctokitGitHubDeliveryService implements GitHubDeliveryService {
 	protected readonly db: Database;
@@ -321,16 +343,19 @@ export class OctokitGitHubDeliveryService implements GitHubDeliveryService {
 
 	async resolveInstallation(
 		target: GitHubRepositoryTarget,
+		options?: GitHubDeliveryRequestOptions,
 	): Promise<GitHubInstallationInfo | null> {
 		const installations = await this.listInstallations(target.tenantId);
 		try {
 			const { data } = await this.appClient.request("GET /repos/{owner}/{repo}/installation", {
 				owner: target.owner,
 				repo: target.repo,
+				...githubRequestOptions(options),
 			});
 			if (!Number.isSafeInteger(data.id)) return null;
 			return installations.find((installation) => installation.installationId === data.id) ?? null;
-		} catch {
+		} catch (error) {
+			if (error instanceof GitHubDeliveryDeadlineError) throw error;
 			return null;
 		}
 	}
@@ -341,9 +366,16 @@ export class OctokitGitHubDeliveryService implements GitHubDeliveryService {
 		repo: string,
 		prNumber: number,
 		body: string,
+		options?: GitHubDeliveryRequestOptions,
 	): Promise<number> {
 		const { data } = await this.installationClientFactory(installationId).rest.issues.createComment(
-			{ owner, repo, issue_number: prNumber, body },
+			{
+				owner,
+				repo,
+				issue_number: prNumber,
+				body,
+				...githubRequestOptions(options),
+			},
 		);
 		if (!Number.isSafeInteger(data.id)) throw new Error("GitHub returned an invalid comment ID");
 		return data.id;
@@ -355,16 +387,22 @@ export class OctokitGitHubDeliveryService implements GitHubDeliveryService {
 		repo: string,
 		prNumber: number,
 		marker: string,
+		options?: GitHubDeliveryRequestOptions,
 	): Promise<number | null> {
 		const octokit = this.installationClientFactory(installationId);
-		const comments = await octokit.paginate(octokit.rest.issues.listComments, {
-			owner,
-			repo,
-			issue_number: prNumber,
-			per_page: 100,
-		});
-		const match = comments.find((comment) => comment.body?.includes(marker));
-		return match && Number.isSafeInteger(match.id) ? match.id : null;
+		for (let page = 1; ; page += 1) {
+			const { data } = await octokit.rest.issues.listComments({
+				owner,
+				repo,
+				issue_number: prNumber,
+				per_page: 100,
+				page,
+				...githubRequestOptions(options),
+			});
+			const match = data.find((comment) => comment.body?.includes(marker));
+			if (match) return Number.isSafeInteger(match.id) ? match.id : null;
+			if (data.length < 100) return null;
+		}
 	}
 
 	async updatePRComment(
@@ -373,12 +411,14 @@ export class OctokitGitHubDeliveryService implements GitHubDeliveryService {
 		repo: string,
 		commentId: number,
 		body: string,
+		options?: GitHubDeliveryRequestOptions,
 	): Promise<void> {
 		await this.installationClientFactory(installationId).rest.issues.updateComment({
 			owner,
 			repo,
 			comment_id: commentId,
 			body,
+			...githubRequestOptions(options),
 		});
 	}
 
@@ -390,6 +430,7 @@ export class OctokitGitHubDeliveryService implements GitHubDeliveryService {
 		state: "pending" | "success" | "failure" | "error",
 		description: string,
 		context = "procella/preview",
+		options?: GitHubDeliveryRequestOptions,
 	): Promise<void> {
 		await this.installationClientFactory(installationId).rest.repos.createCommitStatus({
 			owner,
@@ -398,6 +439,7 @@ export class OctokitGitHubDeliveryService implements GitHubDeliveryService {
 			state,
 			description,
 			context,
+			...githubRequestOptions(options),
 		});
 	}
 }
@@ -703,7 +745,7 @@ export class GitHubOutboxWorker {
 				if (!rawClaim) break;
 				try {
 					const claim = parseOutboxClaim(rawClaim);
-					await this.deliver(claim);
+					await this.deliver(claim, deadlineMs);
 					if (await this.ack(claim)) delivered += 1;
 				} catch (error) {
 					await this.retry(rawClaim, error);
@@ -758,9 +800,11 @@ export class GitHubOutboxWorker {
 		});
 	}
 
-	private async deliver(claim: GitHubOutboxClaim): Promise<void> {
+	private async deliver(claim: GitHubOutboxClaim, deadlineMs?: number): Promise<void> {
 		const { target } = claim;
-		const installation = await this.github.resolveInstallation(target);
+		const options = { deadlineMs };
+		this.assertWithinDeadline(deadlineMs);
+		const installation = await this.github.resolveInstallation(target, options);
 		if (!installation) throw new Error("No authorized GitHub App installation for repository");
 		await this.renewClaim(claim);
 
@@ -778,15 +822,18 @@ export class GitHubOutboxWorker {
 
 		let commentId = parseGitHubCommentId(claim.commentId);
 		if (commentId === null) {
+			this.assertWithinDeadline(deadlineMs);
 			commentId = await this.github.findPRComment(
 				installation.installationId,
 				target.owner,
 				target.repo,
 				target.prNumber,
 				marker,
+				options,
 			);
 		}
 		await this.renewClaim(claim);
+		this.assertWithinDeadline(deadlineMs);
 		if (commentId === null) {
 			commentId = await this.github.createPRComment(
 				installation.installationId,
@@ -794,6 +841,7 @@ export class GitHubOutboxWorker {
 				target.repo,
 				target.prNumber,
 				body,
+				options,
 			);
 		} else {
 			await this.github.updatePRComment(
@@ -802,10 +850,12 @@ export class GitHubOutboxWorker {
 				target.repo,
 				commentId,
 				body,
+				options,
 			);
 		}
 		if (claim.commentId === null) await this.persistCommentId(claim, commentId);
 
+		this.assertWithinDeadline(deadlineMs);
 		const status = claim.phase === "started" ? "running" : claim.status;
 		await this.github.setCommitStatus(
 			installation.installationId,
@@ -815,7 +865,14 @@ export class GitHubOutboxWorker {
 			mapUpdateStatusToCommitState(status),
 			`Procella ${claim.kind} ${status === "running" ? "in progress" : status}`,
 			buildCommitStatusContext(target),
+			options,
 		);
+	}
+
+	private assertWithinDeadline(deadlineMs?: number): void {
+		if (deadlineMs !== undefined && this.now() >= deadlineMs) {
+			throw new GitHubDeliveryDeadlineError("GitHub delivery deadline exceeded");
+		}
 	}
 
 	private async renewClaim(claim: GitHubOutboxClaim): Promise<void> {
@@ -883,7 +940,9 @@ export class GitHubOutboxWorker {
 				),
 			)
 			.returning({ id: githubUpdateOutbox.id });
-		return rows.length > 0;
+		if (rows.length > 0) return true;
+		await this.releaseSupersededClaim(claim);
+		return false;
 	}
 
 	private async retry(claim: RawGitHubOutboxClaim, error: unknown): Promise<void> {
@@ -891,7 +950,7 @@ export class GitHubOutboxWorker {
 			error instanceof PermanentGitHubPublicationError ||
 			claim.attempts >= GITHUB_OUTBOX_MAX_ATTEMPTS;
 		const delaySeconds = githubRetryDelaySeconds(claim.attempts);
-		await this.db
+		const rows = await this.db
 			.update(githubUpdateOutbox)
 			.set({
 				claimedBy: null,
@@ -907,6 +966,28 @@ export class GitHubOutboxWorker {
 					eq(githubUpdateOutbox.id, claim.id),
 					eq(githubUpdateOutbox.claimedBy, this.workerId),
 					eq(githubUpdateOutbox.revision, claim.revision),
+				),
+			)
+			.returning({ id: githubUpdateOutbox.id });
+		if (rows.length === 0) await this.releaseSupersededClaim(claim);
+	}
+
+	private async releaseSupersededClaim(
+		claim: Pick<RawGitHubOutboxClaim, "id" | "revision">,
+	): Promise<void> {
+		await this.db
+			.update(githubUpdateOutbox)
+			.set({
+				claimedBy: null,
+				claimedUntil: null,
+				availableAt: sql`now()`,
+				updatedAt: sql`now()`,
+			})
+			.where(
+				and(
+					eq(githubUpdateOutbox.id, claim.id),
+					eq(githubUpdateOutbox.claimedBy, this.workerId),
+					gt(githubUpdateOutbox.revision, claim.revision),
 				),
 			);
 	}

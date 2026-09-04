@@ -534,27 +534,97 @@ describe("durable GitHub update publication", () => {
 		}
 	});
 
-	test("deadline-aware drain stops before claiming work that cannot fit", async () => {
-		const first = await createTargetedUpdate();
-		const second = await createTargetedUpdate();
-		await updatesService.startUpdate(first.updateId, {});
-		await updatesService.startUpdate(second.updateId, {});
-		let now = 0;
-		const delivery = fakeGitHub({
-			onCreate: async () => {
-				now = 10_000;
+	test("serializes summary revisions so stale GitHub writes are repaired last", async () => {
+		const { updateId } = await createTargetedUpdate();
+		await updatesService.startUpdate(updateId, {});
+		await updatesService.postEvents(updateId, { events: [summary(10, 1)] });
+		await updatesService.completeUpdate(updateId, { status: "succeeded" });
+		await db
+			.update(githubUpdateOutbox)
+			.set({ deliveredRevision: 1 })
+			.where(
+				sql`${githubUpdateOutbox.updateId} = ${updateId} AND ${githubUpdateOutbox.phase} = 'started'`,
+			);
+		await db
+			.update(updates)
+			.set({ githubCommentId: "123" })
+			.where(eq(updates.id, updateId));
+
+		let remoteBody = "";
+		const entered = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const staleGitHub: GitHubDeliveryService = {
+			resolveInstallation: async () => installation,
+			createPRComment: async () => 123,
+			findPRComment: async () => 123,
+			updatePRComment: async (_installationId, _owner, _repo, _commentId, body) => {
+				entered.resolve();
+				await release.promise;
+				remoteBody = body;
 			},
-		});
+			setCommitStatus: async () => {},
+		};
+		const freshGitHub: GitHubDeliveryService = {
+			...staleGitHub,
+			updatePRComment: async (_installationId, _owner, _repo, _commentId, body) => {
+				remoteBody = body;
+			},
+		};
+		const staleWorker = new GitHubOutboxWorker({ db, github: staleGitHub, maxPerRun: 1 });
+		const freshWorker = new GitHubOutboxWorker({ db, github: freshGitHub, maxPerRun: 1 });
+		const staleRun = staleWorker.runOnce();
+		await entered.promise;
+		await updatesService.postEvents(updateId, { events: [summary(11, 5)] });
+		expect(await freshWorker.runOnce()).toBe(0);
+		release.resolve();
+		expect(await staleRun).toBe(0);
+		expect(remoteBody).toContain("**Changes:** create 1");
+		expect(await freshWorker.runOnce()).toBe(1);
+		expect(remoteBody).toContain("**Changes:** create 5");
+	});
+
+
+	test("deadline-aware drain requeues between sequential GitHub requests", async () => {
+		const { updateId } = await createTargetedUpdate();
+		await updatesService.startUpdate(updateId, {});
+		let now = 0;
+		const deadlines: Array<number | undefined> = [];
+		const status = mock(async () => {});
+		const github: GitHubDeliveryService = {
+			resolveInstallation: async (_target, options) => {
+				deadlines.push(options?.deadlineMs);
+				now = 5_000;
+				return installation;
+			},
+			findPRComment: async (_installationId, _owner, _repo, _prNumber, _marker, options) => {
+				deadlines.push(options?.deadlineMs);
+				now = 15_000;
+				return null;
+			},
+			createPRComment: async (_installationId, _owner, _repo, _prNumber, _body, options) => {
+				deadlines.push(options?.deadlineMs);
+				now = 40_000;
+				return 123;
+			},
+			updatePRComment: async () => {},
+			setCommitStatus: status,
+		};
 		const worker = new GitHubOutboxWorker({
 			db,
-			github: delivery.github,
-			maxPerRun: 5,
+			github,
+			maxPerRun: 1,
 			now: () => now,
 		});
-		expect(await worker.runOnce({ deadlineMs: 40_000 })).toBe(1);
-		const rows = await db.select().from(githubUpdateOutbox);
-		expect(rows.filter((row) => row.deliveredRevision === 1)).toHaveLength(1);
-		expect(rows.filter((row) => row.deliveredRevision === 0)).toHaveLength(1);
+		expect(await worker.runOnce({ deadlineMs: 40_000 })).toBe(0);
+		expect(deadlines).toEqual([40_000, 40_000, 40_000]);
+		expect(status).not.toHaveBeenCalled();
+		const [row] = await db
+			.select()
+			.from(githubUpdateOutbox)
+			.where(eq(githubUpdateOutbox.updateId, updateId));
+		expect(row.attempts).toBe(1);
+		expect(row.deliveredRevision).toBe(0);
+		expect(row.claimedBy).toBeNull();
 	});
 
 

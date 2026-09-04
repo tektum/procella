@@ -446,6 +446,7 @@ describe("OctokitGitHubService repository resolution", () => {
 		expect(request).toHaveBeenCalledWith("GET /repos/{owner}/{repo}/installation", {
 			owner: "renamed-acme",
 			repo: "infra",
+			request: { signal: expect.anything() },
 		});
 	});
 
@@ -472,6 +473,7 @@ describe("OctokitGitHubService repository resolution", () => {
 		expect(request).toHaveBeenCalledWith("GET /repos/{owner}/{repo}/installation", {
 			owner: "acme",
 			repo: "public",
+			request: { signal: expect.anything() },
 		});
 		expect(reposGet).not.toHaveBeenCalled();
 	});
@@ -509,14 +511,14 @@ describe("OctokitGitHubDeliveryService comments", () => {
 	test("creates, finds, and edits one marked PR comment", async () => {
 		const createComment = mock(async () => ({ data: { id: 123 } }));
 		const updateComment = mock(async () => ({ data: { id: 123 } }));
-		const listComments = mock(async () => ({ data: [] }));
+		const listComments = mock(async () => ({
+			data: [
+				{ id: 122, body: "unrelated" },
+				{ id: 123, body: "<!-- procella:update:update-1 -->\nresult" },
+			],
+		}));
 		const createCommitStatus = mock(async () => ({}));
-		const paginate = mock(async () => [
-			{ id: 122, body: "unrelated" },
-			{ id: 123, body: "<!-- procella:update:update-1 -->\nresult" },
-		]);
 		const installationClient = {
-			paginate,
 			rest: {
 				issues: { createComment, listComments, updateComment },
 				repos: { createCommitStatus },
@@ -538,17 +540,20 @@ describe("OctokitGitHubDeliveryService comments", () => {
 		expect(await service.findPRComment(101, "acme", "infra", 42, "missing-marker")).toBeNull();
 
 		expect(createComment).toHaveBeenCalledTimes(1);
-		expect(paginate).toHaveBeenCalledWith(listComments, {
+		expect(listComments).toHaveBeenCalledWith({
 			owner: "acme",
 			repo: "infra",
 			issue_number: 42,
 			per_page: 100,
+			page: 1,
+			request: { signal: expect.anything() },
 		});
 		expect(updateComment).toHaveBeenCalledWith({
 			owner: "acme",
 			repo: "infra",
 			comment_id: 123,
 			body: "complete",
+			request: { signal: expect.anything() },
 		});
 		expect(createCommitStatus).toHaveBeenCalledWith({
 			owner: "acme",
@@ -557,9 +562,35 @@ describe("OctokitGitHubDeliveryService comments", () => {
 			state: "success",
 			description: "done",
 			context: "ctx",
+			request: { signal: expect.anything() },
 		});
 	});
 
+	test("checks the deadline before fetching another comment page", async () => {
+		let now = 0;
+		const originalNow = Date.now;
+		Date.now = () => now;
+		const listComments = mock(async () => {
+			now = 20;
+			return { data: Array.from({ length: 100 }, (_, id) => ({ id, body: "unrelated" })) };
+		});
+		const service = new OctokitGitHubDeliveryService({
+			db: readOnlyDb([]),
+			config: { appId: "123", privateKey: "unused" },
+			appClient: {} as Octokit,
+			installationClientFactory: () =>
+				({ rest: { issues: { listComments } } }) as unknown as Octokit,
+		});
+
+		try {
+			await expect(
+				service.findPRComment(101, "acme", "infra", 42, "missing", { deadlineMs: 10 }),
+			).rejects.toThrow("deadline exceeded");
+			expect(listComments).toHaveBeenCalledTimes(1);
+		} finally {
+			Date.now = originalNow;
+		}
+	});
 	test("rejects an unsafe comment identifier", async () => {
 		const service = new OctokitGitHubDeliveryService({
 			db: readOnlyDb([]),
