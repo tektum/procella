@@ -151,7 +151,7 @@ This ensures only one replica runs a GC cycle. PostgreSQL releases the lock auto
 
 Update start and terminal transitions insert their GitHub publication intent in the same PostgreSQL transaction. The outbox stores a monotonically increasing revision and the worker acknowledges the exact revision it delivered. A late, higher-sequence summary event increments the terminal revision so the existing pull-request comment is edited again.
 
-Workers claim rows with `FOR UPDATE SKIP LOCKED` and a short lease, then release the transaction before calling GitHub. Failures record a sanitized error and a bounded exponential retry delay. Terminal work remains blocked until the started phase is acknowledged.
+Workers claim rows with `FOR UPDATE SKIP LOCKED` and a short lease, then release the transaction before calling GitHub. Acknowledgements and failures are fenced by claim owner and revision, so a late summary cannot be overwritten by stale in-flight work. Transient failures use bounded exponential backoff; malformed payloads and exhausted retries record a terminal failed revision. A failed started phase no longer blocks its terminal phase.
 
 ## Cascade Deletes
 

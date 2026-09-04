@@ -60,7 +60,7 @@ SELECT pg_try_advisory_xact_lock(0x5472617461_4743);  -- GC lock (historic value
 - Only the replica that acquires the lock runs the GC cycle
 - PostgreSQL releases the lock when the transaction commits, rolls back, or its connection closes
 
-GitHub update publications use a separate transactional outbox. Replicas claim non-overlapping rows with `FOR UPDATE SKIP LOCKED`, perform GitHub network calls after committing the claim, and acknowledge only the claimed revision. Expired claims are retried with bounded exponential backoff.
+GitHub update publications use a separate transactional outbox. Replicas claim non-overlapping rows with `FOR UPDATE SKIP LOCKED`, perform GitHub network calls after committing the claim, and acknowledge only the claimed revision. Expired claims use bounded retries before dead-lettering, and scheduled drains stop before the Lambda invocation deadline.
 
 ## Load Balancer Configuration
 

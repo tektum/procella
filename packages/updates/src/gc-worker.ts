@@ -71,38 +71,42 @@ export class GCWorker {
 				const now = new Date();
 				const graceThreshold = new Date(now.getTime() - GC_LEASE_GRACE_MS);
 				const expiredLeaseUpdates = await tx
-					.select({
+					.update(updates)
+					.set({
+						status: "cancelled",
+						leaseToken: null,
+						leaseExpiresAt: null,
+						completedAt: sql`now()`,
+						updatedAt: sql`now()`,
+					})
+					.where(and(eq(updates.status, "running"), lt(updates.leaseExpiresAt, graceThreshold)))
+					.returning({
 						id: updates.id,
 						stackId: updates.stackId,
 						githubTarget: updates.githubTarget,
-					})
-					.from(updates)
-					.where(and(eq(updates.status, "running"), lt(updates.leaseExpiresAt, graceThreshold)));
+					});
 
 				const staleThreshold = new Date(now.getTime() - GC_STALE_THRESHOLD_MS);
 				const staleUpdates = await tx
-					.select({ id: updates.id, stackId: updates.stackId })
-					.from(updates)
+					.update(updates)
+					.set({
+						status: "cancelled",
+						leaseToken: null,
+						leaseExpiresAt: null,
+						completedAt: sql`now()`,
+						updatedAt: sql`now()`,
+					})
 					.where(
 						and(
 							inArray(updates.status, ["not started", "requested"]),
 							lt(updates.createdAt, staleThreshold),
 						),
-					);
+					)
+					.returning({ id: updates.id, stackId: updates.stackId });
 
 				const allOrphans = [...expiredLeaseUpdates, ...staleUpdates];
 				if (allOrphans.length > 0) {
 					const orphanIds = allOrphans.map((update) => update.id);
-					await tx
-						.update(updates)
-						.set({
-							status: "cancelled",
-							leaseToken: null,
-							leaseExpiresAt: null,
-							completedAt: sql`now()`,
-							updatedAt: sql`now()`,
-						})
-						.where(inArray(updates.id, orphanIds));
 
 					const publishable = expiredLeaseUpdates.filter((update) => update.githubTarget);
 					if (publishable.length > 0) {

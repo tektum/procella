@@ -137,7 +137,7 @@ describe("@procella/github", () => {
 				`Authorization: Bearer top-secret https://user:pass@example.com/${"x".repeat(600)}`,
 			);
 			const sanitized = sanitizeDeliveryError(error);
-			expect(sanitized).not.toContain("bearer-secret");
+			expect(sanitized).not.toContain("top-secret");
 			expect(sanitized).not.toContain("user:pass");
 			expect(sanitized.length).toBeLessThanOrEqual(500);
 		});

@@ -115,10 +115,29 @@ const JournalEntrySchema = z
 	})
 	.strict();
 
+const SummaryEventSchema = z
+	.object({
+		maybeCorrupt: z.boolean().optional(),
+		durationSeconds: z.number().int().nonnegative().optional(),
+		resourceChanges: z.record(z.string(), z.number().int().nonnegative()).optional(),
+		PolicyPacks: z.record(z.string(), z.string()).optional(),
+		isPreview: z.boolean().optional(),
+		result: z.string().optional(),
+	})
+	.passthrough();
+
+const EngineEventSchema = z
+	.object({
+		sequence: z.number().int().nonnegative(),
+		timestamp: z.number().int().nonnegative(),
+		summaryEvent: SummaryEventSchema.optional(),
+	})
+	.passthrough();
+
 export const EngineEventBatchSchema = withJsonBounds(
 	z
 		.object({
-			events: z.array(BoundedJSON).max(MAX_EVENT_BATCH_SIZE),
+			events: z.array(EngineEventSchema).max(MAX_EVENT_BATCH_SIZE),
 		})
 		.strict(),
 );

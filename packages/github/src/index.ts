@@ -84,7 +84,7 @@ export interface GitHubService extends GitHubDeliveryService {
 export const GITHUB_SETUP_STATE_TTL_SECONDS = 10 * 60;
 const GITHUB_SETUP_STATE_ISSUER = "procella";
 const GITHUB_SETUP_STATE_AUDIENCE = "procella:github-app-installation";
-const GITHUB_REQUEST_TIMEOUT_MS = 30_000;
+const GITHUB_REQUEST_TIMEOUT_MS = 8_000;
 
 export type GitHubSetupErrorCode =
 	| "invalid_state"
@@ -599,6 +599,8 @@ export class OctokitGitHubService extends OctokitGitHubDeliveryService implement
 
 export const GITHUB_OUTBOX_CLAIM_SECONDS = 120;
 export const GITHUB_OUTBOX_MAX_ATTEMPTS_PER_RUN = 25;
+export const GITHUB_OUTBOX_MAX_ATTEMPTS = 8;
+export const GITHUB_OUTBOX_MIN_DELIVERY_BUDGET_MS = 35_000;
 export const GITHUB_OUTBOX_POLL_INTERVAL_MS = 5_000;
 
 interface GitHubPublicationTarget {
@@ -630,12 +632,15 @@ interface RawGitHubOutboxClaim extends Omit<GitHubOutboxClaim, "target" | "summa
 	summary: unknown;
 }
 
+class PermanentGitHubPublicationError extends Error {}
+
 export class GitHubOutboxWorker {
 	private readonly db: Database;
 	private readonly github: GitHubDeliveryService;
 	private readonly interval: number;
 	private readonly maxPerRun: number;
 	private readonly workerId: string;
+	private readonly now: () => number;
 	private timer: ReturnType<typeof setInterval> | null = null;
 	private running = false;
 
@@ -645,18 +650,21 @@ export class GitHubOutboxWorker {
 		interval,
 		maxPerRun,
 		workerId,
+		now,
 	}: {
 		db: Database;
 		github: GitHubDeliveryService;
 		interval?: number;
 		maxPerRun?: number;
 		workerId?: string;
+		now?: () => number;
 	}) {
 		this.db = db;
 		this.github = github;
 		this.interval = interval ?? GITHUB_OUTBOX_POLL_INTERVAL_MS;
 		this.maxPerRun = maxPerRun ?? GITHUB_OUTBOX_MAX_ATTEMPTS_PER_RUN;
 		this.workerId = workerId ?? randomUUID();
+		this.now = now ?? Date.now;
 	}
 
 	async start(): Promise<void> {
@@ -674,25 +682,31 @@ export class GitHubOutboxWorker {
 		while (this.running) await Bun.sleep(25);
 	}
 
-	/** Drain at most one bounded batch. Intended for scheduled and Lambda invocations. */
-	async runOnce(): Promise<number> {
-		return this.runCycle();
+	/** Drain one bounded batch without starting work that cannot fit before the deadline. */
+	async runOnce({ deadlineMs }: { deadlineMs?: number } = {}): Promise<number> {
+		return this.runCycle(deadlineMs);
 	}
 
-	private async runCycle(): Promise<number> {
+	private async runCycle(deadlineMs?: number): Promise<number> {
 		if (this.running) return 0;
 		this.running = true;
 		let delivered = 0;
 		try {
 			for (let index = 0; index < this.maxPerRun; index += 1) {
-				const claim = await this.claimNext();
-				if (!claim) break;
+				if (
+					deadlineMs !== undefined &&
+					deadlineMs - this.now() < GITHUB_OUTBOX_MIN_DELIVERY_BUDGET_MS
+				) {
+					break;
+				}
+				const rawClaim = await this.claimNext();
+				if (!rawClaim) break;
 				try {
+					const claim = parseOutboxClaim(rawClaim);
 					await this.deliver(claim);
-					await this.ack(claim);
-					delivered += 1;
+					if (await this.ack(claim)) delivered += 1;
 				} catch (error) {
-					await this.retry(claim, error);
+					await this.retry(rawClaim, error);
 				}
 			}
 			return delivered;
@@ -701,13 +715,13 @@ export class GitHubOutboxWorker {
 		}
 	}
 
-	private async claimNext(): Promise<GitHubOutboxClaim | null> {
+	private async claimNext(): Promise<RawGitHubOutboxClaim | null> {
 		return this.db.transaction(async (tx) => {
 			const result = await tx.execute(sql`
 				WITH candidate AS (
 					SELECT outbox.id
 					FROM github_update_outbox outbox
-					WHERE outbox.delivered_revision < outbox.revision
+					WHERE GREATEST(outbox.delivered_revision, outbox.failed_revision) < outbox.revision
 						AND outbox.available_at <= now()
 						AND (outbox.claimed_until IS NULL OR outbox.claimed_until < now())
 						AND (
@@ -716,7 +730,7 @@ export class GitHubOutboxWorker {
 								SELECT 1 FROM github_update_outbox started
 								WHERE started.update_id = outbox.update_id
 									AND started.phase = 'started'
-									AND started.delivered_revision < started.revision
+									AND GREATEST(started.delivered_revision, started.failed_revision) < started.revision
 							)
 						)
 					ORDER BY outbox.created_at, CASE outbox.phase WHEN 'started' THEN 0 ELSE 1 END
@@ -740,12 +754,7 @@ export class GitHubOutboxWorker {
 				JOIN updates source_update ON source_update.id = claimed.update_id
 			`);
 			const row = readExecuteRows<RawGitHubOutboxClaim>(result)[0];
-			if (!row) return null;
-			return {
-				...row,
-				target: parseGitHubPublicationTarget(row.target),
-				summary: row.summary === null ? null : parseJsonRecord(row.summary, "update summary"),
-			};
+			return row ?? null;
 		});
 	}
 
@@ -817,7 +826,11 @@ export class GitHubOutboxWorker {
 				updatedAt: sql`now()`,
 			})
 			.where(
-				and(eq(githubUpdateOutbox.id, claim.id), eq(githubUpdateOutbox.claimedBy, this.workerId)),
+				and(
+					eq(githubUpdateOutbox.id, claim.id),
+					eq(githubUpdateOutbox.claimedBy, this.workerId),
+					eq(githubUpdateOutbox.revision, claim.revision),
+				),
 			)
 			.returning({ id: githubUpdateOutbox.id });
 		if (rows.length === 0) throw new Error("GitHub outbox claim lease lost");
@@ -832,7 +845,11 @@ export class GitHubOutboxWorker {
 					updatedAt: sql`now()`,
 				})
 				.where(
-					and(eq(githubUpdateOutbox.id, claim.id), eq(githubUpdateOutbox.claimedBy, this.workerId)),
+					and(
+						eq(githubUpdateOutbox.id, claim.id),
+						eq(githubUpdateOutbox.claimedBy, this.workerId),
+						eq(githubUpdateOutbox.revision, claim.revision),
+					),
 				)
 				.returning({ id: githubUpdateOutbox.id });
 			if (owned.length === 0) return [];
@@ -845,44 +862,73 @@ export class GitHubOutboxWorker {
 		if (rows.length === 0) throw new Error("GitHub outbox claim lease lost");
 	}
 
-	private async ack(claim: GitHubOutboxClaim): Promise<void> {
-		await this.db
+	private async ack(claim: GitHubOutboxClaim): Promise<boolean> {
+		const rows = await this.db
 			.update(githubUpdateOutbox)
 			.set({
 				deliveredRevision: claim.revision,
 				attempts: 0,
 				claimedBy: null,
 				claimedUntil: null,
+				failedAt: null,
 				lastError: null,
 				availableAt: sql`now()`,
 				updatedAt: sql`now()`,
 			})
 			.where(
-				and(eq(githubUpdateOutbox.id, claim.id), eq(githubUpdateOutbox.claimedBy, this.workerId)),
-			);
+				and(
+					eq(githubUpdateOutbox.id, claim.id),
+					eq(githubUpdateOutbox.claimedBy, this.workerId),
+					eq(githubUpdateOutbox.revision, claim.revision),
+				),
+			)
+			.returning({ id: githubUpdateOutbox.id });
+		return rows.length > 0;
 	}
 
-	private async retry(claim: GitHubOutboxClaim, error: unknown): Promise<void> {
+	private async retry(claim: RawGitHubOutboxClaim, error: unknown): Promise<void> {
+		const terminal =
+			error instanceof PermanentGitHubPublicationError ||
+			claim.attempts >= GITHUB_OUTBOX_MAX_ATTEMPTS;
 		const delaySeconds = githubRetryDelaySeconds(claim.attempts);
 		await this.db
 			.update(githubUpdateOutbox)
 			.set({
 				claimedBy: null,
 				claimedUntil: null,
-				availableAt: sql`now() + (${delaySeconds} * interval '1 second')`,
+				...(terminal
+					? { failedRevision: claim.revision, failedAt: sql`now()` }
+					: { availableAt: sql`now() + (${delaySeconds} * interval '1 second')` }),
 				lastError: sanitizeDeliveryError(error),
 				updatedAt: sql`now()`,
 			})
 			.where(
-				and(eq(githubUpdateOutbox.id, claim.id), eq(githubUpdateOutbox.claimedBy, this.workerId)),
+				and(
+					eq(githubUpdateOutbox.id, claim.id),
+					eq(githubUpdateOutbox.claimedBy, this.workerId),
+					eq(githubUpdateOutbox.revision, claim.revision),
+				),
 			);
 	}
 }
 
+function parseOutboxClaim(raw: RawGitHubOutboxClaim): GitHubOutboxClaim {
+	return {
+		...raw,
+		target: parseGitHubPublicationTarget(raw.target),
+		summary: raw.summary === null ? null : parseJsonRecord(raw.summary, "update summary"),
+	};
+}
+
 function parseJsonRecord(value: unknown, label: string): Record<string, unknown> {
-	const parsed = typeof value === "string" ? JSON.parse(value) : value;
+	let parsed: unknown;
+	try {
+		parsed = typeof value === "string" ? JSON.parse(value) : value;
+	} catch {
+		throw new PermanentGitHubPublicationError(`Invalid ${label} in PostgreSQL`);
+	}
 	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-		throw new Error(`Invalid ${label} in PostgreSQL`);
+		throw new PermanentGitHubPublicationError(`Invalid ${label} in PostgreSQL`);
 	}
 	return parsed as Record<string, unknown>;
 }
@@ -900,7 +946,7 @@ function parseGitHubPublicationTarget(value: unknown): GitHubPublicationTarget {
 		typeof target.project !== "string" ||
 		typeof target.stack !== "string"
 	) {
-		throw new Error("Invalid GitHub publication target in PostgreSQL");
+		throw new PermanentGitHubPublicationError("Invalid GitHub publication target in PostgreSQL");
 	}
 	return target as unknown as GitHubPublicationTarget;
 }

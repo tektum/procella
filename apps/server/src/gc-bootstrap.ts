@@ -1,6 +1,8 @@
 import { GitHubOutboxWorker, OctokitGitHubDeliveryService } from "@procella/github";
 import type { ScheduledEvent } from "aws-lambda";
 
+const LAMBDA_WORK_DEADLINE_MS = 52_000;
+
 (async () => {
 	const RUNTIME_API = process.env.AWS_LAMBDA_RUNTIME_API!;
 	const BASE_URL = `http://${RUNTIME_API}/2018-06-01/runtime`;
@@ -34,10 +36,13 @@ import type { ScheduledEvent } from "aws-lambda";
 		const res = await fetch(`${BASE_URL}/invocation/next`);
 		const requestId = res.headers.get("Lambda-Runtime-Aws-Request-Id")!;
 		void ((await res.json()) as ScheduledEvent);
+		const invocationStartedAt = Date.now();
 
 		try {
 			await gcWorker.runOnce();
-			if (githubOutbox) await githubOutbox.runOnce();
+			if (githubOutbox) {
+				await githubOutbox.runOnce({ deadlineMs: invocationStartedAt + LAMBDA_WORK_DEADLINE_MS });
+			}
 			await escGcSweep(db);
 			await fetch(`${BASE_URL}/invocation/${requestId}/response`, {
 				method: "POST",

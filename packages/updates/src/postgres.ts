@@ -68,6 +68,7 @@ import {
 	formatDeltaBaseBlobKey,
 	generateLeaseToken,
 	hashDeploymentText,
+	isPlainObject,
 	leaseExpiresAt,
 	parseDeploymentText,
 	parseTextEdits,
@@ -607,13 +608,13 @@ export class PostgresUpdatesService implements UpdatesService {
 	}
 
 	async postEvents(updateId: string, batch: EngineEventBatch): Promise<void> {
-		const events = (batch as { events?: EngineEvent[] }).events;
-		if (!events || events.length === 0) {
-			return;
-		}
-		if (events.length > MAX_EVENT_BATCH_SIZE) {
+		const rawEvents = (batch as { events?: unknown }).events;
+		if (rawEvents === undefined || (Array.isArray(rawEvents) && rawEvents.length === 0)) return;
+		if (!Array.isArray(rawEvents)) throw new BadRequestError("Engine events must be an array");
+		if (rawEvents.length > MAX_EVENT_BATCH_SIZE) {
 			throw new BadRequestError(`Too many events (max ${MAX_EVENT_BATCH_SIZE})`);
 		}
+		const events = rawEvents.map(requireEngineEvent);
 
 		return withDbSpan(
 			"postEvents",
@@ -632,18 +633,12 @@ export class PostgresUpdatesService implements UpdatesService {
 						.insert(updateEvents)
 						.values(rows)
 						.onConflictDoNothing()
-						.returning({ sequence: updateEvents.sequence });
-					const insertedSequences = new Set(inserted.map((row) => row.sequence));
-					const latestSummary = events.reduce<
+						.returning({ fields: updateEvents.fields });
+					const latestSummary = inserted.reduce<
 						{ sequence: number; summary: SummaryEvent } | undefined
-					>((latest, event) => {
-						if (
-							!insertedSequences.has(event.sequence) ||
-							!event.summaryEvent ||
-							!Number.isSafeInteger(event.sequence)
-						) {
-							return latest;
-						}
+					>((latest, row) => {
+						const event = requireEngineEvent(row.fields);
+						if (!event.summaryEvent) return latest;
 						return !latest || event.sequence > latest.sequence
 							? { sequence: event.sequence, summary: event.summaryEvent }
 							: latest;
@@ -747,20 +742,27 @@ export class PostgresUpdatesService implements UpdatesService {
 			);
 			const newExpiry = leaseExpiresAt(duration);
 
-			await this.db
+			const [renewed] = await this.db
 				.update(updates)
 				.set({ leaseExpiresAt: newExpiry, updatedAt: sql`now()` })
-				.where(eq(updates.id, updateId));
+				.where(
+					and(
+						eq(updates.id, updateId),
+						eq(updates.status, "running"),
+						eq(updates.leaseToken, row.leaseToken),
+						gt(updates.leaseExpiresAt, sql`now()`),
+					),
+				)
+				.returning({ leaseToken: updates.leaseToken });
+			if (!renewed?.leaseToken) throw new LeaseExpiredError();
 
 			return {
-				token: row.leaseToken,
+				token: renewed.leaseToken,
 				tokenExpiration: Math.floor(newExpiry.getTime() / 1000),
 			} as RenewUpdateLeaseResponse;
 		});
 	}
 
-	// ========================================================================
-	// T8.4 — State Operations + Crypto Methods
 	// ========================================================================
 
 	async exportStack(stackId: string, version?: number): Promise<UntypedDeployment> {
@@ -1124,6 +1126,9 @@ export class PostgresUpdatesService implements UpdatesService {
 			target: [githubUpdateOutbox.updateId, githubUpdateOutbox.phase],
 			set: {
 				revision: sql`${githubUpdateOutbox.revision} + 1`,
+				claimedBy: null,
+				claimedUntil: null,
+				failedAt: null,
 				attempts: 0,
 				availableAt: sql`now()`,
 				lastError: null,
@@ -1236,6 +1241,59 @@ export class PostgresUpdatesService implements UpdatesService {
 
 		return (row.data as Record<string, unknown>) ?? {};
 	}
+}
+
+function requireEngineEvent(value: unknown): EngineEvent {
+	if (!isPlainObject(value)) throw new BadRequestError("Engine event must be an object");
+	if (
+		typeof value.sequence !== "number" ||
+		!Number.isSafeInteger(value.sequence) ||
+		value.sequence < 0
+	) {
+		throw new BadRequestError("Engine event sequence must be a non-negative integer");
+	}
+	if (
+		typeof value.timestamp !== "number" ||
+		!Number.isSafeInteger(value.timestamp) ||
+		value.timestamp < 0
+	) {
+		throw new BadRequestError("Engine event timestamp must be a non-negative integer");
+	}
+
+	if (value.summaryEvent !== undefined) {
+		if (!isPlainObject(value.summaryEvent)) {
+			throw new BadRequestError("Summary event must be an object");
+		}
+		const summary = value.summaryEvent;
+		if (
+			summary.resourceChanges !== undefined &&
+			(!isPlainObject(summary.resourceChanges) ||
+				Object.values(summary.resourceChanges).some(
+					(count) => typeof count !== "number" || !Number.isSafeInteger(count) || count < 0,
+				))
+		) {
+			throw new BadRequestError("Summary resource changes must be non-negative integers");
+		}
+		if (summary.maybeCorrupt !== undefined && typeof summary.maybeCorrupt !== "boolean") {
+			throw new BadRequestError("Summary maybeCorrupt must be a boolean");
+		}
+		if (
+			summary.durationSeconds !== undefined &&
+			(typeof summary.durationSeconds !== "number" ||
+				!Number.isSafeInteger(summary.durationSeconds) ||
+				summary.durationSeconds < 0)
+		) {
+			throw new BadRequestError("Summary durationSeconds must be a non-negative integer");
+		}
+		if (summary.isPreview !== undefined && typeof summary.isPreview !== "boolean") {
+			throw new BadRequestError("Summary isPreview must be a boolean");
+		}
+		if (summary.result !== undefined && typeof summary.result !== "string") {
+			throw new BadRequestError("Summary result must be a string");
+		}
+	}
+
+	return value as unknown as EngineEvent;
 }
 
 function parseStringRecord(value: unknown): Record<string, string> {

@@ -145,6 +145,8 @@ describe("@procella/db schema", () => {
 			expect(columns.phase.name).toBe("phase");
 			expect(columns.revision.name).toBe("revision");
 			expect(columns.deliveredRevision.name).toBe("delivered_revision");
+			expect(columns.failedRevision.name).toBe("failed_revision");
+			expect(columns.failedAt.name).toBe("failed_at");
 			expect(columns.availableAt.name).toBe("available_at");
 			expect(columns.claimedUntil.name).toBe("claimed_until");
 		});

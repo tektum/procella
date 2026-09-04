@@ -166,6 +166,8 @@ export const githubUpdateOutbox = pgTable(
 		phase: text().$type<"started" | "terminal">().notNull(),
 		revision: integer().notNull().default(1),
 		deliveredRevision: integer("delivered_revision").notNull().default(0),
+		failedRevision: integer("failed_revision").notNull().default(0),
+		failedAt: timestamp("failed_at"),
 		attempts: integer().notNull().default(0),
 		availableAt: timestamp("available_at").notNull().defaultNow(),
 		claimedBy: uuid("claimed_by"),
@@ -178,7 +180,7 @@ export const githubUpdateOutbox = pgTable(
 		check("chk_github_update_outbox_phase", sql`${table.phase} IN ('started', 'terminal')`),
 		check(
 			"chk_github_update_outbox_revisions",
-			sql`${table.revision} >= 1 AND ${table.deliveredRevision} >= 0 AND ${table.deliveredRevision} <= ${table.revision}`,
+			sql`${table.revision} >= 1 AND ${table.deliveredRevision} >= 0 AND ${table.deliveredRevision} <= ${table.revision} AND ${table.failedRevision} >= 0 AND ${table.failedRevision} <= ${table.revision}`,
 		),
 		uniqueIndex("idx_github_update_outbox_update_phase").on(table.updateId, table.phase),
 		index("idx_github_update_outbox_available").on(table.availableAt, table.claimedUntil),
