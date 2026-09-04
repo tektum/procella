@@ -634,6 +634,10 @@ jobs:
     runs-on: namespace-profile-amd64-4cpu-8ram
     timeout-minutes: 20
     environment: preview
+    # Opt in only after a dedicated Procella GitHub App is configured. An unset
+    # flag overrides stale SST stage/fallback secret values from older deploys.
+    env:
+      PROCELLA_GITHUB_APP_ENABLED: ${{ vars.PROCELLA_GITHUB_APP_ENABLED }}
     permissions:
       id-token: write
       contents: read

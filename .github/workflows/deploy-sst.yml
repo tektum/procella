@@ -20,11 +20,11 @@ on:
       DESCOPE_MANAGEMENT_KEY:
         required: true
       PROCELLA_GITHUB_APP_ID:
-        required: true
+        required: false
       PROCELLA_GITHUB_APP_PRIVATE_KEY:
-        required: true
+        required: false
       PROCELLA_GITHUB_APP_WEBHOOK_SECRET:
-        required: true
+        required: false
       OTEL_EXPORTER_OTLP_ENDPOINT:
         required: true
       OTEL_EXPORTER_OTLP_HEADERS:
@@ -40,6 +40,10 @@ jobs:
     runs-on: namespace-profile-amd64-4cpu-8ram
     timeout-minutes: 20
     environment: ${{ inputs.stage }}
+    # Opt in only after a dedicated Procella GitHub App is configured. An unset
+    # flag overrides stale SST stage/fallback secret values from older deploys.
+    env:
+      PROCELLA_GITHUB_APP_ENABLED: ${{ vars.PROCELLA_GITHUB_APP_ENABLED }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

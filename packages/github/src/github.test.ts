@@ -1,4 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
+import { generateKeyPairSync } from "node:crypto";
 import type { Octokit } from "@octokit/rest";
 import type { Config } from "@procella/config";
 import type { Database } from "@procella/db";
@@ -12,6 +13,12 @@ import {
 	OctokitGitHubService,
 	verifyGitHubWebhookSignature,
 } from "./index.js";
+
+const TEST_GITHUB_APP_PRIVATE_KEY = generateKeyPairSync("rsa", {
+	modulusLength: 2048,
+})
+	.privateKey.export({ format: "pem", type: "pkcs1" })
+	.toString();
 
 describe("@procella/github", () => {
 	describe("verifyGitHubWebhookSignature", () => {
@@ -97,7 +104,7 @@ describe("@procella/github", () => {
 
 const testConfig = {
 	appId: "123",
-	privateKey: "unused-in-tests",
+	privateKey: TEST_GITHUB_APP_PRIVATE_KEY,
 	webhookSecret: "webhook-secret",
 	stateSigningKey: "state-signing-key-state-signing-key",
 };
@@ -171,16 +178,22 @@ describe("GitHub setup state", () => {
 		expect(insertState).not.toHaveBeenCalled();
 	});
 
+	test("disables the GitHub service when App credentials are absent", () => {
+		expect(
+			buildGitHubAppConfig({ ticketSigningKey: "state-signing-key-state-signing-key" } as Config),
+		).toBeNull();
+	});
+
 	test("builds App configuration without a slug setting", () => {
 		const config = buildGitHubAppConfig({
 			githubAppId: "123",
-			githubAppPrivateKey: "private-key",
+			githubAppPrivateKey: TEST_GITHUB_APP_PRIVATE_KEY,
 			githubAppWebhookSecret: "webhook-secret",
 			ticketSigningKey: "state-signing-key-state-signing-key",
 		} as Config);
 		expect(config).toEqual({
 			appId: "123",
-			privateKey: "private-key",
+			privateKey: TEST_GITHUB_APP_PRIVATE_KEY,
 			webhookSecret: "webhook-secret",
 			stateSigningKey: "state-signing-key-state-signing-key",
 		});
