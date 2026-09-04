@@ -213,7 +213,11 @@ describe("@procella/server routes", () => {
 			audit: mockAuditService(),
 			db:
 				opts?.db ??
-				({ execute: async () => ({ rows: [{ acquired: false }] }) } as unknown as Database),
+				({
+					execute: async () => ({ rows: [{ acquired: false }] }),
+					transaction: async (callback: (tx: unknown) => unknown) =>
+						callback({ execute: async () => ({ rows: [{ acquired: false }] }) }),
+				} as unknown as Database),
 			dbUrl: "postgres://test:test@localhost:5432/test",
 			cronSecret: opts?.cronSecret,
 			corsOrigins: opts?.corsOrigins,

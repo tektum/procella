@@ -606,7 +606,10 @@ describe("durable GitHub update publication", () => {
 				now = 40_000;
 				return 123;
 			},
-			updatePRComment: async () => {},
+			updatePRComment: async (_installationId, _owner, _repo, _commentId, _body, options) => {
+				deadlines.push(options?.deadlineMs);
+				now = 40_000;
+			},
 			setCommitStatus: status,
 		};
 		const worker = new GitHubOutboxWorker({
@@ -615,15 +618,19 @@ describe("durable GitHub update publication", () => {
 			maxPerRun: 1,
 			now: () => now,
 		});
-		expect(await worker.runOnce({ deadlineMs: 40_000 })).toBe(0);
-		expect(deadlines).toEqual([40_000, 40_000, 40_000]);
+		for (let attempt = 0; attempt < GITHUB_OUTBOX_MAX_ATTEMPTS + 2; attempt += 1) {
+			now = 0;
+			expect(await worker.runOnce({ deadlineMs: 40_000 })).toBe(0);
+		}
+		expect(deadlines.every((deadline) => deadline === 40_000)).toBe(true);
 		expect(status).not.toHaveBeenCalled();
 		const [row] = await db
 			.select()
 			.from(githubUpdateOutbox)
 			.where(eq(githubUpdateOutbox.updateId, updateId));
-		expect(row.attempts).toBe(1);
+		expect(row.attempts).toBe(0);
 		expect(row.deliveredRevision).toBe(0);
+		expect(row.failedRevision).toBe(0);
 		expect(row.claimedBy).toBeNull();
 	});
 

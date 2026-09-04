@@ -946,6 +946,28 @@ export class GitHubOutboxWorker {
 	}
 
 	private async retry(claim: RawGitHubOutboxClaim, error: unknown): Promise<void> {
+		if (error instanceof GitHubDeliveryDeadlineError) {
+			const rows = await this.db
+				.update(githubUpdateOutbox)
+				.set({
+					claimedBy: null,
+					claimedUntil: null,
+					attempts: sql`GREATEST(${githubUpdateOutbox.attempts} - 1, 0)`,
+					availableAt: sql`now()`,
+					lastError: sanitizeDeliveryError(error),
+					updatedAt: sql`now()`,
+				})
+				.where(
+					and(
+						eq(githubUpdateOutbox.id, claim.id),
+						eq(githubUpdateOutbox.claimedBy, this.workerId),
+						eq(githubUpdateOutbox.revision, claim.revision),
+					),
+				)
+				.returning({ id: githubUpdateOutbox.id });
+			if (rows.length === 0) await this.releaseSupersededClaim(claim);
+			return;
+		}
 		const terminal =
 			error instanceof PermanentGitHubPublicationError ||
 			claim.attempts >= GITHUB_OUTBOX_MAX_ATTEMPTS;
