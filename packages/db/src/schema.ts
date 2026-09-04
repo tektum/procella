@@ -84,6 +84,19 @@ export const updates = pgTable(
 		initiatedByType: text("initiated_by_type"),
 		initiatedByDisplay: text("initiated_by_display"),
 		initiatedByMeta: jsonb("initiated_by_meta").$type<Record<string, unknown>>(),
+		githubTarget: jsonb("github_target").$type<{
+			tenantId: string;
+			owner: string;
+			repo: string;
+			prNumber: number;
+			sha: string;
+			org: string;
+			project: string;
+			stack: string;
+		}>(),
+		githubCommentId: text("github_comment_id"),
+		summarySequence: integer("summary_sequence"),
+		summary: jsonb().$type<Record<string, unknown>>(),
 	},
 	(table) => [
 		check(
@@ -137,6 +150,39 @@ export const updateEvents = pgTable(
 		createdAt: timestamp("created_at").notNull().defaultNow(),
 	},
 	(table) => [uniqueIndex("idx_update_events_update_sequence").on(table.updateId, table.sequence)],
+);
+
+// ============================================================================
+// github_update_outbox — Transactional GitHub update publication queue
+// ============================================================================
+
+export const githubUpdateOutbox = pgTable(
+	"github_update_outbox",
+	{
+		id: uuid().primaryKey().defaultRandom(),
+		updateId: uuid("update_id")
+			.notNull()
+			.references(() => updates.id, { onDelete: "cascade" }),
+		phase: text().$type<"started" | "terminal">().notNull(),
+		revision: integer().notNull().default(1),
+		deliveredRevision: integer("delivered_revision").notNull().default(0),
+		attempts: integer().notNull().default(0),
+		availableAt: timestamp("available_at").notNull().defaultNow(),
+		claimedBy: uuid("claimed_by"),
+		claimedUntil: timestamp("claimed_until"),
+		lastError: text("last_error"),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => [
+		check("chk_github_update_outbox_phase", sql`${table.phase} IN ('started', 'terminal')`),
+		check(
+			"chk_github_update_outbox_revisions",
+			sql`${table.revision} >= 1 AND ${table.deliveredRevision} >= 0 AND ${table.deliveredRevision} <= ${table.revision}`,
+		),
+		uniqueIndex("idx_github_update_outbox_update_phase").on(table.updateId, table.phase),
+		index("idx_github_update_outbox_available").on(table.availableAt, table.claimedUntil),
+	],
 );
 
 // ============================================================================
@@ -426,6 +472,7 @@ export const schema = {
 	updates,
 	checkpoints,
 	updateEvents,
+	githubUpdateOutbox,
 	journalEntries,
 	webhooks,
 	webhookDeliveries,

@@ -87,7 +87,7 @@ export function createCliApp(deps: CliAppDeps): Hono<Env> {
 	const user = userHandlers(deps.stacks);
 	const stackH = stackHandlers(deps.stacks, deps.webhooks);
 	const auditH = auditHandlers({ audit: deps.audit });
-	const updateH = updateHandlers(deps.updates, deps.stacks, deps.webhooks, deps.github);
+	const updateH = updateHandlers(deps.updates, deps.stacks, deps.webhooks);
 	const webhookH = webhookHandlers({ webhooks: deps.webhooks });
 	const githubH = githubHandlers({
 		github: deps.github,

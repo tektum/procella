@@ -22,7 +22,9 @@ function mockGitHubService(overrides?: Partial<GitHubService>): GitHubService {
 		listInstallations: mock(async () => [mockInstallation]),
 		resolveInstallation: mock(async () => mockInstallation),
 		removeInstallation: mock(async () => {}),
-		postPRComment: mock(async () => {}),
+		createPRComment: mock(async () => 1),
+		findPRComment: mock(async () => null),
+		updatePRComment: mock(async () => {}),
 		setCommitStatus: mock(async () => {}),
 		...overrides,
 	};

@@ -24,9 +24,15 @@ import { UpdateConflictError } from "@procella/types";
 // UpdatesService Interface
 // ============================================================================
 
-export interface CompletedUpdate {
-	stackId: string;
-	environment: Record<string, string>;
+export interface GitHubUpdateTarget {
+	tenantId: string;
+	owner: string;
+	repo: string;
+	prNumber: number;
+	sha: string;
+	org: string;
+	project: string;
+	stack: string;
 }
 
 export interface UpdatesService {
@@ -42,8 +48,6 @@ export interface UpdatesService {
 	startUpdate(updateId: string, request: StartUpdateRequest): Promise<StartUpdateResponse>;
 
 	completeUpdate(updateId: string, request: CompleteUpdateRequest): Promise<void>;
-
-	getUpdateContext(updateId: string): Promise<CompletedUpdate>;
 
 	cancelUpdate(updateId: string): Promise<void>;
 
@@ -213,6 +217,10 @@ export interface UpdateRow {
 	config: unknown;
 	program: unknown;
 	environment: Record<string, string>;
+	githubTarget: GitHubUpdateTarget | null;
+	githubCommentId: string | null;
+	summarySequence: number | null;
+	summary: Record<string, unknown> | null;
 }
 
 export interface CheckpointRow {

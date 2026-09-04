@@ -1,9 +1,9 @@
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { createAppAuth } from "@octokit/auth-app";
 import { Octokit } from "@octokit/rest";
 import type { Config } from "@procella/config";
 import type { Database } from "@procella/db";
-import { githubInstallations, githubSetupStates } from "@procella/db";
+import { githubInstallations, githubSetupStates, githubUpdateOutbox, updates } from "@procella/db";
 import { and, desc, eq, gt, lt, sql } from "drizzle-orm";
 import { errors as joseErrors, jwtVerify, SignJWT } from "jose";
 
@@ -28,24 +28,38 @@ export interface GitHubAppConfig {
 	stateSigningKey: string;
 }
 
+export interface GitHubDeliveryConfig {
+	appId: string;
+	privateKey: string;
+}
+
 export interface GitHubRepositoryTarget {
 	tenantId: string;
 	owner: string;
 	repo: string;
 }
 
-export interface GitHubService {
-	handleWebhookEvent(event: string, payload: unknown): Promise<void>;
-	issueInstallationUrl(tenantId: string): Promise<string>;
-	completeInstallation(state: string, installationId: number): Promise<GitHubInstallationInfo>;
-	listInstallations(tenantId: string): Promise<GitHubInstallationInfo[]>;
+export interface GitHubDeliveryService {
 	resolveInstallation(target: GitHubRepositoryTarget): Promise<GitHubInstallationInfo | null>;
-	removeInstallation(tenantId: string, installationId: number): Promise<void>;
-	postPRComment(
+	createPRComment(
 		installationId: number,
 		owner: string,
 		repo: string,
 		prNumber: number,
+		body: string,
+	): Promise<number>;
+	findPRComment(
+		installationId: number,
+		owner: string,
+		repo: string,
+		prNumber: number,
+		marker: string,
+	): Promise<number | null>;
+	updatePRComment(
+		installationId: number,
+		owner: string,
+		repo: string,
+		commentId: number,
 		body: string,
 	): Promise<void>;
 	setCommitStatus(
@@ -57,6 +71,14 @@ export interface GitHubService {
 		description: string,
 		context?: string,
 	): Promise<void>;
+}
+
+export interface GitHubService extends GitHubDeliveryService {
+	handleWebhookEvent(event: string, payload: unknown): Promise<void>;
+	issueInstallationUrl(tenantId: string): Promise<string>;
+	completeInstallation(state: string, installationId: number): Promise<GitHubInstallationInfo>;
+	listInstallations(tenantId: string): Promise<GitHubInstallationInfo[]>;
+	removeInstallation(tenantId: string, installationId: number): Promise<void>;
 }
 
 export const GITHUB_SETUP_STATE_TTL_SECONDS = 10 * 60;
@@ -193,47 +215,48 @@ export async function verifyGitHubWebhookSignature(
 }
 
 export function buildPRCommentBody(update: {
+	updateId: string;
 	org: string;
 	project: string;
 	stack: string;
 	kind: string;
 	status: string;
-	resourceChanges?: { creates?: number; updates?: number; deletes?: number; sames?: number };
+	resourceChanges?: Record<string, number>;
 	permalink?: string;
 }): string {
-	const statusLabel =
-		update.status === "succeeded"
-			? "✅ succeeded"
-			: update.status === "failed"
-				? "❌ failed"
-				: update.status === "cancelled"
-					? "⚪ cancelled"
-					: update.status;
-
-	const creates = update.resourceChanges?.creates ?? 0;
-	const updates = update.resourceChanges?.updates ?? 0;
-	const deletes = update.resourceChanges?.deletes ?? 0;
-	const sames = update.resourceChanges?.sames ?? 0;
-
+	const title = update.kind === "preview" ? "Pulumi Preview" : "Pulumi Update";
+	const statusLabel = update.status === "running" ? "in progress" : update.status;
 	const lines = [
-		"## Pulumi Preview Results",
+		`<!-- procella:update:${update.updateId} -->`,
+		`## ${title}`,
 		`**Stack:** \`${update.org}/${update.project}/${update.stack}\``,
-		`**Operation:** ${update.kind}`,
 		`**Status:** ${statusLabel}`,
-		"",
-		"| Action | Count |",
-		"|--------|-------|",
-		`| Create | ${creates} |`,
-		`| Update | ${updates} |`,
-		`| Delete | ${deletes} |`,
-		`| Same | ${sames} |`,
 	];
 
-	if (update.permalink) {
-		lines.push("", `[View details](${update.permalink})`);
+	if (update.status !== "running") {
+		if (update.resourceChanges) {
+			const changes = update.resourceChanges;
+			lines.push(
+				`**Changes:** +${changes.create ?? 0} ~${changes.update ?? 0} -${changes.delete ?? 0} =${changes.same ?? 0}`,
+			);
+		} else {
+			lines.push("**Summary:** unavailable");
+		}
 	}
 
+	if (update.permalink) lines.push("", `[View details](${update.permalink})`);
 	return lines.join("\n");
+}
+
+export function buildCommitStatusContext(update: {
+	org: string;
+	project: string;
+	stack: string;
+}): string {
+	const context = `procella/${update.org}/${update.project}/${update.stack}`;
+	if (context.length <= 100) return context;
+	const suffix = createHash("sha256").update(context).digest("hex").slice(0, 8);
+	return `${context.slice(0, 91)}-${suffix}`;
 }
 
 export function mapUpdateStatusToCommitState(
@@ -396,15 +419,51 @@ export class OctokitGitHubService implements GitHubService {
 			);
 	}
 
-	async postPRComment(
+	async createPRComment(
 		installationId: number,
 		owner: string,
 		repo: string,
 		prNumber: number,
 		body: string,
+	): Promise<number> {
+		const octokit = this.installationClientFactory(installationId);
+		const { data } = await octokit.rest.issues.createComment({
+			owner,
+			repo,
+			issue_number: prNumber,
+			body,
+		});
+		if (!Number.isSafeInteger(data.id)) throw new Error("GitHub returned an invalid comment ID");
+		return data.id;
+	}
+
+	async findPRComment(
+		installationId: number,
+		owner: string,
+		repo: string,
+		prNumber: number,
+		marker: string,
+	): Promise<number | null> {
+		const octokit = this.installationClientFactory(installationId);
+		const comments = await octokit.paginate(octokit.rest.issues.listComments, {
+			owner,
+			repo,
+			issue_number: prNumber,
+			per_page: 100,
+		});
+		const match = comments.find((comment) => comment.body?.includes(marker));
+		return match && Number.isSafeInteger(match.id) ? match.id : null;
+	}
+
+	async updatePRComment(
+		installationId: number,
+		owner: string,
+		repo: string,
+		commentId: number,
+		body: string,
 	): Promise<void> {
 		const octokit = this.installationClientFactory(installationId);
-		await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
+		await octokit.rest.issues.updateComment({ owner, repo, comment_id: commentId, body });
 	}
 
 	async setCommitStatus(
@@ -530,6 +589,433 @@ export class OctokitGitHubService implements GitHubService {
 			},
 		});
 	}
+}
+
+/** GitHub client used by background delivery workers. It needs only App signing credentials. */
+export class OctokitGitHubDeliveryService implements GitHubDeliveryService {
+	private readonly db: Database;
+	private readonly appClient: Octokit;
+	private readonly installationClientFactory: (installationId: number) => Octokit;
+
+	constructor({
+		db,
+		config,
+		appClient,
+		installationClientFactory,
+	}: {
+		db: Database;
+		config: GitHubDeliveryConfig;
+		appClient?: Octokit;
+		installationClientFactory?: (installationId: number) => Octokit;
+	}) {
+		this.db = db;
+		this.appClient =
+			appClient ??
+			new Octokit({
+				authStrategy: createAppAuth,
+				auth: { appId: config.appId, privateKey: config.privateKey },
+			});
+		this.installationClientFactory =
+			installationClientFactory ??
+			((installationId) =>
+				new Octokit({
+					authStrategy: createAppAuth,
+					auth: { appId: config.appId, privateKey: config.privateKey, installationId },
+				}));
+	}
+
+	async resolveInstallation(
+		target: GitHubRepositoryTarget,
+	): Promise<GitHubInstallationInfo | null> {
+		const rows = await this.db
+			.select()
+			.from(githubInstallations)
+			.where(eq(githubInstallations.tenantId, target.tenantId))
+			.orderBy(desc(githubInstallations.updatedAt));
+		try {
+			const { data } = await this.appClient.request("GET /repos/{owner}/{repo}/installation", {
+				owner: target.owner,
+				repo: target.repo,
+			});
+			if (!Number.isSafeInteger(data.id)) return null;
+			const row = rows.find((installation) => installation.installationId === data.id);
+			return row ? mapInstallationRow(row) : null;
+		} catch {
+			return null;
+		}
+	}
+
+	async createPRComment(
+		installationId: number,
+		owner: string,
+		repo: string,
+		prNumber: number,
+		body: string,
+	): Promise<number> {
+		const { data } = await this.installationClientFactory(installationId).rest.issues.createComment(
+			{ owner, repo, issue_number: prNumber, body },
+		);
+		if (!Number.isSafeInteger(data.id)) throw new Error("GitHub returned an invalid comment ID");
+		return data.id;
+	}
+
+	async findPRComment(
+		installationId: number,
+		owner: string,
+		repo: string,
+		prNumber: number,
+		marker: string,
+	): Promise<number | null> {
+		const octokit = this.installationClientFactory(installationId);
+		const comments = await octokit.paginate(octokit.rest.issues.listComments, {
+			owner,
+			repo,
+			issue_number: prNumber,
+			per_page: 100,
+		});
+		const match = comments.find((comment) => comment.body?.includes(marker));
+		return match && Number.isSafeInteger(match.id) ? match.id : null;
+	}
+
+	async updatePRComment(
+		installationId: number,
+		owner: string,
+		repo: string,
+		commentId: number,
+		body: string,
+	): Promise<void> {
+		await this.installationClientFactory(installationId).rest.issues.updateComment({
+			owner,
+			repo,
+			comment_id: commentId,
+			body,
+		});
+	}
+
+	async setCommitStatus(
+		installationId: number,
+		owner: string,
+		repo: string,
+		sha: string,
+		state: "pending" | "success" | "failure" | "error",
+		description: string,
+		context = "procella/preview",
+	): Promise<void> {
+		await this.installationClientFactory(installationId).rest.repos.createCommitStatus({
+			owner,
+			repo,
+			sha,
+			state,
+			description,
+			context,
+		});
+	}
+}
+
+export const GITHUB_OUTBOX_CLAIM_SECONDS = 120;
+export const GITHUB_OUTBOX_MAX_ATTEMPTS_PER_RUN = 25;
+export const GITHUB_OUTBOX_POLL_INTERVAL_MS = 5_000;
+
+interface GitHubPublicationTarget {
+	tenantId: string;
+	owner: string;
+	repo: string;
+	prNumber: number;
+	sha: string;
+	org: string;
+	project: string;
+	stack: string;
+}
+
+interface GitHubOutboxClaim {
+	id: string;
+	updateId: string;
+	phase: "started" | "terminal";
+	revision: number;
+	attempts: number;
+	target: GitHubPublicationTarget;
+	commentId: string | null;
+	kind: string;
+	status: string;
+	summary: Record<string, unknown> | null;
+}
+
+interface RawGitHubOutboxClaim extends Omit<GitHubOutboxClaim, "target" | "summary"> {
+	target: unknown;
+	summary: unknown;
+}
+
+export class GitHubOutboxWorker {
+	private readonly db: Database;
+	private readonly github: GitHubDeliveryService;
+	private readonly interval: number;
+	private readonly maxPerRun: number;
+	private readonly workerId: string;
+	private timer: ReturnType<typeof setInterval> | null = null;
+	private running = false;
+
+	constructor({
+		db,
+		github,
+		interval,
+		maxPerRun,
+		workerId,
+	}: {
+		db: Database;
+		github: GitHubDeliveryService;
+		interval?: number;
+		maxPerRun?: number;
+		workerId?: string;
+	}) {
+		this.db = db;
+		this.github = github;
+		this.interval = interval ?? GITHUB_OUTBOX_POLL_INTERVAL_MS;
+		this.maxPerRun = maxPerRun ?? GITHUB_OUTBOX_MAX_ATTEMPTS_PER_RUN;
+		this.workerId = workerId ?? randomUUID();
+	}
+
+	async start(): Promise<void> {
+		if (this.timer) return;
+		this.timer = setInterval(() => {
+			void this.runCycle().catch((error) => console.error("[github-outbox] cycle failed", error));
+		}, this.interval);
+		await this.runCycle().catch((error) => console.error("[github-outbox] cycle failed", error));
+	}
+	async stop(): Promise<void> {
+		if (this.timer) {
+			clearInterval(this.timer);
+			this.timer = null;
+		}
+		while (this.running) await Bun.sleep(25);
+	}
+
+	/** Drain at most one bounded batch. Intended for scheduled and Lambda invocations. */
+	async runOnce(): Promise<number> {
+		return this.runCycle();
+	}
+
+	private async runCycle(): Promise<number> {
+		if (this.running) return 0;
+		this.running = true;
+		let delivered = 0;
+		try {
+			for (let index = 0; index < this.maxPerRun; index += 1) {
+				const claim = await this.claimNext();
+				if (!claim) break;
+				try {
+					await this.deliver(claim);
+					await this.ack(claim);
+					delivered += 1;
+				} catch (error) {
+					await this.retry(claim, error);
+				}
+			}
+			return delivered;
+		} finally {
+			this.running = false;
+		}
+	}
+
+	private async claimNext(): Promise<GitHubOutboxClaim | null> {
+		return this.db.transaction(async (tx) => {
+			const result = await tx.execute(sql`
+				WITH candidate AS (
+					SELECT outbox.id
+					FROM github_update_outbox outbox
+					WHERE outbox.delivered_revision < outbox.revision
+						AND outbox.available_at <= now()
+						AND (outbox.claimed_until IS NULL OR outbox.claimed_until < now())
+						AND (
+							outbox.phase = 'started'
+							OR NOT EXISTS (
+								SELECT 1 FROM github_update_outbox started
+								WHERE started.update_id = outbox.update_id
+									AND started.phase = 'started'
+									AND started.delivered_revision < started.revision
+							)
+						)
+					ORDER BY outbox.created_at, CASE outbox.phase WHEN 'started' THEN 0 ELSE 1 END
+					FOR UPDATE SKIP LOCKED
+					LIMIT 1
+				), claimed AS (
+					UPDATE github_update_outbox outbox
+					SET claimed_by = ${this.workerId}::uuid,
+						claimed_until = now() + (${GITHUB_OUTBOX_CLAIM_SECONDS} * interval '1 second'),
+						attempts = outbox.attempts + 1,
+						updated_at = now()
+					FROM candidate
+					WHERE outbox.id = candidate.id
+					RETURNING outbox.*
+				)
+				SELECT claimed.id, claimed.update_id AS "updateId", claimed.phase,
+					claimed.revision, claimed.attempts, source_update.github_target AS target,
+					source_update.github_comment_id AS "commentId", source_update.kind,
+					source_update.status, source_update.summary
+				FROM claimed
+				JOIN updates source_update ON source_update.id = claimed.update_id
+			`);
+			const row = readExecuteRows<RawGitHubOutboxClaim>(result)[0];
+			if (!row) return null;
+			return {
+				...row,
+				target: parseGitHubPublicationTarget(row.target),
+				summary: row.summary === null ? null : parseJsonRecord(row.summary, "update summary"),
+			};
+		});
+	}
+
+	private async deliver(claim: GitHubOutboxClaim): Promise<void> {
+		const { target } = claim;
+		const installation = await this.github.resolveInstallation(target);
+		if (!installation) throw new Error("No authorized GitHub App installation for repository");
+
+		const marker = `<!-- procella:update:${claim.updateId} -->`;
+		const body = buildPRCommentBody({
+			updateId: claim.updateId,
+			org: target.org,
+			project: target.project,
+			stack: target.stack,
+			kind: claim.kind,
+			status: claim.phase === "started" ? "running" : claim.status,
+			resourceChanges:
+				claim.phase === "terminal"
+					? (claim.summary?.resourceChanges as Record<string, number> | undefined)
+					: undefined,
+		});
+
+		let commentId = parseGitHubCommentId(claim.commentId);
+		if (commentId === null) {
+			commentId = await this.github.findPRComment(
+				installation.installationId,
+				target.owner,
+				target.repo,
+				target.prNumber,
+				marker,
+			);
+		}
+		if (commentId === null) {
+			commentId = await this.github.createPRComment(
+				installation.installationId,
+				target.owner,
+				target.repo,
+				target.prNumber,
+				body,
+			);
+		} else {
+			await this.github.updatePRComment(
+				installation.installationId,
+				target.owner,
+				target.repo,
+				commentId,
+				body,
+			);
+		}
+		await this.persistCommentId(claim.updateId, commentId);
+
+		const status = claim.phase === "started" ? "running" : claim.status;
+		await this.github.setCommitStatus(
+			installation.installationId,
+			target.owner,
+			target.repo,
+			target.sha,
+			mapUpdateStatusToCommitState(status),
+			`Procella ${claim.kind} ${status === "running" ? "in progress" : status}`,
+			buildCommitStatusContext(target),
+		);
+	}
+
+	private async persistCommentId(updateId: string, commentId: number): Promise<void> {
+		await this.db
+			.update(updates)
+			.set({ githubCommentId: String(commentId), updatedAt: sql`now()` })
+			.where(and(eq(updates.id, updateId), sql`${updates.githubCommentId} IS NULL`));
+	}
+
+	private async ack(claim: GitHubOutboxClaim): Promise<void> {
+		await this.db
+			.update(githubUpdateOutbox)
+			.set({
+				deliveredRevision: claim.revision,
+				attempts: 0,
+				claimedBy: null,
+				claimedUntil: null,
+				lastError: null,
+				availableAt: sql`now()`,
+				updatedAt: sql`now()`,
+			})
+			.where(
+				and(eq(githubUpdateOutbox.id, claim.id), eq(githubUpdateOutbox.claimedBy, this.workerId)),
+			);
+	}
+
+	private async retry(claim: GitHubOutboxClaim, error: unknown): Promise<void> {
+		const delaySeconds = githubRetryDelaySeconds(claim.attempts);
+		await this.db
+			.update(githubUpdateOutbox)
+			.set({
+				claimedBy: null,
+				claimedUntil: null,
+				availableAt: sql`now() + (${delaySeconds} * interval '1 second')`,
+				lastError: sanitizeDeliveryError(error),
+				updatedAt: sql`now()`,
+			})
+			.where(
+				and(eq(githubUpdateOutbox.id, claim.id), eq(githubUpdateOutbox.claimedBy, this.workerId)),
+			);
+	}
+}
+
+function parseJsonRecord(value: unknown, label: string): Record<string, unknown> {
+	const parsed = typeof value === "string" ? JSON.parse(value) : value;
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+		throw new Error(`Invalid ${label} in PostgreSQL`);
+	}
+	return parsed as Record<string, unknown>;
+}
+
+function parseGitHubPublicationTarget(value: unknown): GitHubPublicationTarget {
+	const target = parseJsonRecord(value, "GitHub publication target");
+	if (
+		typeof target.tenantId !== "string" ||
+		typeof target.owner !== "string" ||
+		typeof target.repo !== "string" ||
+		typeof target.prNumber !== "number" ||
+		!Number.isSafeInteger(target.prNumber) ||
+		typeof target.sha !== "string" ||
+		typeof target.org !== "string" ||
+		typeof target.project !== "string" ||
+		typeof target.stack !== "string"
+	) {
+		throw new Error("Invalid GitHub publication target in PostgreSQL");
+	}
+	return target as unknown as GitHubPublicationTarget;
+}
+
+function parseGitHubCommentId(value: string | null): number | null {
+	if (!value || !/^\d+$/.test(value)) return null;
+	const parsed = Number(value);
+	return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+export function githubRetryDelaySeconds(attempts: number): number {
+	return Math.min(900, 5 * 2 ** Math.min(Math.max(attempts - 1, 0), 8));
+}
+
+export function sanitizeDeliveryError(error: unknown): string {
+	const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+	return message
+		.replace(/(authorization|token|secret|private[-_ ]?key)\s*[:=]\s*\S+/gi, "$1=[redacted]")
+		.replace(/(https?:\/\/)[^@\s/]+@/gi, "$1[redacted]@")
+		.slice(0, 500);
+}
+
+function readExecuteRows<T>(result: unknown): T[] {
+	if (Array.isArray(result)) return result as T[];
+	if (typeof result === "object" && result !== null && "rows" in result) {
+		const rows = (result as { rows?: unknown }).rows;
+		if (Array.isArray(rows)) return rows as T[];
+	}
+	throw new Error("Unexpected database execute result shape");
 }
 
 function mapInstallationRow(row: typeof githubInstallations.$inferSelect): GitHubInstallationInfo {

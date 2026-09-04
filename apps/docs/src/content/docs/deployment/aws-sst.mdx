@@ -55,6 +55,8 @@ In CI/CD, secrets are passed as `SST_SECRET_*` environment variables — no manu
 npx sst secret set ProcellaDescopeManagementKey "..."
 ```
 
+GitHub publication delivery also uses `ProcellaGitHubAppId` and `ProcellaGitHubAppPrivateKey`. The scheduled GC Lambda receives only those two GitHub credentials because it processes the publication outbox but does not handle installation setup or webhook verification.
+
 <Aside type="tip">
 SST secrets are encrypted in AWS SSM Parameter Store. In GitHub Actions they are passed via `SST_SECRET_*` env vars on the deploy step and applied automatically at deploy time.
 </Aside>

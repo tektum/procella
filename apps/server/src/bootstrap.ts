@@ -180,6 +180,7 @@ export async function bootstrap() {
 		config: services.config,
 		db: services.db,
 		client: services.client,
+		github: services.github,
 	};
 }
 

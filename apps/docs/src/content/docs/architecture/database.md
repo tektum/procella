@@ -115,6 +115,8 @@ Engine events emitted during an update (resource operations, diagnostics, output
 | `idx_updates_active` | `updates` | **Partial unique**: `(stackId) WHERE status IN ('not started', 'requested', 'running')` — prevents concurrent updates |
 | `idx_checkpoints_update_version` | `checkpoints` | `(updateId, version)` — fast checkpoint lookup |
 | `idx_update_events_update_sequence` | `update_events` | `(updateId, sequence)` — ordered event retrieval |
+| `idx_github_update_outbox_update_phase` | `github_update_outbox` | Unique `(updateId, phase)` publication intent |
+| `idx_github_update_outbox_available` | `github_update_outbox` | Due and expired-lease claim scanning |
 
 ## Auto-Create Pattern
 
@@ -132,26 +134,31 @@ This simplifies the CLI workflow — `pulumi stack init` creates everything in o
 
 ## Advisory Locks
 
-The GC worker uses PostgreSQL advisory locks for cluster-safe execution:
+The GC worker acquires a transaction-scoped PostgreSQL advisory lock before scanning and cancelling orphaned updates:
 
 ```typescript
-const lockId = 0x5472617461_4743; // GC lock (historic value, do not change)
-const acquired = await db.execute(
-  sql`SELECT pg_try_advisory_lock(${lockId})`
-);
-// ... do GC work ...
-await db.execute(sql`SELECT pg_advisory_unlock(${lockId})`);
+await db.transaction(async (tx) => {
+  const acquired = await tx.execute(
+    sql`SELECT pg_try_advisory_xact_lock(${GC_ADVISORY_LOCK_ID})`
+  );
+  // ... cancel orphaned updates and enqueue running-update publications ...
+});
 ```
 
-This ensures only one replica runs garbage collection at a time, even in a multi-instance deployment. The lock is acquired per-cycle and released after each cycle completes.
+This ensures only one replica runs a GC cycle. PostgreSQL releases the lock automatically when the transaction commits, rolls back, or its connection closes.
+
+## Transactional GitHub Outbox
+
+Update start and terminal transitions insert their GitHub publication intent in the same PostgreSQL transaction. The outbox stores a monotonically increasing revision and the worker acknowledges the exact revision it delivered. A late, higher-sequence summary event increments the terminal revision so the existing pull-request comment is edited again.
+
+Workers claim rows with `FOR UPDATE SKIP LOCKED` and a short lease, then release the transaction before calling GitHub. Failures record a sanitized error and a bounded exponential retry delay. Terminal work remains blocked until the started phase is acknowledged.
 
 ## Cascade Deletes
 
 Foreign keys use `ON DELETE CASCADE`:
 
-- Deleting a **project** cascades to stacks, updates, events, checkpoints
-- Deleting a **stack** cascades to updates, events, checkpoints
-- Deleting an **update** cascades to events, checkpoints
+- Deleting a **project** cascades to its stacks
+- Deleting an **update** cascades to events, checkpoints, and GitHub outbox rows
 
 This means `pulumi stack rm` cleanly removes all associated data.
 

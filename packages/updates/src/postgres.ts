@@ -2,7 +2,14 @@
 
 import type { CryptoService, StackCryptoInput } from "@procella/crypto";
 import type { Database } from "@procella/db";
-import { checkpoints, journalEntries, stacks, updateEvents, updates } from "@procella/db";
+import {
+	checkpoints,
+	githubUpdateOutbox,
+	journalEntries,
+	stacks,
+	updateEvents,
+	updates,
+} from "@procella/db";
 import type { BlobStorage } from "@procella/storage";
 
 import {
@@ -28,6 +35,7 @@ import type {
 	ResourceV3,
 	StartUpdateRequest,
 	StartUpdateResponse,
+	SummaryEvent,
 	UntypedDeployment,
 	UpdateInfo,
 	UpdateProgramResponse,
@@ -50,7 +58,7 @@ import {
 	UpdateConflictError,
 	UpdateNotFoundError,
 } from "@procella/types";
-import { and, desc, eq, gt, max, ne, sql } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, lt, max, ne, or, sql } from "drizzle-orm";
 import {
 	applyDeploymentDelta,
 	assertSupportedDeploymentEnvelope,
@@ -68,8 +76,8 @@ import {
 	safeTokenCompare,
 } from "./helpers.js";
 import type {
-	CompletedUpdate,
 	DeltaCheckpointSave,
+	GitHubUpdateTarget,
 	UpdatesService,
 	VerbatimCheckpointSave,
 } from "./types.js";
@@ -88,12 +96,21 @@ type DbTransaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
 interface LockedUpdateRow {
 	stackId: string;
 	status: string;
+	version: number;
 	leaseToken: string | null;
 	leaseExpiresAt: Date | null;
+	githubTarget: GitHubUpdateTarget | null;
 }
-
 interface StackLockRow {
 	activeUpdateId: string | null;
+	tenantId: string;
+	project: string;
+	stack: string;
+	tags: Record<string, string>;
+}
+
+interface RawStackLockRow extends Omit<StackLockRow, "tags"> {
+	tags: unknown;
 }
 
 /**
@@ -180,6 +197,11 @@ export class PostgresUpdatesService implements UpdatesService {
 							"Another update is already in progress for this stack. Run `pulumi cancel` to cancel it first.",
 						);
 					}
+					const githubTarget = deriveGitHubUpdateTarget({
+						caller,
+						environment,
+						stack: stackLock,
+					});
 
 					const versionWhere =
 						kind === "preview"
@@ -212,6 +234,7 @@ export class PostgresUpdatesService implements UpdatesService {
 							initiatedByMeta: caller?.workload
 								? (caller.workload as unknown as Record<string, unknown>)
 								: null,
+							githubTarget,
 						})
 						.returning();
 
@@ -240,11 +263,9 @@ export class PostgresUpdatesService implements UpdatesService {
 		return withDbSpan("startUpdate", { "update.id": updateId }, async () => {
 			let notifyStackId: string | undefined;
 			const result = await this.db.transaction(async (tx) => {
-				const [row] = await tx.select().from(updates).where(eq(updates.id, updateId));
-
-				if (!row) {
-					throw new UpdateNotFoundError(updateId);
-				}
+				const row = await this.lockUpdateForWrite(tx, updateId, {
+					requireRunningLease: false,
+				});
 
 				if (row.status !== "not started") {
 					throw new UpdateConflictError(
@@ -271,6 +292,10 @@ export class PostgresUpdatesService implements UpdatesService {
 					.update(stacks)
 					.set({ activeUpdateId: updateId, updatedAt: sql`now()` })
 					.where(eq(stacks.id, row.stackId));
+
+				if (row.githubTarget) {
+					await this.enqueueGitHubPublication(tx, updateId, "started");
+				}
 
 				const journalVersion = (request.journalVersion ?? 0) >= 1 ? 1 : 0;
 
@@ -359,6 +384,10 @@ export class PostgresUpdatesService implements UpdatesService {
 						.update(stacks)
 						.set({ activeUpdateId: null, updatedAt: sql`now()` })
 						.where(eq(stacks.id, row.stackId));
+
+					if (row.githubTarget) {
+						await this.enqueueGitHubPublication(tx, updateId, "terminal");
+					}
 				}),
 		);
 
@@ -367,21 +396,6 @@ export class PostgresUpdatesService implements UpdatesService {
 		await this.deleteSupersededDeltaBase(deltaBaseBlobKey);
 		if (notifyStackId)
 			this.db.execute(sql`SELECT pg_notify('stack_updates', ${notifyStackId})`).catch(() => {});
-	}
-
-	async getUpdateContext(updateId: string): Promise<CompletedUpdate> {
-		return withDbSpan("getUpdateContext", { "update.id": updateId }, async () => {
-			const [row] = await this.db
-				.select({ stackId: updates.stackId, environment: updates.environment })
-				.from(updates)
-				.where(eq(updates.id, updateId));
-
-			if (!row) {
-				throw new UpdateNotFoundError(updateId);
-			}
-
-			return { stackId: row.stackId, environment: row.environment };
-		});
 	}
 
 	async cancelUpdate(updateId: string): Promise<void> {
@@ -414,6 +428,10 @@ export class PostgresUpdatesService implements UpdatesService {
 					.update(stacks)
 					.set({ activeUpdateId: null, updatedAt: sql`now()` })
 					.where(eq(stacks.id, row.stackId));
+
+				if (previouslyRunning && row.githubTarget) {
+					await this.enqueueGitHubPublication(tx, updateId, "terminal");
+				}
 
 				return previouslyRunning;
 			}),
@@ -603,26 +621,52 @@ export class PostgresUpdatesService implements UpdatesService {
 			async () => {
 				const rows = events.map((event) => ({
 					updateId,
-					sequence: (event as { sequence?: number }).sequence ?? 0,
+					sequence: event.sequence,
 					kind: detectEventKind(event),
 					fields: event as unknown,
 				}));
+				const latestSummary = events.reduce<
+					{ sequence: number; summary: SummaryEvent } | undefined
+				>((latest, event) => {
+					if (!event.summaryEvent || !Number.isSafeInteger(event.sequence)) return latest;
+					return !latest || event.sequence > latest.sequence
+						? { sequence: event.sequence, summary: event.summaryEvent }
+						: latest;
+				}, undefined);
 
-				// Events are append-only with onConflictDoUpdate; we deliberately do NOT
-				// take an update-row lock here — under high concurrency (Pulumi CLI fans
-				// out 20+ parallel event batches per `pulumi up`) a SELECT FOR UPDATE on
-				// the shared row serializes every writer and degrades into 5xx. The
-				// status/lease-after-cancel guard is enforced on the checkpoint write
-				// path (where stale state is dangerous); for engine events any late
-				// arrival is harmless and the unique (updateId, sequence) index handles
-				// duplicates.
-				await this.db
-					.insert(updateEvents)
-					.values(rows)
-					.onConflictDoUpdate({
-						target: [updateEvents.updateId, updateEvents.sequence],
-						set: { kind: sql`excluded.kind`, fields: sql`excluded.fields` },
-					});
+				await this.db.transaction(async (tx) => {
+					// An event sequence is immutable. Replays never replace the original payload.
+					await tx.insert(updateEvents).values(rows).onConflictDoNothing();
+
+					if (latestSummary) {
+						const [updated] = await tx
+							.update(updates)
+							.set({
+								summarySequence: latestSummary.sequence,
+								summary: latestSummary.summary as unknown as Record<string, unknown>,
+								updatedAt: sql`now()`,
+							})
+							.where(
+								and(
+									eq(updates.id, updateId),
+									or(
+										isNull(updates.summarySequence),
+										lt(updates.summarySequence, latestSummary.sequence),
+									),
+								),
+							)
+							.returning({ status: updates.status, githubTarget: updates.githubTarget });
+
+						if (
+							updated?.githubTarget &&
+							(updated.status === "succeeded" ||
+								updated.status === "failed" ||
+								updated.status === "cancelled")
+						) {
+							await this.enqueueGitHubPublication(tx, updateId, "terminal", true);
+						}
+					}
+				});
 
 				this.db.execute(sql`SELECT pg_notify('update_events', ${updateId})`).catch(() => {});
 			},
@@ -1053,6 +1097,30 @@ export class PostgresUpdatesService implements UpdatesService {
 			});
 	}
 
+	private async enqueueGitHubPublication(
+		tx: DbTransaction,
+		updateId: string,
+		phase: "started" | "terminal",
+		bumpRevision = false,
+	): Promise<void> {
+		const insert = tx.insert(githubUpdateOutbox).values({ updateId, phase });
+		if (!bumpRevision) {
+			await insert.onConflictDoNothing();
+			return;
+		}
+
+		await insert.onConflictDoUpdate({
+			target: [githubUpdateOutbox.updateId, githubUpdateOutbox.phase],
+			set: {
+				revision: sql`${githubUpdateOutbox.revision} + 1`,
+				attempts: 0,
+				availableAt: sql`now()`,
+				lastError: null,
+				updatedAt: sql`now()`,
+			},
+		});
+	}
+
 	private async lockUpdateForWrite(
 		tx: DbTransaction,
 		updateId: string,
@@ -1060,7 +1128,9 @@ export class PostgresUpdatesService implements UpdatesService {
 	): Promise<LockedUpdateRow> {
 		const [row] = this.readExecuteRows<LockedUpdateRow>(
 			await tx.execute(sql`
-				SELECT stack_id AS "stackId", status, lease_token AS "leaseToken", lease_expires_at AS "leaseExpiresAt"
+				SELECT stack_id AS "stackId", status, version,
+					lease_token AS "leaseToken", lease_expires_at AS "leaseExpiresAt",
+					github_target AS "githubTarget"
 				FROM updates
 				WHERE id = ${updateId}
 				FOR UPDATE
@@ -1087,20 +1157,20 @@ export class PostgresUpdatesService implements UpdatesService {
 	}
 
 	private async lockStackForOperation(tx: DbTransaction, stackId: string): Promise<StackLockRow> {
-		const [row] = this.readExecuteRows<StackLockRow>(
+		const [row] = this.readExecuteRows<RawStackLockRow>(
 			await tx.execute(sql`
-				SELECT active_update_id AS "activeUpdateId"
-				FROM stacks
-				WHERE id = ${stackId}
-				FOR UPDATE
+				SELECT s.active_update_id AS "activeUpdateId", p.tenant_id AS "tenantId",
+					p.name AS project, s.name AS stack, s.tags
+				FROM stacks s
+				JOIN projects p ON p.id = s.project_id
+				WHERE s.id = ${stackId}
+				FOR UPDATE OF s
 			`),
 		);
 
-		if (!row) {
-			throw new Error(`Stack not found: ${stackId}`);
-		}
-
-		return row;
+		if (!row) throw new Error(`Stack not found: ${stackId}`);
+		const tags = parseStringRecord(row.tags);
+		return { ...row, tags };
 	}
 
 	private readExecuteRows<T>(result: unknown): T[] {
@@ -1155,6 +1225,54 @@ export class PostgresUpdatesService implements UpdatesService {
 
 		return (row.data as Record<string, unknown>) ?? {};
 	}
+}
+
+function parseStringRecord(value: unknown): Record<string, string> {
+	const parsed = typeof value === "string" ? JSON.parse(value) : value;
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+	return Object.fromEntries(
+		Object.entries(parsed).filter(
+			(entry): entry is [string, string] => typeof entry[1] === "string",
+		),
+	);
+}
+export function deriveGitHubUpdateTarget({
+	caller,
+	environment,
+	stack,
+}: {
+	caller?: Caller;
+	environment?: Record<string, string>;
+	stack: Pick<StackLockRow, "tenantId" | "project" | "stack" | "tags">;
+}): GitHubUpdateTarget | null {
+	if (!caller || caller.tenantId !== stack.tenantId || !environment) return null;
+
+	const owner = environment["vcs.owner"]?.trim();
+	const repo = environment["vcs.repo"]?.trim();
+	const pr = environment["ci.pr.number"]?.trim();
+	const sha = (environment["ci.pr.headSHA"] ?? environment["git.head"])?.trim();
+	if (!owner || !repo || !pr || !sha || !/^[1-9]\d*$/.test(pr)) return null;
+
+	const prNumber = Number(pr);
+	if (!Number.isSafeInteger(prNumber)) return null;
+	if (owner.toLowerCase() !== stack.tags["vcs:owner"]?.trim().toLowerCase()) return null;
+	if (repo.toLowerCase() !== stack.tags["vcs:repo"]?.trim().toLowerCase()) return null;
+
+	if (caller.principalType === "workload") {
+		const workloadRepository = caller.workload?.repository?.trim().toLowerCase();
+		if (workloadRepository !== `${owner}/${repo}`.toLowerCase()) return null;
+	}
+
+	return {
+		tenantId: stack.tenantId,
+		owner,
+		repo,
+		prNumber,
+		sha,
+		org: caller.orgSlug,
+		project: stack.project,
+		stack: stack.stack,
+	};
 }
 
 // ============================================================================

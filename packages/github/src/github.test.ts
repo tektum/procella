@@ -5,12 +5,16 @@ import type { Config } from "@procella/config";
 import type { Database } from "@procella/db";
 import {
 	buildGitHubAppConfig,
+	buildCommitStatusContext,
 	buildPRCommentBody,
 	createGitHubSetupStateService,
 	type GitHubInstallationInfo,
 	GitHubSetupError,
+	githubRetryDelaySeconds,
 	mapUpdateStatusToCommitState,
+	OctokitGitHubDeliveryService,
 	OctokitGitHubService,
+	sanitizeDeliveryError,
 	verifyGitHubWebhookSignature,
 } from "./index.js";
 
@@ -57,25 +61,26 @@ describe("@procella/github", () => {
 	describe("buildPRCommentBody", () => {
 		test("builds markdown body with table and details link", () => {
 			const body = buildPRCommentBody({
+				updateId: "11111111-1111-4111-8111-111111111111",
 				org: "acme",
 				project: "infra",
 				stack: "dev",
 				kind: "preview",
 				status: "succeeded",
-				resourceChanges: { creates: 3, updates: 1, deletes: 0, sames: 4 },
+				resourceChanges: { create: 3, update: 1, delete: 0, same: 4 },
 				permalink: "https://example.com/update/1",
 			});
 
-			expect(body).toContain("## Pulumi Preview Results");
+			expect(body).toContain("<!-- procella:update:11111111-1111-4111-8111-111111111111 -->");
+			expect(body).toContain("## Pulumi Preview");
 			expect(body).toContain("**Stack:** `acme/infra/dev`");
-			expect(body).toContain("| Create | 3 |");
-			expect(body).toContain("| Update | 1 |");
-			expect(body).toContain("| Delete | 0 |");
+			expect(body).toContain("**Changes:** +3 ~1 -0 =4");
 			expect(body).toContain("[View details](https://example.com/update/1)");
 		});
 
-		test("defaults missing resource changes to zero", () => {
+		test("renders unavailable when no terminal summary was captured", () => {
 			const body = buildPRCommentBody({
+				updateId: "22222222-2222-4222-8222-222222222222",
 				org: "acme",
 				project: "infra",
 				stack: "dev",
@@ -83,9 +88,8 @@ describe("@procella/github", () => {
 				status: "failed",
 			});
 
-			expect(body).toContain("| Create | 0 |");
-			expect(body).toContain("| Update | 0 |");
-			expect(body).toContain("| Delete | 0 |");
+			expect(body).toContain("**Summary:** unavailable");
+			expect(body).not.toContain("**Changes:**");
 		});
 	});
 
@@ -98,6 +102,45 @@ describe("@procella/github", () => {
 			expect(mapUpdateStatusToCommitState("requested")).toBe("pending");
 			expect(mapUpdateStatusToCommitState("not started")).toBe("pending");
 			expect(mapUpdateStatusToCommitState("unknown")).toBe("error");
+		});
+	});
+
+	describe("buildCommitStatusContext", () => {
+		test("is stable, stack-specific, and within GitHub's limit", () => {
+			const target = { org: "acme", project: "infra", stack: "production" };
+			expect(buildCommitStatusContext(target)).toBe("procella/acme/infra/production");
+			const long = buildCommitStatusContext({
+				org: "o".repeat(64),
+				project: "p".repeat(64),
+				stack: "s".repeat(64),
+			});
+			expect(long).toHaveLength(100);
+			expect(long).toBe(
+				buildCommitStatusContext({
+					org: "o".repeat(64),
+					project: "p".repeat(64),
+					stack: "s".repeat(64),
+				}),
+			);
+		});
+	});
+	describe("githubRetryDelaySeconds", () => {
+		test("backs off exponentially with a fifteen-minute ceiling", () => {
+			expect(githubRetryDelaySeconds(1)).toBe(5);
+			expect(githubRetryDelaySeconds(4)).toBe(40);
+			expect(githubRetryDelaySeconds(100)).toBe(900);
+		});
+	});
+
+	describe("sanitizeDeliveryError", () => {
+		test("redacts credentials and bounds persisted errors", () => {
+			const error = new Error(
+				`Authorization: bearer-secret https://user:pass@example.com/${"x".repeat(600)}`,
+			);
+			const sanitized = sanitizeDeliveryError(error);
+			expect(sanitized).not.toContain("bearer-secret");
+			expect(sanitized).not.toContain("user:pass");
+			expect(sanitized.length).toBeLessThanOrEqual(500);
 		});
 	});
 });
@@ -460,5 +503,50 @@ describe("OctokitGitHubService repository resolution", () => {
 		expect(
 			await service.resolveInstallation({ tenantId: "tenant-a", owner: "acme", repo: "infra" }),
 		).toEqual(allowed);
+	});
+});
+
+describe("OctokitGitHubDeliveryService comments", () => {
+	test("creates, finds, and edits one marked PR comment", async () => {
+		const createComment = mock(async () => ({ data: { id: 123 } }));
+		const updateComment = mock(async () => ({ data: { id: 123 } }));
+		const listComments = mock(async () => ({ data: [] }));
+		const paginate = mock(async () => [
+			{ id: 122, body: "unrelated" },
+			{ id: 123, body: "<!-- procella:update:update-1 -->\nresult" },
+		]);
+		const installationClient = {
+			paginate,
+			rest: {
+				issues: { createComment, listComments, updateComment },
+				repos: { createCommitStatus: mock(async () => ({})) },
+			},
+		} as unknown as Octokit;
+		const service = new OctokitGitHubDeliveryService({
+			db: readOnlyDb([]),
+			config: { appId: "123", privateKey: "unused" },
+			appClient: {} as Octokit,
+			installationClientFactory: () => installationClient,
+		});
+
+		expect(await service.createPRComment(101, "acme", "infra", 42, "pending")).toBe(123);
+		expect(
+			await service.findPRComment(101, "acme", "infra", 42, "<!-- procella:update:update-1 -->"),
+		).toBe(123);
+		await service.updatePRComment(101, "acme", "infra", 123, "complete");
+
+		expect(createComment).toHaveBeenCalledTimes(1);
+		expect(paginate).toHaveBeenCalledWith(listComments, {
+			owner: "acme",
+			repo: "infra",
+			issue_number: 42,
+			per_page: 100,
+		});
+		expect(updateComment).toHaveBeenCalledWith({
+			owner: "acme",
+			repo: "infra",
+			comment_id: 123,
+			body: "complete",
+		});
 	});
 });

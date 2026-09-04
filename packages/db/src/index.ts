@@ -21,6 +21,7 @@ export {
 	escSessions,
 	githubInstallations,
 	githubSetupStates,
+	githubUpdateOutbox,
 	journalEntries,
 	oidcTrustPolicies,
 	projects,

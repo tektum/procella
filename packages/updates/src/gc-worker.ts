@@ -1,7 +1,7 @@
 // @procella/updates — GC Worker for cleaning up stale/orphaned updates.
 
 import type { Database } from "@procella/db";
-import { stacks, updates } from "@procella/db";
+import { githubUpdateOutbox, stacks, updates } from "@procella/db";
 import { activeUpdatesGauge, gcCycleCount, gcOrphansCleanedCount } from "@procella/telemetry";
 import { and, eq, inArray, lt, sql } from "drizzle-orm";
 import {
@@ -53,30 +53,34 @@ export class GCWorker {
 		gcCycleCount().add(1);
 
 		try {
-			// Try to acquire advisory lock (cluster-safe — only one GC runs at a time)
-			const lockResult = await this.db.execute(
-				sql`SELECT pg_try_advisory_lock(${GC_ADVISORY_LOCK_ID}) as acquired`,
-			);
+			const result = await this.db.transaction(async (tx) => {
+				const lockResult = await tx.execute(
+					sql`SELECT pg_try_advisory_xact_lock(${GC_ADVISORY_LOCK_ID}) as acquired`,
+				);
+				const rows = "rows" in lockResult ? lockResult.rows : lockResult;
+				const first = rows[0];
+				if (
+					!first ||
+					typeof first !== "object" ||
+					!("acquired" in first) ||
+					first.acquired !== true
+				) {
+					return null;
+				}
 
-			const rows = "rows" in lockResult ? lockResult.rows : lockResult;
-			const acquired = (rows[0] as { acquired?: boolean })?.acquired;
-			if (!acquired) {
-				return;
-			}
-
-			try {
 				const now = new Date();
-
-				// Find updates with expired leases (with 30s grace window for transient renewal delays)
 				const graceThreshold = new Date(now.getTime() - GC_LEASE_GRACE_MS);
-				const expiredLeaseUpdates = await this.db
-					.select({ id: updates.id, stackId: updates.stackId })
+				const expiredLeaseUpdates = await tx
+					.select({
+						id: updates.id,
+						stackId: updates.stackId,
+						githubTarget: updates.githubTarget,
+					})
 					.from(updates)
 					.where(and(eq(updates.status, "running"), lt(updates.leaseExpiresAt, graceThreshold)));
 
-				// Find stale not-started/requested updates (older than threshold)
 				const staleThreshold = new Date(now.getTime() - GC_STALE_THRESHOLD_MS);
-				const staleUpdates = await this.db
+				const staleUpdates = await tx
 					.select({ id: updates.id, stackId: updates.stackId })
 					.from(updates)
 					.where(
@@ -87,14 +91,9 @@ export class GCWorker {
 					);
 
 				const allOrphans = [...expiredLeaseUpdates, ...staleUpdates];
-				const orphanCount = allOrphans.length;
-
-				if (orphanCount > 0) {
-					const orphanIds = allOrphans.map((u) => u.id);
-					const affectedStackIds = [...new Set(allOrphans.map((u) => u.stackId))];
-
-					// Cancel all orphaned updates
-					await this.db
+				if (allOrphans.length > 0) {
+					const orphanIds = allOrphans.map((update) => update.id);
+					await tx
 						.update(updates)
 						.set({
 							status: "cancelled",
@@ -105,23 +104,39 @@ export class GCWorker {
 						})
 						.where(inArray(updates.id, orphanIds));
 
-					if (expiredLeaseUpdates.length > 0) {
-						activeUpdatesGauge().add(-expiredLeaseUpdates.length);
+					const publishable = expiredLeaseUpdates.filter((update) => update.githubTarget);
+					if (publishable.length > 0) {
+						await tx
+							.insert(githubUpdateOutbox)
+							.values(
+								publishable.map((update) => ({
+									updateId: update.id,
+									phase: "terminal" as const,
+								})),
+							)
+							.onConflictDoNothing();
 					}
 
-					for (const stackId of affectedStackIds) {
-						await this.db
-							.update(stacks)
-							.set({ activeUpdateId: null, updatedAt: sql`now()` })
-							.where(and(eq(stacks.id, stackId), inArray(stacks.activeUpdateId, orphanIds)));
-					}
+					const affectedStackIds = [...new Set(allOrphans.map((update) => update.stackId))];
+					await tx
+						.update(stacks)
+						.set({ activeUpdateId: null, updatedAt: sql`now()` })
+						.where(
+							and(inArray(stacks.id, affectedStackIds), inArray(stacks.activeUpdateId, orphanIds)),
+						);
 				}
 
-				gcOrphansCleanedCount().add(orphanCount);
-			} finally {
-				// Always release the advisory lock
-				await this.db.execute(sql`SELECT pg_advisory_unlock(${GC_ADVISORY_LOCK_ID})`);
+				return {
+					orphanCount: allOrphans.length,
+					expiredRunningCount: expiredLeaseUpdates.length,
+				};
+			});
+
+			if (!result) return;
+			if (result.expiredRunningCount > 0) {
+				activeUpdatesGauge().add(-result.expiredRunningCount);
 			}
+			gcOrphansCleanedCount().add(result.orphanCount);
 		} catch (err) {
 			// GC is best-effort — log and retry on next interval. Never crash the server.
 			console.error("[gc] cycle failed:", err);

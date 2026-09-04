@@ -98,7 +98,6 @@ function mockUpdatesService(): UpdatesService {
 			tokenExpiration: Date.now() + 300_000,
 		}),
 		completeUpdate: async () => {},
-		getUpdateContext: async () => ({ stackId: "s-1", environment: {} }),
 		cancelUpdate: async () => {},
 		patchCheckpoint: async () => {},
 		patchCheckpointVerbatim: async () => {},

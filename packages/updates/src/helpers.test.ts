@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
 	BadRequestError,
+	type Caller,
 	InvalidUpdateTokenError,
 	JournalEntryBegin,
 	JournalEntryFailure,
@@ -34,6 +35,7 @@ import {
 } from "./helpers.js";
 import {
 	applyJournalEntries,
+	deriveGitHubUpdateTarget,
 	detectEventKind,
 	type JournalRow,
 	journalEntryValues,
@@ -739,7 +741,6 @@ describe("@procella/updates helpers", () => {
 				createUpdate: noop,
 				startUpdate: noop,
 				completeUpdate: noop,
-				getUpdateContext: noop,
 				cancelUpdate: noop,
 				patchCheckpoint: noop,
 				patchCheckpointVerbatim: noop,
@@ -759,7 +760,7 @@ describe("@procella/updates helpers", () => {
 				verifyLeaseToken: noop,
 				verifyUpdateOwnership: noop,
 			};
-			expect(Object.keys(mock)).toHaveLength(22);
+			expect(Object.keys(mock)).toHaveLength(21);
 		});
 	});
 
@@ -946,26 +947,92 @@ describe("@procella/updates helpers", () => {
 		});
 	});
 
-	describe("getUpdateContext", () => {
-		test("returns the persisted environment and stack ID", async () => {
-			const environment = {
-				"vcs.owner": "octocat",
-				"ci.pr.number": "42",
-			};
-			const selectChain = {
-				from: () => selectChain,
-				where: () => Promise.resolve([{ stackId: "stack-1", environment }]),
-			};
-			const db = { select: () => selectChain } as never;
-			const svc = new PostgresUpdatesService({
-				db,
-				storage: {} as never,
-				crypto: {} as never,
+	describe("deriveGitHubUpdateTarget", () => {
+		const caller: Caller = {
+			tenantId: "tenant-1",
+			orgSlug: "acme",
+			userId: "user-1",
+			login: "octocat",
+			roles: [],
+			principalType: "user",
+		};
+		const stack = {
+			tenantId: "tenant-1",
+			project: "infra",
+			stack: "dev",
+			tags: { "vcs:owner": "octocat", "vcs:repo": "hello-world" },
+		};
+		const environment = {
+			"vcs.owner": "octocat",
+			"vcs.repo": "hello-world",
+			"ci.pr.number": "42",
+			"ci.pr.headSHA": "abc123",
+		};
+
+		test("returns immutable coordinates from matching update metadata", () => {
+			expect(deriveGitHubUpdateTarget({ caller, environment, stack })).toEqual({
+				tenantId: "tenant-1",
+				owner: "octocat",
+				repo: "hello-world",
+				prNumber: 42,
+				sha: "abc123",
+				org: "acme",
+				project: "infra",
+				stack: "dev",
 			});
+		});
 
-			const context = await svc.getUpdateContext("update-1");
+		test("rejects metadata for a different stack repository", () => {
+			expect(
+				deriveGitHubUpdateTarget({
+					caller,
+					environment: { ...environment, "vcs.repo": "other" },
+					stack,
+				}),
+			).toBeNull();
+		});
 
-			expect(context).toEqual({ stackId: "stack-1", environment });
+		test("rejects a workload bound to another repository", () => {
+			expect(
+				deriveGitHubUpdateTarget({
+					caller: {
+						...caller,
+						principalType: "workload",
+						workload: {
+							provider: "github",
+							issuer: "https://token.actions.githubusercontent.com",
+							subject: "repo:attacker/other:ref:refs/heads/main",
+							repository: "attacker/other",
+						},
+					},
+					environment,
+					stack,
+				}),
+			).toBeNull();
+		});
+
+		test("ignores github stack tags as publication authority", () => {
+			expect(
+				deriveGitHubUpdateTarget({
+					caller,
+					environment: {
+						"vcs.owner": "attacker",
+						"vcs.repo": "other",
+						"ci.pr.number": "99",
+						"ci.pr.headSHA": "bad",
+					},
+					stack: {
+						...stack,
+						tags: {
+							...stack.tags,
+							"github:owner": "attacker",
+							"github:repo": "other",
+							"github:pr": "99",
+							"github:sha": "bad",
+						},
+					},
+				}),
+			).toBeNull();
 		});
 	});
 
