@@ -30,20 +30,17 @@ export function resolveGitHubAppSecretNames(environment: Environment) {
 		webhookSecret: environment[secretEnvironmentKeys.webhookSecret],
 	};
 	const enabled = environment[enabledEnvironmentKey];
-	if (enabled === "" || enabled === "false") {
+	if (enabled === undefined || enabled === "" || enabled === "false") {
 		return null;
 	}
-	if (enabled !== undefined && enabled !== "true") {
+	if (enabled !== "true") {
 		throw new Error("PROCELLA_GITHUB_APP_ENABLED must be true, false, or unset.");
 	}
 
 	if (!values.appId && !values.privateKey && !values.webhookSecret) {
-		if (enabled === "true") {
-			throw new Error(
-				"GitHub App integration requires the ProcellaGitHubAppId, ProcellaGitHubAppPrivateKey, and ProcellaGitHubAppWebhookSecret SST secrets together.",
-			);
-		}
-		return null;
+		throw new Error(
+			"GitHub App integration requires the ProcellaGitHubAppId, ProcellaGitHubAppPrivateKey, and ProcellaGitHubAppWebhookSecret SST secrets together.",
+		);
 	}
 	if (!values.appId || !values.privateKey || !values.webhookSecret) {
 		throw new Error(

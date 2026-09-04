@@ -13,10 +13,14 @@ const TEST_EC_PRIVATE_KEY = generateKeyPairSync("ec", {
 	.privateKey.export({ format: "pem", type: "pkcs8" })
 	.toString();
 
-const validSecrets = {
+const credentialValues = {
 	SST_SECRET_ProcellaGitHubAppId: "12345",
 	SST_SECRET_ProcellaGitHubAppPrivateKey: TEST_GITHUB_APP_PRIVATE_KEY,
 	SST_SECRET_ProcellaGitHubAppWebhookSecret: "webhook-secret",
+};
+const enabledSecrets = {
+	...credentialValues,
+	PROCELLA_GITHUB_APP_ENABLED: "true",
 };
 
 describe("GitHub App SST secrets", () => {
@@ -29,6 +33,10 @@ describe("GitHub App SST secrets", () => {
 				SST_SECRET_ProcellaGitHubAppWebhookSecret: "",
 			}),
 		).toBeNull();
+	});
+
+	test("does not infer opt-in from valid secret values", () => {
+		expect(resolveGitHubAppSecretNames(credentialValues)).toBeNull();
 	});
 
 	test("ignores retained client-ID-shaped values when the workflow opt-in is unset", () => {
@@ -48,8 +56,8 @@ describe("GitHub App SST secrets", () => {
 		).toBeNull();
 	});
 
-	test("links every secret when the integration is fully configured", () => {
-		expect(resolveGitHubAppSecretNames(validSecrets)).toEqual({
+	test("links every secret when the integration is explicitly enabled and valid", () => {
+		expect(resolveGitHubAppSecretNames(enabledSecrets)).toEqual({
 			appId: "ProcellaGitHubAppId",
 			privateKey: "ProcellaGitHubAppPrivateKey",
 			webhookSecret: "ProcellaGitHubAppWebhookSecret",
@@ -59,7 +67,7 @@ describe("GitHub App SST secrets", () => {
 	test("rejects partial credentials", () => {
 		expect(() =>
 			resolveGitHubAppSecretNames({
-				...validSecrets,
+				...enabledSecrets,
 				SST_SECRET_ProcellaGitHubAppWebhookSecret: "",
 			}),
 		).toThrow("requires the ProcellaGitHubAppId");
@@ -76,8 +84,7 @@ describe("GitHub App SST secrets", () => {
 	test("rejects retained client-ID-shaped values when the workflow enables them", () => {
 		expect(() =>
 			resolveGitHubAppSecretNames({
-				...validSecrets,
-				PROCELLA_GITHUB_APP_ENABLED: "true",
+				...enabledSecrets,
 				SST_SECRET_ProcellaGitHubAppId: "Iv1.0123456789abcdef",
 			}),
 		).toThrow("positive safe integer");
@@ -104,7 +111,7 @@ describe("GitHub App SST secrets", () => {
 		]) {
 			expect(() =>
 				resolveGitHubAppSecretNames({
-					...validSecrets,
+					...enabledSecrets,
 					SST_SECRET_ProcellaGitHubAppId: appId,
 				}),
 			).toThrow("positive safe integer");
@@ -115,7 +122,7 @@ describe("GitHub App SST secrets", () => {
 		for (const privateKey of ["   ", "not-a-key", "placeholder", TEST_EC_PRIVATE_KEY]) {
 			expect(() =>
 				resolveGitHubAppSecretNames({
-					...validSecrets,
+					...enabledSecrets,
 					SST_SECRET_ProcellaGitHubAppPrivateKey: privateKey,
 				}),
 			).toThrow("valid RSA private key");
@@ -125,7 +132,7 @@ describe("GitHub App SST secrets", () => {
 	test("rejects a whitespace-only webhook secret", () => {
 		expect(() =>
 			resolveGitHubAppSecretNames({
-				...validSecrets,
+				...enabledSecrets,
 				SST_SECRET_ProcellaGitHubAppWebhookSecret: " \t\n ",
 			}),
 		).toThrow("non-whitespace characters");
