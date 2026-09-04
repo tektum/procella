@@ -3,8 +3,8 @@ import { createAppAuth } from "@octokit/auth-app";
 import { Octokit } from "@octokit/rest";
 import type { Config } from "@procella/config";
 import type { Database } from "@procella/db";
-import { githubInstallations } from "@procella/db";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { githubInstallations, githubSetupStates } from "@procella/db";
+import { and, desc, eq, gt, lt, sql } from "drizzle-orm";
 import { errors as joseErrors, jwtVerify, SignJWT } from "jose";
 
 export interface GitHubInstallationData {
@@ -67,6 +67,7 @@ const GITHUB_SETUP_STATE_AUDIENCE = "procella:github-app-installation";
 export type GitHubSetupErrorCode =
 	| "invalid_state"
 	| "expired_state"
+	| "replayed_state"
 	| "installation_conflict"
 	| "invalid_installation";
 
@@ -77,9 +78,15 @@ export class GitHubSetupError extends Error {
 	}
 }
 
+export interface GitHubSetupStateClaims {
+	tenantId: string;
+	jti: string;
+	expiresAt: Date;
+}
+
 export interface GitHubSetupStateService {
-	issue(tenantId: string): Promise<string>;
-	verify(state: string): Promise<string>;
+	issue(tenantId: string): Promise<{ state: string; claims: GitHubSetupStateClaims }>;
+	verify(state: string): Promise<GitHubSetupStateClaims>;
 }
 
 export function createGitHubSetupStateService(
@@ -93,14 +100,17 @@ export function createGitHubSetupStateService(
 	return {
 		async issue(tenantId) {
 			const issuedAt = Math.floor(now().getTime() / 1000);
-			return new SignJWT({ tenantId })
+			const expiresAt = issuedAt + ttlSeconds;
+			const jti = randomUUID();
+			const state = await new SignJWT({ tenantId })
 				.setProtectedHeader({ alg: "HS256", typ: "JWT" })
 				.setIssuer(GITHUB_SETUP_STATE_ISSUER)
 				.setAudience(GITHUB_SETUP_STATE_AUDIENCE)
-				.setJti(randomUUID())
+				.setJti(jti)
 				.setIssuedAt(issuedAt)
-				.setExpirationTime(issuedAt + ttlSeconds)
+				.setExpirationTime(expiresAt)
 				.sign(secret);
+			return { state, claims: { tenantId, jti, expiresAt: new Date(expiresAt * 1000) } };
 		},
 		async verify(state) {
 			try {
@@ -110,10 +120,19 @@ export function createGitHubSetupStateService(
 					issuer: GITHUB_SETUP_STATE_ISSUER,
 					currentDate: now(),
 				});
-				if (typeof payload.tenantId !== "string" || payload.tenantId.length === 0) {
+				if (
+					typeof payload.tenantId !== "string" ||
+					payload.tenantId.length === 0 ||
+					typeof payload.jti !== "string" ||
+					!payload.exp
+				) {
 					throw new GitHubSetupError("invalid_state");
 				}
-				return payload.tenantId;
+				return {
+					tenantId: payload.tenantId,
+					jti: payload.jti,
+					expiresAt: new Date(payload.exp * 1000),
+				};
 			} catch (error) {
 				if (error instanceof GitHubSetupError) throw error;
 				if (error instanceof joseErrors.JWTExpired) {
@@ -265,8 +284,16 @@ export class OctokitGitHubService implements GitHubService {
 	}
 
 	async issueInstallationUrl(tenantId: string): Promise<string> {
+		const { state, claims } = await this.setupStates.issue(tenantId);
+		await this.db.delete(githubSetupStates).where(lt(githubSetupStates.expiresAt, sql`now()`));
+		await this.db.insert(githubSetupStates).values({
+			jti: claims.jti,
+			tenantId: claims.tenantId,
+			expiresAt: claims.expiresAt,
+		});
+
 		const url = new URL(`https://github.com/apps/${this.config.slug}/installations/new`);
-		url.searchParams.set("state", await this.setupStates.issue(tenantId));
+		url.searchParams.set("state", state);
 		return url.toString();
 	}
 
@@ -274,9 +301,24 @@ export class OctokitGitHubService implements GitHubService {
 		state: string,
 		installationId: number,
 	): Promise<GitHubInstallationInfo> {
-		const tenantId = await this.setupStates.verify(state);
+		const claims = await this.setupStates.verify(state);
 		const installation = await this.loadInstallation(installationId);
-		return this.saveInstallation(tenantId, installation);
+
+		return this.db.transaction(async (tx) => {
+			const [consumed] = await tx
+				.delete(githubSetupStates)
+				.where(
+					and(
+						eq(githubSetupStates.jti, claims.jti),
+						eq(githubSetupStates.tenantId, claims.tenantId),
+						gt(githubSetupStates.expiresAt, sql`now()`),
+					),
+				)
+				.returning({ jti: githubSetupStates.jti });
+			if (!consumed) throw new GitHubSetupError("replayed_state");
+
+			return this.saveInstallation(claims.tenantId, installation, tx as Database);
+		});
 	}
 
 	async handleWebhookEvent(event: string, payload: unknown): Promise<void> {
@@ -392,8 +434,9 @@ export class OctokitGitHubService implements GitHubService {
 	private async saveInstallation(
 		tenantId: string,
 		installation: GitHubInstallationData,
+		database: Database = this.db,
 	): Promise<GitHubInstallationInfo> {
-		const [row] = await this.db
+		const [row] = await database
 			.insert(githubInstallations)
 			.values({ tenantId, ...installation })
 			.onConflictDoUpdate({

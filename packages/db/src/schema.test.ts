@@ -3,6 +3,7 @@ import { getTableColumns, getTableName } from "drizzle-orm";
 import {
 	checkpoints,
 	githubInstallations,
+	githubSetupStates,
 	oidcTrustPolicies,
 	projects,
 	stacks,
@@ -145,6 +146,16 @@ describe("@procella/db schema", () => {
 		});
 	});
 
+	describe("github_setup_states table", () => {
+		test("stores tenant-bound one-time state", () => {
+			expect(getTableName(githubSetupStates)).toBe("github_setup_states");
+			const columns = getTableColumns(githubSetupStates);
+			expect(columns.jti.name).toBe("jti");
+			expect(columns.tenantId.name).toBe("tenant_id");
+			expect(columns.expiresAt.name).toBe("expires_at");
+		});
+	});
+
 	describe("oidc_trust_policies table", () => {
 		test("has tenant-scoped policy columns", () => {
 			const columns = getTableColumns(oidcTrustPolicies);
@@ -162,6 +173,7 @@ describe("@procella/db schema", () => {
 			expect(getTableName(checkpoints)).toBe("checkpoints");
 			expect(getTableName(updateEvents)).toBe("update_events");
 			expect(getTableName(githubInstallations)).toBe("github_installations");
+			expect(getTableName(githubSetupStates)).toBe("github_setup_states");
 			expect(getTableName(oidcTrustPolicies)).toBe("oidc_trust_policies");
 		});
 

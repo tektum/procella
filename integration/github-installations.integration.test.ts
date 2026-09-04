@@ -1,10 +1,7 @@
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import type { Octokit } from "@octokit/rest";
 import type { Database } from "@procella/db";
-import {
-	createGitHubSetupStateService,
-	OctokitGitHubService,
-} from "@procella/github";
+import { OctokitGitHubService } from "@procella/github";
 import { getTestDb, truncateTables } from "./setup.js";
 
 const config = {
@@ -69,9 +66,15 @@ function createService() {
 	return new OctokitGitHubService({ db, config, appClient });
 }
 
+async function issueState(service: OctokitGitHubService, tenantId: string): Promise<string> {
+	const url = new URL(await service.issueInstallationUrl(tenantId));
+	const state = url.searchParams.get("state");
+	if (!state) throw new Error("Installation URL did not include state");
+	return state;
+}
+
 async function bind(service: OctokitGitHubService, tenantId: string, installationId: number) {
-	const states = createGitHubSetupStateService(config.stateSigningKey);
-	return service.completeInstallation(await states.issue(tenantId), installationId);
+	return service.completeInstallation(await issueState(service, tenantId), installationId);
 }
 
 describe("GitHub installation binding integration", () => {
@@ -100,6 +103,23 @@ describe("GitHub installation binding integration", () => {
 		});
 		expect(await service.listInstallations("tenant-a")).toHaveLength(1);
 		expect(await service.listInstallations("tenant-b")).toHaveLength(0);
+	});
+
+	test("consumes setup state exactly once under concurrent callbacks", async () => {
+		const service = createService();
+		const state = await issueState(service, "tenant-a");
+		const results = await Promise.allSettled([
+			service.completeInstallation(state, 101),
+			service.completeInstallation(state, 101),
+		]);
+
+		expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+		const rejected = results.find((result) => result.status === "rejected");
+		expect(rejected).toMatchObject({
+			status: "rejected",
+			reason: { code: "replayed_state" },
+		});
+		expect(await service.listInstallations("tenant-a")).toHaveLength(1);
 	});
 
 	test("tenant-scoped removal cannot delete another tenant installation", async () => {

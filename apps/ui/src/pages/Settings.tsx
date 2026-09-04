@@ -292,6 +292,8 @@ function githubCallbackError(reason: string | null): string {
 	switch (reason) {
 		case "expired_state":
 			return "The GitHub setup link expired. Start the connection again.";
+		case "replayed_state":
+			return "This GitHub setup link was already used. Start the connection again.";
 		case "installation_conflict":
 			return "This GitHub installation is already connected to another tenant.";
 		case "invalid_installation":

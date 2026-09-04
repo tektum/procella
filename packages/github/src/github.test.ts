@@ -122,10 +122,14 @@ function readOnlyDb(rows: GitHubInstallationInfo[]): Database {
 }
 
 describe("GitHub setup state", () => {
-	test("round-trips the tenant through a signed installation URL", async () => {
+	test("persists and round-trips tenant-bound state in an installation URL", async () => {
 		const setupStates = createGitHubSetupStateService(testConfig.stateSigningKey);
+		const values = mock(async () => []);
 		const service = new OctokitGitHubService({
-			db: readOnlyDb([]),
+			db: {
+				delete: mock(() => ({ where: mock(async () => []) })),
+				insert: mock(() => ({ values })),
+			} as unknown as Database,
 			config: testConfig,
 			appClient: {} as Octokit,
 			setupStates,
@@ -134,12 +138,18 @@ describe("GitHub setup state", () => {
 		expect(url.origin + url.pathname).toBe(
 			"https://github.com/apps/procella-test/installations/new",
 		);
-		expect(await setupStates.verify(url.searchParams.get("state") ?? "")).toBe("tenant-a");
+		const claims = await setupStates.verify(url.searchParams.get("state") ?? "");
+		expect(claims.tenantId).toBe("tenant-a");
+		expect(values).toHaveBeenCalledWith({
+			jti: claims.jti,
+			tenantId: "tenant-a",
+			expiresAt: claims.expiresAt,
+		});
 	});
 
 	test("rejects tampered state", async () => {
 		const setupStates = createGitHubSetupStateService(testConfig.stateSigningKey);
-		const state = await setupStates.issue("tenant-a");
+		const { state } = await setupStates.issue("tenant-a");
 		const [header, payload, signature] = state.split(".");
 		const tamperedSignature = `${signature?.startsWith("A") ? "B" : "A"}${signature?.slice(1)}`;
 		const tampered = `${header}.${payload}.${tamperedSignature}`;
@@ -152,7 +162,7 @@ describe("GitHub setup state", () => {
 			now: () => now,
 			ttlSeconds: 60,
 		});
-		const state = await setupStates.issue("tenant-a");
+		const { state } = await setupStates.issue("tenant-a");
 		now = new Date("2026-01-01T00:01:01Z");
 		await expect(setupStates.verify(state)).rejects.toMatchObject({ code: "expired_state" });
 	});
@@ -160,10 +170,21 @@ describe("GitHub setup state", () => {
 
 describe("OctokitGitHubService installation binding", () => {
 	test("loads authoritative installation data from GitHub before persisting", async () => {
-		const returning = mock(async () => [installationRow]);
-		const onConflictDoUpdate = mock(() => ({ returning }));
+		const installationReturning = mock(async () => [installationRow]);
+		const onConflictDoUpdate = mock(() => ({ returning: installationReturning }));
 		const values = mock(() => ({ onConflictDoUpdate }));
-		const db = { insert: mock(() => ({ values })) } as unknown as Database;
+		const consumedReturning = mock(async () => [{ jti: "state-id" }]);
+		const tx = {
+			delete: mock(() => ({
+				where: mock(() => ({ returning: consumedReturning })),
+			})),
+			insert: mock(() => ({ values })),
+		} as unknown as Database;
+		const db = {
+			transaction: mock(async (callback: (transaction: Database) => Promise<unknown>) =>
+				callback(tx),
+			),
+		} as unknown as Database;
 		const request = mock(async () => ({
 			data: {
 				id: 101,
@@ -181,7 +202,8 @@ describe("OctokitGitHubService installation binding", () => {
 			setupStates,
 		});
 
-		const result = await service.completeInstallation(await setupStates.issue("tenant-a"), 101);
+		const { state } = await setupStates.issue("tenant-a");
+		const result = await service.completeInstallation(state, 101);
 		expect(result).toEqual(installationRow);
 		expect(request).toHaveBeenCalledWith("GET /app/installations/{installation_id}", {
 			installation_id: 101,
@@ -195,13 +217,53 @@ describe("OctokitGitHubService installation binding", () => {
 		});
 	});
 
-	test("rejects a forged installation id that GitHub does not recognize", async () => {
+	test("rejects concurrent reuse of a consumed setup state", async () => {
 		const insert = mock(() => {
+			throw new Error("must not persist");
+		});
+		const tx = {
+			delete: mock(() => ({
+				where: mock(() => ({ returning: mock(async () => []) })),
+			})),
+			insert,
+		} as unknown as Database;
+		const db = {
+			transaction: mock(async (callback: (transaction: Database) => Promise<unknown>) =>
+				callback(tx),
+			),
+		} as unknown as Database;
+		const setupStates = createGitHubSetupStateService(testConfig.stateSigningKey);
+		const service = new OctokitGitHubService({
+			db,
+			config: testConfig,
+			appClient: {
+				request: mock(async () => ({
+					data: {
+						id: 101,
+						app_id: 123,
+						account: { login: "acme" },
+						target_type: "Organization",
+						repository_selection: "all",
+					},
+				})),
+			} as unknown as Octokit,
+			setupStates,
+		});
+
+		const { state } = await setupStates.issue("tenant-a");
+		await expect(service.completeInstallation(state, 101)).rejects.toMatchObject({
+			code: "replayed_state",
+		});
+		expect(insert).not.toHaveBeenCalled();
+	});
+
+	test("rejects a forged installation id that GitHub does not recognize", async () => {
+		const transaction = mock(() => {
 			throw new Error("must not persist");
 		});
 		const setupStates = createGitHubSetupStateService(testConfig.stateSigningKey);
 		const service = new OctokitGitHubService({
-			db: { insert } as unknown as Database,
+			db: { transaction } as unknown as Database,
 			config: testConfig,
 			appClient: {
 				request: mock(async () => {
@@ -211,19 +273,18 @@ describe("OctokitGitHubService installation binding", () => {
 			setupStates,
 		});
 
-		await expect(
-			service.completeInstallation(await setupStates.issue("tenant-a"), 999),
-		).rejects.toBeInstanceOf(GitHubSetupError);
-		expect(insert).not.toHaveBeenCalled();
+		const { state } = await setupStates.issue("tenant-a");
+		await expect(service.completeInstallation(state, 999)).rejects.toBeInstanceOf(GitHubSetupError);
+		expect(transaction).not.toHaveBeenCalled();
 	});
 
 	test("rejects installation data for a different GitHub App", async () => {
-		const insert = mock(() => {
+		const transaction = mock(() => {
 			throw new Error("must not persist");
 		});
 		const setupStates = createGitHubSetupStateService(testConfig.stateSigningKey);
 		const service = new OctokitGitHubService({
-			db: { insert } as unknown as Database,
+			db: { transaction } as unknown as Database,
 			config: testConfig,
 			appClient: {
 				request: mock(async () => ({
@@ -239,10 +300,11 @@ describe("OctokitGitHubService installation binding", () => {
 			setupStates,
 		});
 
-		await expect(
-			service.completeInstallation(await setupStates.issue("tenant-a"), 999),
-		).rejects.toMatchObject({ code: "invalid_installation" });
-		expect(insert).not.toHaveBeenCalled();
+		const { state } = await setupStates.issue("tenant-a");
+		await expect(service.completeInstallation(state, 999)).rejects.toMatchObject({
+			code: "invalid_installation",
+		});
+		expect(transaction).not.toHaveBeenCalled();
 	});
 
 	test("unknown webhook installations cannot invent a tenant binding", async () => {
