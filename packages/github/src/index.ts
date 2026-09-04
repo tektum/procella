@@ -372,11 +372,6 @@ export class OctokitGitHubService implements GitHubService {
 		target: GitHubRepositoryTarget,
 	): Promise<GitHubInstallationInfo | null> {
 		const installations = await this.listInstallations(target.tenantId);
-		const owner = target.owner.toLowerCase();
-		const candidates = installations.filter(
-			(installation) => installation.accountLogin.toLowerCase() === owner,
-		);
-		if (candidates.length === 0) return null;
 
 		try {
 			const { data } = await this.appClient.request("GET /repos/{owner}/{repo}/installation", {
@@ -384,7 +379,7 @@ export class OctokitGitHubService implements GitHubService {
 				repo: target.repo,
 			});
 			if (!Number.isSafeInteger(data.id)) return null;
-			return candidates.find((installation) => installation.installationId === data.id) ?? null;
+			return installations.find((installation) => installation.installationId === data.id) ?? null;
 		} catch {
 			// The app-JWT endpoint is authoritative for repository selection. Any
 			// lookup failure denies access, including public repository metadata access.

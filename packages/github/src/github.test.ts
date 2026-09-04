@@ -334,7 +334,7 @@ describe("OctokitGitHubService installation binding", () => {
 });
 
 describe("OctokitGitHubService repository resolution", () => {
-	test("rejects an installation whose account does not own the target repository", async () => {
+	test("resolves a renamed account from the authoritative installation id", async () => {
 		const request = mock(async () => ({ data: { id: 101 } }));
 		const service = new OctokitGitHubService({
 			db: readOnlyDb([installationRow]),
@@ -343,9 +343,16 @@ describe("OctokitGitHubService repository resolution", () => {
 		});
 
 		expect(
-			await service.resolveInstallation({ tenantId: "tenant-a", owner: "other", repo: "infra" }),
-		).toBeNull();
-		expect(request).not.toHaveBeenCalled();
+			await service.resolveInstallation({
+				tenantId: "tenant-a",
+				owner: "renamed-acme",
+				repo: "infra",
+			}),
+		).toEqual(installationRow);
+		expect(request).toHaveBeenCalledWith("GET /repos/{owner}/{repo}/installation", {
+			owner: "renamed-acme",
+			repo: "infra",
+		});
 	});
 
 	test("rejects a public repository that is not selected for the installation", async () => {
