@@ -53,7 +53,9 @@ Go to **Settings** in the Procella dashboard, open the **OIDC** tab, and click *
 
 **Max expiration (seconds)** — The maximum lifetime of the exchange token Procella issues, in seconds. Default is `7200` (2 hours). The CLI can request a shorter duration with `--oidc-expiration`; it can't request longer than this cap.
 
-**Claim conditions** — One or more `key=value` pairs matched against the JWT claims. All conditions must match (AND semantics). Values are exact-match strings. Use these to lock the policy to a specific org, repo, or environment.
+**Claim conditions:** At least two `key=value` pairs matched against the JWT claims. All conditions must match (AND semantics), and values are exact-match strings. GitHub Actions policies must include a repository identity claim; use the stable `repository_owner_id` and `repository_id` pair shown below.
+
+Claims such as `ref`, `environment`, `workflow_ref`, `job_workflow_ref`, and `ref_protected` can further restrict an identified repository, but cannot authorize a repository by themselves.
 
 **Granted role** — The Procella role (`viewer`, `member`, or `admin`) the exchange token carries. Use the minimum role needed. Most deploy pipelines need `member`.
 
@@ -120,7 +122,7 @@ These are the most useful GitHub Actions claims for restricting trust policies.
 |---|---|---|
 | `repository_owner_id` | Stable numeric GitHub org or user ID | `"12345"` |
 | `repository_id` | Stable numeric repo ID | `"67890"` |
-| `repository` | `owner/repo` name (mutable — prefer IDs) | `"acme/infra"` |
+| `repository` | `owner/repo` name (mutable; prefer IDs) | `"acme/infra"` |
 | `environment` | GitHub Environment name | `"prod"` |
 | `workflow_ref` | Workflow file path and ref | `"acme/infra/.github/workflows/deploy.yml@refs/heads/main"` |
 | `ref` | Full Git ref | `"refs/heads/main"` |
@@ -129,7 +131,15 @@ These are the most useful GitHub Actions claims for restricting trust policies.
 
 Prefer `repository_owner_id` and `repository_id` over `repository`. The name field changes if someone renames the repo; the numeric IDs don't.
 
+Procella recognizes `repository_owner_id`, `repository_id`, `repository_owner`, `repository`, and a non-wildcard `sub` as GitHub repository identity claims. At least one of these must be present. Generic `iss`, `aud`, `ref`, or `environment` conditions do not satisfy the repository identity requirement.
+
 All claim values in conditions are strings, including numbers and booleans. Write `"true"` not `true`, and `"12345"` not `12345`.
+
+### Rolling upgrade safety
+
+Deploy the release that serializes trust-policy ownership checks to every Procella replica and drain all older replicas before applying a later migration that makes `(org_slug, issuer)` globally unique. Do not combine those steps in one rolling deployment: older replicas can still deactivate another tenant's policy, while a new replica alone cannot prevent an older replica from inserting a collision under the tenant-scoped index.
+
+If the later migration preflight finds duplicate `(org_slug, issuer)` pairs, stop and reconcile them before continuing. Procella denies token exchange whenever legacy or corrupted rows resolve the same pair to more than one tenant, including inactive rows.
 
 ## Token Expiration
 

@@ -91,14 +91,12 @@ describe("OidcExchangeService", () => {
 			};
 		});
 		const jwks: JwksValidator = { verify, dispose: mock(() => {}) };
-		const findByOrgSlug = mock(async () => [mockPolicy({ id: "p1" }), mockPolicy({ id: "p2" })]);
 		const findByOrgSlugAndIssuer = mock(async () => [
 			mockPolicy({ id: "p1" }),
 			mockPolicy({ id: "p2" }),
 		]);
 		const policies: TrustPolicyRepositoryMock = {
 			findByOrgSlugAndIssuer,
-			findByOrgSlug,
 			listByOrgSlug: mock(async () => []),
 			create: mock(async () => mockPolicy()),
 			update: mock(async () => mockPolicy()),
@@ -130,7 +128,6 @@ describe("OidcExchangeService", () => {
 			{ verify: mock(async () => ({})), dispose: mock(() => {}) },
 			{
 				findByOrgSlugAndIssuer: mock(async () => []),
-				findByOrgSlug: mock(async () => []),
 				listByOrgSlug: mock(async () => []),
 				create: mock(async () => mockPolicy()),
 				update: mock(async () => mockPolicy()),
@@ -149,7 +146,6 @@ describe("OidcExchangeService", () => {
 			{ verify: mock(async () => ({})), dispose: mock(() => {}) },
 			{
 				findByOrgSlugAndIssuer: mock(async () => []),
-				findByOrgSlug: mock(async () => []),
 				listByOrgSlug: mock(async () => []),
 				create: mock(async () => mockPolicy()),
 				update: mock(async () => mockPolicy()),
@@ -171,7 +167,6 @@ describe("OidcExchangeService", () => {
 			{ verify: mock(async () => ({})), dispose: mock(() => {}) },
 			{
 				findByOrgSlugAndIssuer: mock(async () => []),
-				findByOrgSlug: mock(async () => []),
 				listByOrgSlug: mock(async () => []),
 				create: mock(async () => mockPolicy()),
 				update: mock(async () => mockPolicy()),
@@ -195,7 +190,6 @@ describe("OidcExchangeService", () => {
 			{ verify: mock(async () => ({})), dispose: mock(() => {}) },
 			{
 				findByOrgSlugAndIssuer: mock(async () => []),
-				findByOrgSlug: mock(async () => []),
 				listByOrgSlug: mock(async () => []),
 				create: mock(async () => mockPolicy()),
 				update: mock(async () => mockPolicy()),
@@ -214,7 +208,6 @@ describe("OidcExchangeService", () => {
 			{ verify: mock(async () => ({})), dispose: mock(() => {}) },
 			{
 				findByOrgSlugAndIssuer: mock(async () => []),
-				findByOrgSlug: mock(async () => []),
 				listByOrgSlug: mock(async () => []),
 				create: mock(async () => mockPolicy()),
 				update: mock(async () => mockPolicy()),
@@ -241,7 +234,6 @@ describe("OidcExchangeService", () => {
 			},
 			{
 				findByOrgSlugAndIssuer: mock(async () => [mockPolicy()]),
-				findByOrgSlug: mock(async () => [mockPolicy()]),
 				listByOrgSlug: mock(async () => []),
 				create: mock(async () => mockPolicy()),
 				update: mock(async () => mockPolicy()),
@@ -256,23 +248,30 @@ describe("OidcExchangeService", () => {
 		});
 	});
 
-	test("rejects exchange when policies span multiple tenants", () => {
+	test("rejects legacy ambiguous policies before JWT verification", async () => {
+		const verify = mock(async () => ({}));
+		const createCliAccessKey = mock(async () => "unexpected-token");
 		const service = new OidcExchangeService(
-			{ verify: mock(async () => ({})), dispose: mock(() => {}) },
+			{ verify, dispose: mock(() => {}) },
 			{
 				findByOrgSlugAndIssuer: mock(async () => [
-					mockPolicy({ tenantId: "tenant-1" }),
-					mockPolicy({ tenantId: "tenant-2" }),
+					mockPolicy({ tenantId: "tenant-1", active: false }),
+					mockPolicy({ tenantId: "tenant-2", active: true }),
 				]),
-				findByOrgSlug: mock(async () => []),
 				listByOrgSlug: mock(async () => []),
 				create: mock(async () => mockPolicy()),
 				update: mock(async () => mockPolicy()),
 				delete: mock(async () => {}),
 			} as TrustPolicyRepositoryMock,
-			makeAuth(),
+			makeAuth(createCliAccessKey),
 		);
-		return expect(service.exchange(validRequest())).rejects.toThrow("Token exchange not available");
+
+		await expectExchangeError(service.exchange(validRequest()), {
+			error: "access_denied",
+			statusCode: 403,
+		});
+		expect(verify).not.toHaveBeenCalled();
+		expect(createCliAccessKey).not.toHaveBeenCalled();
 	});
 
 	test("rejects if subject_token has no parseable iss claim", () => {
@@ -280,7 +279,6 @@ describe("OidcExchangeService", () => {
 			{ verify: mock(async () => ({})), dispose: mock(() => {}) },
 			{
 				findByOrgSlugAndIssuer: mock(async () => []),
-				findByOrgSlug: mock(async () => []),
 				listByOrgSlug: mock(async () => []),
 				create: mock(async () => mockPolicy()),
 				update: mock(async () => mockPolicy()),
@@ -306,7 +304,6 @@ describe("OidcExchangeService", () => {
 					mockPolicy({ id: "p1" }),
 					mockPolicy({ id: "p2" }),
 				]),
-				findByOrgSlug: mock(async () => [mockPolicy({ id: "p1" }), mockPolicy({ id: "p2" })]),
 				listByOrgSlug: mock(async () => []),
 				create: mock(async () => mockPolicy()),
 				update: mock(async () => mockPolicy()),
@@ -338,7 +335,6 @@ describe("OidcExchangeService", () => {
 			},
 			{
 				findByOrgSlugAndIssuer: mock(async () => [mockPolicy({ maxExpiration: 900 })]),
-				findByOrgSlug: mock(async () => [mockPolicy({ maxExpiration: 900 })]),
 				listByOrgSlug: mock(async () => []),
 				create: mock(async () => mockPolicy()),
 				update: mock(async () => mockPolicy()),
@@ -369,7 +365,6 @@ describe("OidcExchangeService", () => {
 			},
 			{
 				findByOrgSlugAndIssuer: mock(async () => [mockPolicy({ maxExpiration: 99999 })]),
-				findByOrgSlug: mock(async () => [mockPolicy({ maxExpiration: 99999 })]),
 				listByOrgSlug: mock(async () => []),
 				create: mock(async () => mockPolicy()),
 				update: mock(async () => mockPolicy()),
@@ -392,7 +387,6 @@ describe("OidcExchangeService", () => {
 			},
 			{
 				findByOrgSlugAndIssuer: mock(async () => [mockPolicy()]),
-				findByOrgSlug: mock(async () => [mockPolicy()]),
 				listByOrgSlug: mock(async () => []),
 				create: mock(async () => mockPolicy()),
 				update: mock(async () => mockPolicy()),
@@ -440,7 +434,6 @@ describe("OidcExchangeService", () => {
 			},
 			{
 				findByOrgSlugAndIssuer: mock(async () => [mockPolicy()]),
-				findByOrgSlug: mock(async () => [mockPolicy()]),
 				listByOrgSlug: mock(async () => []),
 				create: mock(async () => mockPolicy()),
 				update: mock(async () => mockPolicy()),
@@ -492,7 +485,6 @@ describe("OidcExchangeService", () => {
 			},
 			{
 				findByOrgSlugAndIssuer: mock(async () => [mockPolicy()]),
-				findByOrgSlug: mock(async () => [mockPolicy()]),
 				listByOrgSlug: mock(async () => []),
 				create: mock(async () => mockPolicy()),
 				update: mock(async () => mockPolicy()),

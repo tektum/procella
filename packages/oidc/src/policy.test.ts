@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Role } from "@procella/types";
-import { findMatchingPolicy, matchPolicy } from "./policy.js";
+import { findMatchingPolicy, matchPolicy, validateTrustPolicyClaimConditions } from "./policy.js";
 import type { OidcTrustPolicy } from "./types.js";
 
 function makePolicy(
@@ -23,6 +23,73 @@ function makePolicy(
 		...overrides,
 	};
 }
+
+describe("validateTrustPolicyClaimConditions", () => {
+	test("accepts the recommended stable GitHub repository identity pair", () => {
+		expect(() =>
+			validateTrustPolicyClaimConditions({
+				provider: "github-actions",
+				issuer: "https://token.actions.githubusercontent.com",
+				claimConditions: {
+					repository_owner_id: "12345",
+					repository_id: "67890",
+				},
+			}),
+		).not.toThrow();
+	});
+
+	for (const [claim, value] of [
+		["repository_owner_id", "12345"],
+		["repository_id", "67890"],
+		["repository_owner", "acme"],
+		["repository", "acme/procella"],
+		["sub", "repo:acme/procella:ref:refs/heads/main"],
+	] as const) {
+		test(`accepts GitHub ${claim} as narrowing`, () => {
+			expect(() =>
+				validateTrustPolicyClaimConditions({
+					provider: "github-actions",
+					issuer: "https://token.actions.githubusercontent.com",
+					claimConditions: {
+						iss: "https://token.actions.githubusercontent.com",
+						[claim]: value,
+					},
+				}),
+			).not.toThrow();
+		});
+	}
+
+	const broadClaimConditions: Record<string, string>[] = [
+		{ iss: "https://token.actions.githubusercontent.com", ref: "refs/heads/main" },
+		{ iss: "https://token.actions.githubusercontent.com", aud: "urn:pulumi:org:acme" },
+		{ iss: "https://token.actions.githubusercontent.com", environment: "production" },
+		{ ref: "refs/heads/main", environment: "production" },
+	];
+	for (const claimConditions of broadClaimConditions) {
+		test(`rejects broad GitHub claims ${Object.keys(claimConditions).join("+")}`, () => {
+			expect(() =>
+				validateTrustPolicyClaimConditions({
+					provider: "github-actions",
+					issuer: "https://token.actions.githubusercontent.com",
+					claimConditions,
+				}),
+			).toThrow("must include a GitHub repository identity claim");
+		});
+	}
+
+	test("preserves non-GitHub audience narrowing", () => {
+		expect(() =>
+			validateTrustPolicyClaimConditions({
+				provider: "generic",
+				issuer: "https://issuer.example.com",
+				claimConditions: {
+					iss: "https://issuer.example.com",
+					aud: "procella",
+				},
+			}),
+		).not.toThrow();
+	});
+});
 
 describe("matchPolicy", () => {
 	test("all conditions match", () => {

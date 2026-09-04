@@ -1,3 +1,4 @@
+import { resolveMigrationCommandDirectory } from "../scripts/invoke-migration-lambda";
 import { database, databaseUrl, vpc } from "./database";
 import { escEvaluator } from "./esc";
 import { router } from "./router";
@@ -94,10 +95,11 @@ export const migrateFn = new sst.aws.Function("ProcellaMigrate", {
 	},
 });
 if (!$dev) {
-	const migrateCmd = $interpolate`aws lambda invoke --region ${migrateFn.nodes.function.region} --function-name ${migrateFn.name} --payload '{}' --cli-binary-format raw-in-base64-out --cli-read-timeout 360 /tmp/migrate-out-${stage}.json && cat /tmp/migrate-out-${stage}.json`;
+	const migrateCmd = $interpolate`bun run scripts/invoke-migration-lambda.ts ${migrateFn.nodes.function.region} ${migrateFn.name}`;
 	new command.local.Command("ProcellaMigrateRun", {
 		create: migrateCmd,
 		update: migrateCmd,
+		dir: resolveMigrationCommandDirectory(process.env),
 		triggers: [Date.now().toString()],
 	});
 }

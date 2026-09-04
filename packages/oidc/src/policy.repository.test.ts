@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, mock, test } from "bun:test";
 import type { Database } from "@procella/db";
 import { Role } from "@procella/types";
 import { PostgresTrustPolicyRepository } from "./policy.js";
-import type { OidcTrustPolicy } from "./types.js";
 
 type PolicyRow = {
 	id: string;
@@ -103,11 +102,17 @@ function createMockDb(options?: {
 		return { where: mockDeleteWhere };
 	});
 
+	const mockExecute = mock(() => {
+		calls.push({ method: "execute" });
+		return Promise.resolve([]);
+	});
+
 	const mockDb = {
 		select: mockSelect,
 		insert: mockInsert,
 		update: mockUpdate,
 		delete: mockDelete,
+		execute: mockExecute,
 		transaction: mock((callback: (tx: unknown) => unknown) => callback(mockDb)),
 	};
 
@@ -128,8 +133,9 @@ describe("PostgresTrustPolicyRepository", () => {
 		mockRow = makeRow();
 	});
 
-	test("findByOrgSlugAndIssuer returns mapped active policies", async () => {
-		const { db } = createMockDb({ selectRows: [mockRow] });
+	test("findByOrgSlugAndIssuer returns active and inactive ownership rows", async () => {
+		const rows = [mockRow, makeRow({ id: "policy-2", tenantId: "tenant-2", active: false })];
+		const { db } = createMockDb({ selectRows: rows });
 		const repo = new PostgresTrustPolicyRepository(db);
 
 		const result = await repo.findByOrgSlugAndIssuer(
@@ -137,66 +143,28 @@ describe("PostgresTrustPolicyRepository", () => {
 			"https://token.actions.githubusercontent.com",
 		);
 
-		expect(result).toEqual<OidcTrustPolicy[]>([
-			{
-				id: "policy-1",
-				tenantId: "tenant-1",
-				orgSlug: "acme",
-				provider: "github-actions",
-				displayName: "Test Policy",
-				issuer: "https://token.actions.githubusercontent.com",
-				maxExpiration: 3600,
-				claimConditions: {
-					iss: "https://token.actions.githubusercontent.com",
-					repository: "acme/procella",
-				},
-				grantedRole: Role.Member,
-				active: true,
-				createdAt: new Date("2026-01-01T00:00:00.000Z"),
-				updatedAt: new Date("2026-01-01T00:00:00.000Z"),
-			},
+		expect(result.map((policy) => [policy.id, policy.tenantId, policy.active])).toEqual([
+			["policy-1", "tenant-1", true],
+			["policy-2", "tenant-2", false],
 		]);
 	});
 
-	test("findByOrgSlug works with and without tenantId", async () => {
-		const rows = [mockRow];
-		const withTenant = createMockDb({ selectRows: rows });
-		const withoutTenant = createMockDb({ selectRows: rows });
-
-		const withTenantRepo = new PostgresTrustPolicyRepository(withTenant.db);
-		const withoutTenantRepo = new PostgresTrustPolicyRepository(withoutTenant.db);
-
-		const withTenantResult = await withTenantRepo.findByOrgSlug("acme", "tenant-1");
-		const withoutTenantResult = await withoutTenantRepo.findByOrgSlug("acme");
-
-		expect(withTenantResult).toHaveLength(1);
-		expect(withoutTenantResult).toHaveLength(1);
-		expect(withTenant.mockSelectWhere).toHaveBeenCalledTimes(1);
-		expect(withoutTenant.mockSelectWhere).toHaveBeenCalledTimes(1);
-	});
-
-	test("listByOrgSlug works with and without tenantId and returns active+inactive", async () => {
+	test("listByOrgSlug requires tenant scope and returns active and inactive policies", async () => {
 		const rows = [
 			mockRow,
 			makeRow({ id: "policy-2", active: false, displayName: "Inactive Policy" }),
 		];
-		const withTenant = createMockDb({ selectRows: rows });
-		const withoutTenant = createMockDb({ selectRows: rows });
+		const { db, mockSelectWhere } = createMockDb({ selectRows: rows });
+		const repo = new PostgresTrustPolicyRepository(db);
 
-		const withTenantRepo = new PostgresTrustPolicyRepository(withTenant.db);
-		const withoutTenantRepo = new PostgresTrustPolicyRepository(withoutTenant.db);
+		const result = await repo.listByOrgSlug("acme", "tenant-1");
 
-		const withTenantResult = await withTenantRepo.listByOrgSlug("acme", "tenant-1");
-		const withoutTenantResult = await withoutTenantRepo.listByOrgSlug("acme");
-
-		expect(withTenantResult).toHaveLength(2);
-		expect(withoutTenantResult).toHaveLength(2);
-		expect(withTenantResult.map((p) => p.active)).toEqual([true, false]);
-		expect(withTenant.mockSelectWhere).toHaveBeenCalledTimes(1);
-		expect(withoutTenant.mockSelectWhere).toHaveBeenCalledTimes(1);
+		expect(result).toHaveLength(2);
+		expect(result.map((policy) => policy.active)).toEqual([true, false]);
+		expect(mockSelectWhere).toHaveBeenCalledTimes(1);
 	});
 
-	test("create retires stale active policies for the same org and issuer in other tenants", async () => {
+	test("create locks and checks ownership before inserting without updates", async () => {
 		const { db, calls } = createMockDb({ insertRows: [mockRow] });
 		const repo = new PostgresTrustPolicyRepository(db);
 
@@ -208,8 +176,8 @@ describe("PostgresTrustPolicyRepository", () => {
 			issuer: "https://token.actions.githubusercontent.com",
 			maxExpiration: 3600,
 			claimConditions: {
-				iss: "https://token.actions.githubusercontent.com",
-				repository: "acme/procella",
+				repository_owner_id: "12345",
+				repository_id: "67890",
 			},
 			grantedRole: Role.Member,
 			active: true,
@@ -217,14 +185,13 @@ describe("PostgresTrustPolicyRepository", () => {
 
 		expect(result.id).toBe("policy-1");
 		expect(calls.some((call) => call.method === "insert.returning")).toBe(true);
-		expect(calls.some((call) => call.method === "update.set")).toBe(true);
-		expect(calls).toContainEqual({
-			method: "update.set",
-			args: { active: false, updatedAt: expect.any(Date) },
-		});
+		expect(calls.some((call) => call.method.startsWith("update"))).toBe(false);
+		expect(calls.findIndex((call) => call.method === "execute")).toBeLessThan(
+			calls.findIndex((call) => call.method === "insert"),
+		);
 	});
 
-	test("create retires stale policies even when same-tenant policy already exists", async () => {
+	test("same-tenant issuer conflict does not mutate existing policies", async () => {
 		const { db, calls } = createMockDb({
 			insertError: Object.assign(new Error("duplicate key value violates unique constraint"), {
 				code: "23505",
@@ -238,33 +205,25 @@ describe("PostgresTrustPolicyRepository", () => {
 				tenantId: "tenant-1",
 				orgSlug: "acme",
 				provider: "github-actions",
-				displayName: "Test Policy",
+				displayName: "Second Policy",
 				issuer: "https://token.actions.githubusercontent.com",
 				maxExpiration: 3600,
 				claimConditions: {
-					iss: "https://token.actions.githubusercontent.com",
-					repository: "acme/procella",
+					repository_owner_id: "12345",
+					repository_id: "67890",
 				},
 				grantedRole: Role.Member,
 				active: true,
 			}),
 		).rejects.toMatchObject({ code: "policy_conflict" });
-		expect(calls).toContainEqual({
-			method: "update.set",
-			args: { active: false, updatedAt: expect.any(Date) },
-		});
+		expect(calls.some((call) => call.method.startsWith("update"))).toBe(false);
 	});
 
-	test("create surfaces policy_conflict on unique constraint violation", () => {
-		const { db } = createMockDb({
-			insertError: Object.assign(new Error("duplicate key value violates unique constraint"), {
-				code: "23505",
-				constraint: "idx_oidc_trust_org_issuer",
-			}),
-		});
+	test("cross-tenant issuer conflict is generic and does not mutate existing policies", async () => {
+		const { db, calls } = createMockDb({ selectRows: [mockRow] });
 		const repo = new PostgresTrustPolicyRepository(db);
 
-		return expect(
+		await expect(
 			repo.create({
 				tenantId: "tenant-2",
 				orgSlug: "acme",
@@ -273,8 +232,8 @@ describe("PostgresTrustPolicyRepository", () => {
 				issuer: "https://token.actions.githubusercontent.com",
 				maxExpiration: 3600,
 				claimConditions: {
-					iss: "https://token.actions.githubusercontent.com",
-					repository_owner: "myorg",
+					repository_owner_id: "98765",
+					repository_id: "43210",
 				},
 				grantedRole: Role.Member,
 				active: true,
@@ -283,6 +242,8 @@ describe("PostgresTrustPolicyRepository", () => {
 			code: "policy_conflict",
 			message: "OIDC trust policy with this org/issuer pair already exists",
 		});
+		expect(calls.some((call) => call.method.startsWith("update"))).toBe(false);
+		expect(calls.some((call) => call.method.startsWith("insert"))).toBe(false);
 	});
 
 	test("create surfaces policy_display_name_conflict when the displayName unique index fires (PR #149 review — distinct error per constraint)", () => {

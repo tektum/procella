@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { getTableColumns, getTableName } from "drizzle-orm";
+import { getTableConfig } from "drizzle-orm/pg-core";
 import {
 	checkpoints,
 	githubInstallations,
@@ -162,6 +163,17 @@ describe("@procella/db schema", () => {
 			expect(columns.tenantId.name).toBe("tenant_id");
 			expect(columns.orgSlug.name).toBe("org_slug");
 			expect(columns.issuer.name).toBe("issuer");
+		});
+
+		test("retains tenant-scoped issuer uniqueness for phase A rollout", () => {
+			const index = getTableConfig(oidcTrustPolicies).indexes.find(
+				(candidate) => candidate.config.name === "idx_oidc_trust_org_issuer",
+			);
+
+			expect(index?.config.unique).toBe(true);
+			expect(
+				index?.config.columns.map((column) => ("name" in column ? column.name : undefined)),
+			).toEqual(["tenant_id", "org_slug", "issuer"]);
 		});
 	});
 

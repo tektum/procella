@@ -19,7 +19,7 @@
 //
 // Auto-skipped when required env vars are absent (local dev, fork PRs).
 
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test";
 import DescopeClient from "@descope/node-sdk";
 import { cleanupDir, createPulumiHome, pulumi } from "./helpers.js";
 
@@ -111,17 +111,187 @@ async function trpcMutation(procedure: string, input: unknown, token: string): P
 	return json[0]?.result?.data?.json;
 }
 
-async function trpcCookieQuery(procedure: string, cookieHeader: string): Promise<unknown> {
+async function trpcQuery(procedure: string, headers: Record<string, string>): Promise<unknown> {
 	const url = `${APP_URL}/trpc/${procedure}?batch=1&input=${encodeURIComponent(
 		JSON.stringify({ 0: { json: null, meta: { values: ["undefined"], v: 1 } } }),
 	)}`;
-	const res = await fetch(url, { headers: { Cookie: cookieHeader } });
+	const res = await fetch(url, { headers });
 	if (!res.ok) {
-		throw new Error(`cookie tRPC ${procedure} failed (${res.status}): ${await res.text()}`);
+		throw new Error(`tRPC ${procedure} failed (${res.status}): ${await res.text()}`);
 	}
 	const json = (await res.json()) as { result?: { data?: { json?: unknown } } }[];
 	return json[0]?.result?.data?.json;
 }
+
+interface DesiredOidcPolicy {
+	provider: "github-actions";
+	displayName: string;
+	issuer: string;
+	maxExpiration: number;
+	claimConditions: Record<string, string>;
+	grantedRole: "viewer" | "member" | "admin";
+}
+
+interface OidcPolicyUpdate extends Omit<DesiredOidcPolicy, "provider" | "issuer"> {
+	id: string;
+	active: boolean;
+}
+
+interface OidcPolicyAdmin {
+	list(): Promise<unknown>;
+	create(policy: DesiredOidcPolicy): Promise<unknown>;
+	update(policy: OidcPolicyUpdate): Promise<unknown>;
+}
+
+function findExistingPolicyId(policies: unknown, issuer: string): string | undefined {
+	if (!Array.isArray(policies)) {
+		throw new Error("oidc.listPolicies returned an invalid response");
+	}
+
+	const matches: string[] = [];
+	for (const candidate of policies) {
+		if (
+			typeof candidate === "object" &&
+			candidate !== null &&
+			"issuer" in candidate &&
+			candidate.issuer === issuer &&
+			"id" in candidate &&
+			typeof candidate.id === "string"
+		) {
+			matches.push(candidate.id);
+		}
+	}
+	if (matches.length > 1) {
+		throw new Error(`Multiple OIDC policies use issuer ${issuer}: ${matches.join(", ")}`);
+	}
+	return matches[0];
+}
+
+async function reconcileOidcPolicy(
+	admin: OidcPolicyAdmin,
+	desired: DesiredOidcPolicy,
+): Promise<"created" | "updated"> {
+	let existingPolicyId = findExistingPolicyId(await admin.list(), desired.issuer);
+	if (!existingPolicyId) {
+		try {
+			await admin.create(desired);
+			return "created";
+		} catch (error) {
+			const isOwnershipConflict =
+				error instanceof Error &&
+				error.message.includes("(409)") &&
+				error.message.includes("OIDC trust policy with this org/issuer pair already exists");
+			if (!isOwnershipConflict) throw error;
+
+			existingPolicyId = findExistingPolicyId(await admin.list(), desired.issuer);
+			if (!existingPolicyId) throw error;
+		}
+	}
+
+	await admin.update({
+		id: existingPolicyId,
+		displayName: desired.displayName,
+		maxExpiration: desired.maxExpiration,
+		claimConditions: desired.claimConditions,
+		grantedRole: desired.grantedRole,
+		active: true,
+	});
+	return "updated";
+}
+
+const testOidcPolicy: DesiredOidcPolicy = {
+	provider: "github-actions",
+	displayName: "E2E GitHub OIDC",
+	issuer: "https://token.actions.githubusercontent.com",
+	maxExpiration: 600,
+	claimConditions: { repository_owner_id: "12345", repository_id: "67890" },
+	grantedRole: "member",
+};
+
+describe("OIDC policy reconciliation", () => {
+	test("updates the tenant-listed policy with the configured issuer", async () => {
+		const create = mock(async () => undefined);
+		const update = mock(async () => undefined);
+		const result = await reconcileOidcPolicy(
+			{
+				list: mock(async () => [
+					{ id: "other", issuer: "https://issuer.example.com" },
+					{ id: "github", issuer: testOidcPolicy.issuer, active: false },
+				]),
+				create,
+				update,
+			},
+			testOidcPolicy,
+		);
+
+		expect(result).toBe("updated");
+		expect(create).not.toHaveBeenCalled();
+		expect(update).toHaveBeenCalledWith({
+			id: "github",
+			displayName: testOidcPolicy.displayName,
+			maxExpiration: testOidcPolicy.maxExpiration,
+			claimConditions: testOidcPolicy.claimConditions,
+			grantedRole: testOidcPolicy.grantedRole,
+			active: true,
+		});
+	});
+
+	test("re-lists and updates after a concurrent ownership conflict", async () => {
+		const list = mock(async () =>
+			list.mock.calls.length === 1 ? [] : [{ id: "winner", issuer: testOidcPolicy.issuer }],
+		);
+		const update = mock(async () => undefined);
+		const result = await reconcileOidcPolicy(
+			{
+				list,
+				create: mock(async () => {
+					throw new Error(
+						"tRPC oidc.createPolicy failed (409): OIDC trust policy with this org/issuer pair already exists",
+					);
+				}),
+				update,
+			},
+			testOidcPolicy,
+		);
+
+		expect(result).toBe("updated");
+		expect(list).toHaveBeenCalledTimes(2);
+		expect(update).toHaveBeenCalledTimes(1);
+	});
+
+	test("rejects ambiguous same-issuer policies before updating", async () => {
+		const update = mock(async () => undefined);
+		await expect(
+			reconcileOidcPolicy(
+				{
+					list: mock(async () => [
+						{ id: "first", issuer: testOidcPolicy.issuer, active: false },
+						{ id: "second", issuer: testOidcPolicy.issuer, active: true },
+					]),
+					create: mock(async () => undefined),
+					update,
+				},
+				testOidcPolicy,
+			),
+		).rejects.toThrow("Multiple OIDC policies use issuer");
+		expect(update).not.toHaveBeenCalled();
+	});
+
+	test("does not recover unrelated create conflicts", async () => {
+		await expect(
+			reconcileOidcPolicy(
+				{
+					list: mock(async () => []),
+					create: mock(async () => {
+						throw new Error("tRPC oidc.createPolicy failed (409): display name conflict");
+					}),
+					update: mock(async () => undefined),
+				},
+				testOidcPolicy,
+			),
+		).rejects.toThrow("display name conflict");
+	});
+});
 
 // ============================================================================
 // Tests
@@ -164,29 +334,13 @@ describe_descope("Descope auth (deployed preview)", () => {
 			managementKey: DESCOPE_MANAGEMENT_KEY,
 		});
 
-		// Use PROCELLA_E2E_ORG_SLUG if given, otherwise derive a STABLE tenant
+		// Use PROCELLA_E2E_ORG_SLUG if given, otherwise derive a stable tenant
 		// name from the deployed preview's stage. The Descope project's JWT
-		// template emits `tenant_name` as the human-friendly slug, and the
-		// server's `extractOrgSlug` slugifies it into `caller.orgSlug` — which
-		// for preview deployments resolves to the project name
-		// (`procella-pr-<PR>`) because Descope's `autoTenantClaim` emits the
-		// project's default tenant name, not the per-run tenant we attach the
-		// user to.
-		//
-		// Why stable (not per-run RUN_ID): the `oidc_trust_policies` table has
-		// a globally-unique `(orgSlug, issuer)` constraint, intentionally
-		// preventing cross-tenant collisions. If we minted a fresh ephemeral
-		// `e2e-${RUN_ID}` tenant per run, every `oidc.createPolicy` would race
-		// against the unique row left over by the previous run (whose
-		// `tenantId` is now orphaned). The exchange's `findByOrgSlugAndIssuer`
-		// would return that stale row, the JWT would verify against a policy
-		// owned by a deleted tenant, and the test would fail with a confusing
-		// `access_denied: Token exchange not available`.
-		//
-		// Pinning the tenant name to the project's stable orgSlug means
-		// `caller.tenantId` is stable across runs, the unique row IS the
-		// current run's row, and the 409-on-create path correctly degrades to
-		// "reuse the existing valid policy".
+		// template emits tenant_name as the human-friendly slug; the server
+		// slugifies it into caller.orgSlug. Preview deployments therefore use
+		// procella-pr-N as both their stable test tenant name and org slug.
+		// Stable ownership lets reruns reconcile the tenant's existing policy
+		// through tenant-scoped list and update operations.
 		// API_URL is `https://api.pr-NN.procella.cloud`. Extract the `pr-NN`
 		// segment as the stage; the Descope project name (and therefore the
 		// JWT-emitted `tenant_name` → slugified `orgSlug`) is `procella-${stage}`.
@@ -201,12 +355,8 @@ describe_descope("Descope auth (deployed preview)", () => {
 		if (existing?.id) {
 			tenantId = existing.id;
 		} else {
-			// Create the stable tenant. We do NOT mark `createdTenant = true`
-			// when we derived the name from the preview stage, because we want
-			// subsequent test runs to find and reuse this tenant — see the
-			// rationale on `tenantName` above for why per-run tenants corrupt
-			// the unique `(orgSlug, issuer)` index. Only an explicitly opt-in
-			// per-run tenant (legacy `e2e-${RUN_ID}` fallback) gets cleaned up.
+			// Keep the preview stage tenant for later test runs. Only the explicit
+			// per-run fallback tenant is removed during cleanup.
 			// create() signature: (name, selfProvisioningDomains[], ...)
 			const created = await sdk.management.tenant.create(tenantName, []);
 			const createdId = created.data?.id;
@@ -293,7 +443,7 @@ describe_descope("Descope auth (deployed preview)", () => {
 		expect(exchange.ok).toBe(true);
 		expect(exchange.data?.sessionJwt).toStartWith("eyJ");
 
-		const result = await trpcCookieQuery("stacks.list", `DS=${exchange.data?.sessionJwt}`);
+		const result = await trpcQuery("stacks.list", { Cookie: `DS=${exchange.data?.sessionJwt}` });
 		expect(result).toHaveProperty("stacks");
 	});
 
@@ -334,33 +484,31 @@ describe_descope("Descope auth (deployed preview)", () => {
 
 	describe_oidc("OIDC CI auth (real GitHub OIDC)", () => {
 		beforeAll(async () => {
-			try {
-				await trpcMutation(
-					"oidc.createPolicy",
-					{
-						provider: "github-actions",
-						displayName: `E2E GitHub OIDC (${RUN_ID})`,
-						issuer: "https://token.actions.githubusercontent.com",
-						maxExpiration: 600,
-						claimConditions: {
-							repository: process.env.GITHUB_REPOSITORY ?? "tektum/procella",
-							repository_owner:
-								(process.env.GITHUB_REPOSITORY ?? "tektum/procella").split("/")[0] || "tektum",
-						},
-						grantedRole: "member",
-					},
-					accessKey,
-				);
-			} catch (err) {
-				const message = err instanceof Error ? err.message : String(err);
-				const isAlreadyExistsConflict =
-					message.includes("(409)") &&
-					message.includes("OIDC trust policy with this org/issuer pair already exists");
-				if (!isAlreadyExistsConflict) throw err;
-				// 409 is fine — the stable-tenant strategy guarantees the existing
-				// row belongs to the current caller's tenant, so the exchange will
-				// resolve it correctly.
+			const repositoryOwnerId = process.env.GITHUB_REPOSITORY_OWNER_ID;
+			const repositoryId = process.env.GITHUB_REPOSITORY_ID;
+			if (!repositoryOwnerId || !repositoryId) {
+				throw new Error("GitHub repository numeric IDs are required for the OIDC E2E test");
 			}
+
+			const desired: DesiredOidcPolicy = {
+				provider: "github-actions",
+				displayName: `E2E GitHub OIDC (${RUN_ID})`,
+				issuer: "https://token.actions.githubusercontent.com",
+				maxExpiration: 600,
+				claimConditions: {
+					repository_owner_id: repositoryOwnerId,
+					repository_id: repositoryId,
+				},
+				grantedRole: "member",
+			};
+			await reconcileOidcPolicy(
+				{
+					list: () => trpcQuery("oidc.listPolicies", { Authorization: `token ${accessKey}` }),
+					create: (policy) => trpcMutation("oidc.createPolicy", policy, accessKey),
+					update: (policy) => trpcMutation("oidc.updatePolicy", policy, accessKey),
+				},
+				desired,
+			);
 		});
 
 		test("exchange real GitHub OIDC token", async () => {

@@ -79,6 +79,7 @@ export class OidcExchangeService implements OidcService {
 		let matchedPolicy: OidcTrustPolicy | null = null;
 
 		for (const policy of policies) {
+			if (!policy.active) continue;
 			try {
 				const verified = await this.jwks.verify(req.subjectToken, policy.issuer, req.audience);
 				if (findMatchingPolicy([policy], verified)) {

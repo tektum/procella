@@ -183,23 +183,18 @@ async function signDescopeJwt(
 }
 
 function createConflictDb(): Database {
-	// create() runs inside db.transaction(); the insert must reject with SQLSTATE 23505
-	// so the repository maps it to OidcPolicyConflictError (policy_conflict).
 	const conflictError = Object.assign(new Error("duplicate key value violates unique constraint"), {
 		code: "23505",
 		constraint: "idx_oidc_trust_org_issuer",
 	});
 	const db = {
+		execute: mock(async () => []),
+		select: mock(() => ({ from: mock(() => ({ where: mock(async () => []) })) })),
 		insert: mock(() => ({
 			values: mock(() => ({
 				returning: mock(() => Promise.reject(conflictError)),
 			})),
 		})),
-		select: mock(() => ({ from: mock(() => ({ where: mock(async () => []) })) })),
-		update: mock(() => ({
-			set: mock(() => ({ where: mock(() => ({ returning: mock(async () => []) })) })),
-		})),
-		delete: mock(() => ({ where: mock(async () => undefined) })),
 		transaction: mock(async (callback: (tx: unknown) => unknown) => callback(db)),
 	};
 	return db as unknown as Database;
