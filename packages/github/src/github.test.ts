@@ -1,7 +1,9 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { Octokit } from "@octokit/rest";
+import type { Config } from "@procella/config";
 import type { Database } from "@procella/db";
 import {
+	buildGitHubAppConfig,
 	buildPRCommentBody,
 	createGitHubSetupStateService,
 	type GitHubInstallationInfo,
@@ -95,7 +97,6 @@ describe("@procella/github", () => {
 
 const testConfig = {
 	appId: "123",
-	slug: "procella-test",
 	privateKey: "unused-in-tests",
 	webhookSecret: "webhook-secret",
 	stateSigningKey: "state-signing-key-state-signing-key",
@@ -122,8 +123,10 @@ function readOnlyDb(rows: GitHubInstallationInfo[]): Database {
 }
 
 describe("GitHub setup state", () => {
-	test("persists and round-trips tenant-bound state in an installation URL", async () => {
+	test("derives the current App slug from GitHub for every installation URL", async () => {
 		const setupStates = createGitHubSetupStateService(testConfig.stateSigningKey);
+		const slugs = ["procella-original", "procella-renamed"];
+		const request = mock(async () => ({ data: { id: 123, slug: slugs.shift() } }));
 		const values = mock(async () => []);
 		const service = new OctokitGitHubService({
 			db: {
@@ -131,19 +134,55 @@ describe("GitHub setup state", () => {
 				insert: mock(() => ({ values })),
 			} as unknown as Database,
 			config: testConfig,
-			appClient: {} as Octokit,
+			appClient: { request } as unknown as Octokit,
 			setupStates,
 		});
-		const url = new URL(await service.issueInstallationUrl("tenant-a"));
-		expect(url.origin + url.pathname).toBe(
-			"https://github.com/apps/procella-test/installations/new",
+
+		const first = new URL(await service.issueInstallationUrl("tenant-a"));
+		const second = new URL(await service.issueInstallationUrl("tenant-a"));
+		expect(first.origin + first.pathname).toBe(
+			"https://github.com/apps/procella-original/installations/new",
 		);
-		const claims = await setupStates.verify(url.searchParams.get("state") ?? "");
+		expect(second.origin + second.pathname).toBe(
+			"https://github.com/apps/procella-renamed/installations/new",
+		);
+		expect(request).toHaveBeenCalledTimes(2);
+		expect(request).toHaveBeenNthCalledWith(1, "GET /app");
+		expect(request).toHaveBeenNthCalledWith(2, "GET /app");
+		const claims = await setupStates.verify(second.searchParams.get("state") ?? "");
 		expect(claims.tenantId).toBe("tenant-a");
-		expect(values).toHaveBeenCalledWith({
-			jti: claims.jti,
-			tenantId: "tenant-a",
-			expiresAt: claims.expiresAt,
+	});
+
+	test("fails closed before persisting state when App discovery is invalid", async () => {
+		const deleteState = mock(() => ({ where: mock(async () => []) }));
+		const insertState = mock(() => ({ values: mock(async () => []) }));
+		const service = new OctokitGitHubService({
+			db: { delete: deleteState, insert: insertState } as unknown as Database,
+			config: testConfig,
+			appClient: {
+				request: mock(async () => ({ data: { id: 999, slug: "wrong-app" } })),
+			} as unknown as Octokit,
+		});
+
+		await expect(service.issueInstallationUrl("tenant-a")).rejects.toThrow(
+			"Unable to verify configured GitHub App",
+		);
+		expect(deleteState).not.toHaveBeenCalled();
+		expect(insertState).not.toHaveBeenCalled();
+	});
+
+	test("builds App configuration without a slug setting", () => {
+		const config = buildGitHubAppConfig({
+			githubAppId: "123",
+			githubAppPrivateKey: "private-key",
+			githubAppWebhookSecret: "webhook-secret",
+			ticketSigningKey: "state-signing-key-state-signing-key",
+		} as Config);
+		expect(config).toEqual({
+			appId: "123",
+			privateKey: "private-key",
+			webhookSecret: "webhook-secret",
+			stateSigningKey: "state-signing-key-state-signing-key",
 		});
 	});
 

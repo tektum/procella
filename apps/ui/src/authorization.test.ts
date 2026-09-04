@@ -210,7 +210,6 @@ describe("Settings authorization", () => {
 
 		let page = render(createElement(Settings));
 		expect(page.getByText("GitHub App is not configured")).toBeTruthy();
-		expect(page.getByText(/PROCELLA_GITHUB_APP_SLUG/)).toBeTruthy();
 		page.unmount();
 
 		githubStatusQuery = {

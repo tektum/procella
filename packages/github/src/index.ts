@@ -23,7 +23,6 @@ export interface GitHubInstallationInfo extends GitHubInstallationData {
 
 export interface GitHubAppConfig {
 	appId: string;
-	slug: string;
 	privateKey: string;
 	webhookSecret: string;
 	stateSigningKey: string;
@@ -147,7 +146,6 @@ export function createGitHubSetupStateService(
 export function buildGitHubAppConfig(config: Config): GitHubAppConfig | null {
 	if (
 		!config.githubAppId ||
-		!config.githubAppSlug ||
 		!config.githubAppPrivateKey ||
 		!config.githubAppWebhookSecret ||
 		!config.ticketSigningKey
@@ -157,7 +155,6 @@ export function buildGitHubAppConfig(config: Config): GitHubAppConfig | null {
 
 	return {
 		appId: config.githubAppId,
-		slug: config.githubAppSlug,
 		privateKey: config.githubAppPrivateKey,
 		webhookSecret: config.githubAppWebhookSecret,
 		stateSigningKey: config.ticketSigningKey,
@@ -284,6 +281,7 @@ export class OctokitGitHubService implements GitHubService {
 	}
 
 	async issueInstallationUrl(tenantId: string): Promise<string> {
+		const slug = await this.loadAppSlug();
 		const { state, claims } = await this.setupStates.issue(tenantId);
 		await this.db.delete(githubSetupStates).where(lt(githubSetupStates.expiresAt, sql`now()`));
 		await this.db.insert(githubSetupStates).values({
@@ -292,7 +290,7 @@ export class OctokitGitHubService implements GitHubService {
 			expiresAt: claims.expiresAt,
 		});
 
-		const url = new URL(`https://github.com/apps/${this.config.slug}/installations/new`);
+		const url = new URL(`https://github.com/apps/${slug}/installations/new`);
 		url.searchParams.set("state", state);
 		return url.toString();
 	}
@@ -495,6 +493,23 @@ export class OctokitGitHubService implements GitHubService {
 		} catch (error) {
 			if (error instanceof GitHubSetupError) throw error;
 			throw new GitHubSetupError("invalid_installation");
+		}
+	}
+
+	private async loadAppSlug(): Promise<string> {
+		try {
+			const { data } = await this.appClient.request("GET /app");
+			if (
+				!data ||
+				data.id !== Number(this.config.appId) ||
+				typeof data.slug !== "string" ||
+				!/^[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?$/.test(data.slug)
+			) {
+				throw new Error("GitHub App identity did not match configured credentials");
+			}
+			return data.slug;
+		} catch {
+			throw new Error("Unable to verify configured GitHub App");
 		}
 	}
 

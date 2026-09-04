@@ -314,7 +314,6 @@ function GitHubNotConfigured() {
 			</p>
 			<div className="bg-deep-sky border border-cloud/15 rounded-lg px-3 py-2.5 font-mono text-xs text-cloud overflow-x-auto whitespace-pre leading-relaxed">
 				{`PROCELLA_GITHUB_APP_ID=<your-app-id>
-PROCELLA_GITHUB_APP_SLUG=<your-app-slug>
 PROCELLA_GITHUB_APP_PRIVATE_KEY=<your-private-key>
 PROCELLA_GITHUB_APP_WEBHOOK_SECRET=<your-webhook-secret>`}
 			</div>
