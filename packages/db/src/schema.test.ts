@@ -185,7 +185,7 @@ describe("@procella/db schema", () => {
 			expect(columns.issuer.name).toBe("issuer");
 		});
 
-		test("retains tenant-scoped issuer uniqueness for phase A rollout", () => {
+		test("enforces global issuer ownership after the phase B rollout", () => {
 			const index = getTableConfig(oidcTrustPolicies).indexes.find(
 				(candidate) => candidate.config.name === "idx_oidc_trust_org_issuer",
 			);
@@ -193,7 +193,7 @@ describe("@procella/db schema", () => {
 			expect(index?.config.unique).toBe(true);
 			expect(
 				index?.config.columns.map((column) => ("name" in column ? column.name : undefined)),
-			).toEqual(["tenant_id", "org_slug", "issuer"]);
+			).toEqual(["org_slug", "issuer"]);
 		});
 	});
 
