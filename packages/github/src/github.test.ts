@@ -335,59 +335,67 @@ describe("OctokitGitHubService installation binding", () => {
 
 describe("OctokitGitHubService repository resolution", () => {
 	test("rejects an installation whose account does not own the target repository", async () => {
-		const installationClientFactory = mock(() => ({}) as Octokit);
+		const request = mock(async () => ({ data: { id: 101 } }));
 		const service = new OctokitGitHubService({
 			db: readOnlyDb([installationRow]),
 			config: testConfig,
-			appClient: {} as Octokit,
-			installationClientFactory,
+			appClient: { request } as unknown as Octokit,
 		});
 
 		expect(
 			await service.resolveInstallation({ tenantId: "tenant-a", owner: "other", repo: "infra" }),
 		).toBeNull();
-		expect(installationClientFactory).not.toHaveBeenCalled();
+		expect(request).not.toHaveBeenCalled();
 	});
-	test("fails closed when a selected-repository installation cannot access the target", async () => {
+
+	test("rejects a public repository that is not selected for the installation", async () => {
 		const selected: GitHubInstallationInfo = {
 			...installationRow,
 			repositorySelection: "selected",
 		};
-		const get = mock(async () => {
+		const reposGet = mock(async () => ({ data: { id: 1, visibility: "public" } }));
+		const request = mock(async () => {
 			throw Object.assign(new Error("Not Found"), { status: 404 });
 		});
 		const service = new OctokitGitHubService({
 			db: readOnlyDb([selected]),
 			config: testConfig,
-			appClient: {} as Octokit,
-			installationClientFactory: () => ({ rest: { repos: { get } } }) as unknown as Octokit,
+			appClient: { request } as unknown as Octokit,
+			installationClientFactory: () =>
+				({ rest: { repos: { get: reposGet } } }) as unknown as Octokit,
 		});
 
 		expect(
-			await service.resolveInstallation({ tenantId: "tenant-a", owner: "acme", repo: "private" }),
+			await service.resolveInstallation({ tenantId: "tenant-a", owner: "acme", repo: "public" }),
 		).toBeNull();
-		expect(get).toHaveBeenCalledWith({ owner: "acme", repo: "private" });
+		expect(request).toHaveBeenCalledWith("GET /repos/{owner}/{repo}/installation", {
+			owner: "acme",
+			repo: "public",
+		});
+		expect(reposGet).not.toHaveBeenCalled();
 	});
 
-	test("selects the tenant installation that can access the repository", async () => {
+	test("rejects an authoritative installation that is not bound to the tenant", async () => {
+		const request = mock(async () => ({ data: { id: 999 } }));
+		const service = new OctokitGitHubService({
+			db: readOnlyDb([installationRow]),
+			config: testConfig,
+			appClient: { request } as unknown as Octokit,
+		});
+
+		expect(
+			await service.resolveInstallation({ tenantId: "tenant-a", owner: "acme", repo: "infra" }),
+		).toBeNull();
+	});
+
+	test("selects the tenant-bound installation returned by the app-JWT lookup", async () => {
 		const denied = { ...installationRow, id: "row-2", installationId: 102 };
 		const allowed = { ...installationRow, id: "row-3", installationId: 103 };
-		const installationClientFactory = (installationId: number) =>
-			({
-				rest: {
-					repos: {
-						get: mock(async () => {
-							if (installationId === 102) throw new Error("Not Found");
-							return { data: { id: 1 } };
-						}),
-					},
-				},
-			}) as unknown as Octokit;
+		const request = mock(async () => ({ data: { id: 103 } }));
 		const service = new OctokitGitHubService({
 			db: readOnlyDb([denied, allowed]),
 			config: testConfig,
-			appClient: {} as Octokit,
-			installationClientFactory,
+			appClient: { request } as unknown as Octokit,
 		});
 
 		expect(

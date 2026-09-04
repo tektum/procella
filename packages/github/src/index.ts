@@ -373,20 +373,23 @@ export class OctokitGitHubService implements GitHubService {
 	): Promise<GitHubInstallationInfo | null> {
 		const installations = await this.listInstallations(target.tenantId);
 		const owner = target.owner.toLowerCase();
+		const candidates = installations.filter(
+			(installation) => installation.accountLogin.toLowerCase() === owner,
+		);
+		if (candidates.length === 0) return null;
 
-		for (const installation of installations) {
-			if (installation.accountLogin.toLowerCase() !== owner) continue;
-			try {
-				const client = this.installationClientFactory(installation.installationId);
-				await client.rest.repos.get({ owner: target.owner, repo: target.repo });
-				return installation;
-			} catch {
-				// Any GitHub lookup failure denies access. Notifications must never use
-				// an installation that has not proven access to this repository.
-			}
+		try {
+			const { data } = await this.appClient.request("GET /repos/{owner}/{repo}/installation", {
+				owner: target.owner,
+				repo: target.repo,
+			});
+			if (!Number.isSafeInteger(data.id)) return null;
+			return candidates.find((installation) => installation.installationId === data.id) ?? null;
+		} catch {
+			// The app-JWT endpoint is authoritative for repository selection. Any
+			// lookup failure denies access, including public repository metadata access.
+			return null;
 		}
-
-		return null;
 	}
 
 	async removeInstallation(tenantId: string, installationId: number): Promise<void> {
