@@ -56,6 +56,17 @@ function getSqlState(error: unknown): string | undefined {
 	return undefined;
 }
 
+async function readOwnershipMigrationStatements(): Promise<string[]> {
+	const migration = await readFile(
+		new URL("../packages/db/drizzle/0018_global_oidc_policy_ownership.sql", import.meta.url),
+		"utf8",
+	);
+	return migration
+		.split("--> statement-breakpoint")
+		.map((statement) => statement.trim())
+		.filter(Boolean);
+}
+
 beforeAll(() => {
 	db = getTestDb();
 	repo = new PostgresTrustPolicyRepository(db);
@@ -82,14 +93,7 @@ describe("PostgresTrustPolicyRepository — integration", () => {
 	});
 
 	test("ownership migration fails closed on ambiguous legacy rows", async () => {
-		const migration = await readFile(
-			new URL("../packages/db/drizzle/0018_global_oidc_policy_ownership.sql", import.meta.url),
-			"utf8",
-		);
-		const statements = migration
-			.split("--> statement-breakpoint")
-			.map((statement) => statement.trim())
-			.filter(Boolean);
+		const statements = await readOwnershipMigrationStatements();
 		expect(statements).toHaveLength(4);
 
 		await db.transaction(async (tx) => {
@@ -140,6 +144,52 @@ describe("PostgresTrustPolicyRepository — integration", () => {
 				),
 			);
 			expect(index?.indexdef).toContain("(tenant_id, org_slug, issuer)");
+		});
+	});
+
+	test("ownership migration preserves unambiguous rows and installs the global index", async () => {
+		const statements = await readOwnershipMigrationStatements();
+		expect(statements).toHaveLength(4);
+
+		await db.transaction(async (tx) => {
+			await tx.execute(sql.raw(`
+				CREATE TEMP TABLE oidc_trust_policies (
+					tenant_id text NOT NULL,
+					org_slug text NOT NULL,
+					issuer text NOT NULL,
+					active boolean NOT NULL
+				) ON COMMIT DROP
+			`));
+			await tx.execute(
+				sql.raw(`CREATE UNIQUE INDEX "idx_oidc_trust_org_issuer"
+					ON oidc_trust_policies (tenant_id, org_slug, issuer)`),
+			);
+			await tx.execute(sql.raw(`
+				INSERT INTO oidc_trust_policies (tenant_id, org_slug, issuer, active) VALUES
+					('tenant-a', '${ORG_SLUG}', '${ISSUER}', false),
+					('tenant-b', '${ORG_SLUG}', '${ISSUER}/other', true)
+			`));
+
+			for (const statement of statements) {
+				await tx.execute(sql.raw(statement));
+			}
+
+			const rows = await tx.execute(
+				sql.raw(
+					"SELECT tenant_id, issuer, active FROM oidc_trust_policies ORDER BY tenant_id",
+				),
+			);
+			expect(rows).toEqual([
+				{ tenant_id: "tenant-a", issuer: ISSUER, active: false },
+				{ tenant_id: "tenant-b", issuer: `${ISSUER}/other`, active: true },
+			]);
+			const [index] = await tx.execute(
+				sql.raw(
+					"SELECT pg_get_indexdef(to_regclass('idx_oidc_trust_org_issuer')) AS indexdef",
+				),
+			);
+			expect(index?.indexdef).toContain("(org_slug, issuer)");
+			expect(index?.indexdef).not.toContain("tenant_id");
 		});
 	});
 

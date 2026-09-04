@@ -58,8 +58,6 @@ export class PostgresTrustPolicyRepository implements TrustPolicyRepository {
 
 		try {
 			const row = await this.db.transaction(async (tx) => {
-				// Serialize the ownership preflight so conflicting callers receive the same
-				// generic error; the global unique index remains the database invariant.
 				const ownershipKey = JSON.stringify([policy.orgSlug, policy.issuer]);
 				await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${ownershipKey}, 0))`);
 
