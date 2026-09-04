@@ -510,6 +510,7 @@ describe("OctokitGitHubDeliveryService comments", () => {
 		const createComment = mock(async () => ({ data: { id: 123 } }));
 		const updateComment = mock(async () => ({ data: { id: 123 } }));
 		const listComments = mock(async () => ({ data: [] }));
+		const createCommitStatus = mock(async () => ({}));
 		const paginate = mock(async () => [
 			{ id: 122, body: "unrelated" },
 			{ id: 123, body: "<!-- procella:update:update-1 -->\nresult" },
@@ -518,7 +519,7 @@ describe("OctokitGitHubDeliveryService comments", () => {
 			paginate,
 			rest: {
 				issues: { createComment, listComments, updateComment },
-				repos: { createCommitStatus: mock(async () => ({})) },
+				repos: { createCommitStatus },
 			},
 		} as unknown as Octokit;
 		const service = new OctokitGitHubDeliveryService({
@@ -533,6 +534,8 @@ describe("OctokitGitHubDeliveryService comments", () => {
 			await service.findPRComment(101, "acme", "infra", 42, "<!-- procella:update:update-1 -->"),
 		).toBe(123);
 		await service.updatePRComment(101, "acme", "infra", 123, "complete");
+		await service.setCommitStatus(101, "acme", "infra", "abc123", "success", "done", "ctx");
+		expect(await service.findPRComment(101, "acme", "infra", 42, "missing-marker")).toBeNull();
 
 		expect(createComment).toHaveBeenCalledTimes(1);
 		expect(paginate).toHaveBeenCalledWith(listComments, {
@@ -547,5 +550,31 @@ describe("OctokitGitHubDeliveryService comments", () => {
 			comment_id: 123,
 			body: "complete",
 		});
+		expect(createCommitStatus).toHaveBeenCalledWith({
+			owner: "acme",
+			repo: "infra",
+			sha: "abc123",
+			state: "success",
+			description: "done",
+			context: "ctx",
+		});
+	});
+
+	test("rejects an unsafe comment identifier", async () => {
+		const service = new OctokitGitHubDeliveryService({
+			db: readOnlyDb([]),
+			config: { appId: "123", privateKey: "unused" },
+			appClient: {} as Octokit,
+			installationClientFactory: () =>
+				({
+					rest: {
+						issues: { createComment: mock(async () => ({ data: { id: Number.MAX_VALUE } })) },
+					},
+				}) as unknown as Octokit,
+		});
+
+		await expect(service.createPRComment(101, "acme", "infra", 42, "body")).rejects.toThrow(
+			"invalid comment ID",
+		);
 	});
 });

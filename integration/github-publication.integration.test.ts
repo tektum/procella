@@ -368,4 +368,20 @@ describe("durable GitHub update publication", () => {
 		expect(await firstRun).toBe(1);
 		expect(delivery.calls.created).toHaveLength(1);
 	});
+
+	test("long-lived worker performs an immediate drain and stops cleanly", async () => {
+		const { updateId } = await createTargetedUpdate();
+		await updatesService.startUpdate(updateId, {});
+		const delivery = fakeGitHub();
+		const worker = new GitHubOutboxWorker({
+			db,
+			github: delivery.github,
+			interval: 60_000,
+			maxPerRun: 1,
+		});
+
+		await worker.start();
+		await worker.stop();
+		expect(delivery.calls.created).toHaveLength(1);
+	});
 });
