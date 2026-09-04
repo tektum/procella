@@ -51,6 +51,8 @@ import {
 import type { Env } from "../types.js";
 import { authenticateTrpcCaller } from "./trpc-auth.js";
 
+const CRON_WORK_DEADLINE_MS = 52_000;
+
 // ============================================================================
 // App Factory
 // ============================================================================
@@ -214,10 +216,13 @@ export function createApp(deps: {
 		if (!safeEqualString(providedSecret, secret)) {
 			return c.json({ error: "Unauthorized" }, 401);
 		}
+		const startedAt = Date.now();
 		const gc = new GCWorker({ db: deps.db });
 		await gc.runOnce();
 		if (deps.github) {
-			await new GitHubOutboxWorker({ db: deps.db, github: deps.github, maxPerRun: 5 }).runOnce();
+			await new GitHubOutboxWorker({ db: deps.db, github: deps.github, maxPerRun: 5 })
+				.runOnce({ deadlineMs: startedAt + CRON_WORK_DEADLINE_MS })
+				.catch((error) => console.error("[cron] GitHub outbox drain failed", error));
 		}
 		return c.json({ ok: true });
 	});

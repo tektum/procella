@@ -3,6 +3,7 @@ import type { AuditService } from "@procella/audit";
 import type { AuthService } from "@procella/auth";
 import type { Database } from "@procella/db";
 import type { EscService } from "@procella/esc";
+import type { GitHubService } from "@procella/github";
 import type { StackInfo, StacksService } from "@procella/stacks";
 import type { Caller } from "@procella/types";
 import { UnauthorizedError } from "@procella/types";
@@ -199,6 +200,8 @@ describe("@procella/server routes", () => {
 		opts?: {
 			corsOrigins?: string[];
 			cronSecret?: string;
+			db?: Database;
+			github?: GitHubService | null;
 			issueSubscriptionTicket?: (caller: Caller) => Promise<string>;
 			verifySubscriptionTicket?: (ticket: string) => Promise<Caller>;
 			deltaCheckpointsEnabled?: boolean;
@@ -208,11 +211,13 @@ describe("@procella/server routes", () => {
 			auth: mockAuthService(),
 			authConfig,
 			audit: mockAuditService(),
-			db: { execute: async () => ({ rows: [{ acquired: false }] }) } as unknown as Database,
+			db:
+				opts?.db ??
+				({ execute: async () => ({ rows: [{ acquired: false }] }) } as unknown as Database),
 			dbUrl: "postgres://test:test@localhost:5432/test",
 			cronSecret: opts?.cronSecret,
 			corsOrigins: opts?.corsOrigins,
-			github: null,
+			github: opts?.github ?? null,
 			githubWebhookSecret: undefined,
 			issueSubscriptionTicket:
 				opts?.issueSubscriptionTicket ??
@@ -391,6 +396,30 @@ describe("@procella/server routes", () => {
 				headers: { Authorization: "Bearer correct-secret" },
 			});
 			expect(res.status).toBe(200);
+		});
+
+		test("keeps successful GC response when GitHub outbox drain fails", async () => {
+			let transactions = 0;
+			const db = {
+				transaction: async (callback: (tx: unknown) => unknown) => {
+					transactions += 1;
+					if (transactions === 1) {
+						return callback({ execute: async () => ({ rows: [{ acquired: false }] }) });
+					}
+					throw new Error("outbox unavailable");
+				},
+			} as unknown as Database;
+			const app = makeApp(undefined, {
+				cronSecret: "correct-secret",
+				db,
+				github: {} as GitHubService,
+			});
+
+			const res = await app.request("/cron/gc", {
+				headers: { Authorization: "Bearer correct-secret" },
+			});
+			expect(res.status).toBe(200);
+			expect(transactions).toBe(2);
 		});
 	});
 
