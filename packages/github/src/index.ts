@@ -288,13 +288,34 @@ export function mapUpdateStatusToCommitState(
 
 class GitHubDeliveryDeadlineError extends Error {}
 
-function githubRequestOptions(options?: GitHubDeliveryRequestOptions) {
+function githubRequestOptions(options?: GitHubDeliveryRequestOptions): {
+	request: { signal: AbortSignal };
+} {
 	const remaining =
 		options?.deadlineMs === undefined
 			? GITHUB_REQUEST_TIMEOUT_MS
 			: Math.min(GITHUB_REQUEST_TIMEOUT_MS, options.deadlineMs - Date.now());
 	if (remaining <= 0) throw new GitHubDeliveryDeadlineError("GitHub delivery deadline exceeded");
 	return { request: { signal: AbortSignal.timeout(Math.max(1, Math.floor(remaining))) } };
+}
+
+async function withGitHubRequestDeadline<T>(
+	options: GitHubDeliveryRequestOptions | undefined,
+	request: (requestOptions: { request: { signal: AbortSignal } }) => Promise<T>,
+): Promise<T> {
+	try {
+		return await request(githubRequestOptions(options));
+	} catch (error) {
+		if (error instanceof GitHubDeliveryDeadlineError) throw error;
+		if (
+			options?.deadlineMs !== undefined &&
+			error instanceof Error &&
+			(error.name === "AbortError" || error.name === "TimeoutError")
+		) {
+			throw new GitHubDeliveryDeadlineError("GitHub delivery deadline exceeded");
+		}
+		throw error;
+	}
 }
 
 /** GitHub client used by background delivery workers. It needs only App signing credentials. */
@@ -347,11 +368,13 @@ export class OctokitGitHubDeliveryService implements GitHubDeliveryService {
 	): Promise<GitHubInstallationInfo | null> {
 		const installations = await this.listInstallations(target.tenantId);
 		try {
-			const { data } = await this.appClient.request("GET /repos/{owner}/{repo}/installation", {
-				owner: target.owner,
-				repo: target.repo,
-				...githubRequestOptions(options),
-			});
+			const { data } = await withGitHubRequestDeadline(options, (requestOptions) =>
+				this.appClient.request("GET /repos/{owner}/{repo}/installation", {
+					owner: target.owner,
+					repo: target.repo,
+					...requestOptions,
+				}),
+			);
 			if (!Number.isSafeInteger(data.id)) return null;
 			return installations.find((installation) => installation.installationId === data.id) ?? null;
 		} catch (error) {
@@ -368,14 +391,14 @@ export class OctokitGitHubDeliveryService implements GitHubDeliveryService {
 		body: string,
 		options?: GitHubDeliveryRequestOptions,
 	): Promise<number> {
-		const { data } = await this.installationClientFactory(installationId).rest.issues.createComment(
-			{
+		const { data } = await withGitHubRequestDeadline(options, (requestOptions) =>
+			this.installationClientFactory(installationId).rest.issues.createComment({
 				owner,
 				repo,
 				issue_number: prNumber,
 				body,
-				...githubRequestOptions(options),
-			},
+				...requestOptions,
+			}),
 		);
 		if (!Number.isSafeInteger(data.id)) throw new Error("GitHub returned an invalid comment ID");
 		return data.id;
@@ -391,14 +414,16 @@ export class OctokitGitHubDeliveryService implements GitHubDeliveryService {
 	): Promise<number | null> {
 		const octokit = this.installationClientFactory(installationId);
 		for (let page = 1; ; page += 1) {
-			const { data } = await octokit.rest.issues.listComments({
-				owner,
-				repo,
-				issue_number: prNumber,
-				per_page: 100,
-				page,
-				...githubRequestOptions(options),
-			});
+			const { data } = await withGitHubRequestDeadline(options, (requestOptions) =>
+				octokit.rest.issues.listComments({
+					owner,
+					repo,
+					issue_number: prNumber,
+					per_page: 100,
+					page,
+					...requestOptions,
+				}),
+			);
 			const match = data.find((comment) => comment.body?.includes(marker));
 			if (match) return Number.isSafeInteger(match.id) ? match.id : null;
 			if (data.length < 100) return null;
@@ -413,13 +438,15 @@ export class OctokitGitHubDeliveryService implements GitHubDeliveryService {
 		body: string,
 		options?: GitHubDeliveryRequestOptions,
 	): Promise<void> {
-		await this.installationClientFactory(installationId).rest.issues.updateComment({
-			owner,
-			repo,
-			comment_id: commentId,
-			body,
-			...githubRequestOptions(options),
-		});
+		await withGitHubRequestDeadline(options, (requestOptions) =>
+			this.installationClientFactory(installationId).rest.issues.updateComment({
+				owner,
+				repo,
+				comment_id: commentId,
+				body,
+				...requestOptions,
+			}),
+		);
 	}
 
 	async setCommitStatus(
@@ -432,15 +459,17 @@ export class OctokitGitHubDeliveryService implements GitHubDeliveryService {
 		context = "procella/preview",
 		options?: GitHubDeliveryRequestOptions,
 	): Promise<void> {
-		await this.installationClientFactory(installationId).rest.repos.createCommitStatus({
-			owner,
-			repo,
-			sha,
-			state,
-			description,
-			context,
-			...githubRequestOptions(options),
-		});
+		await withGitHubRequestDeadline(options, (requestOptions) =>
+			this.installationClientFactory(installationId).rest.repos.createCommitStatus({
+				owner,
+				repo,
+				sha,
+				state,
+				description,
+				context,
+				...requestOptions,
+			}),
+		);
 	}
 }
 export class OctokitGitHubService extends OctokitGitHubDeliveryService implements GitHubService {

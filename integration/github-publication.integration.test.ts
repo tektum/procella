@@ -1,11 +1,12 @@
 import { afterAll, afterEach, beforeAll, describe, expect, mock, test } from "bun:test";
 import { AesCryptoService } from "@procella/crypto";
-import { githubUpdateOutbox, type Database, updates } from "@procella/db";
+import { githubInstallations, githubUpdateOutbox, type Database, updates } from "@procella/db";
 import {
 	type GitHubDeliveryService,
 	GitHubOutboxWorker,
 	GITHUB_OUTBOX_MAX_ATTEMPTS,
 	type GitHubInstallationInfo,
+	OctokitGitHubDeliveryService,
 } from "@procella/github";
 import { PostgresStacksService } from "@procella/stacks";
 import { LocalBlobStorage } from "@procella/storage";
@@ -15,6 +16,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { eq, sql } from "drizzle-orm";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import type { Octokit } from "octokit";
 import { getTestDb, truncateTables } from "./setup.js";
 
 let db: Database;
@@ -634,6 +636,66 @@ describe("durable GitHub update publication", () => {
 		expect(row.claimedBy).toBeNull();
 	});
 
+
+	test("an in-flight repository abort requeues and a later invocation delivers", async () => {
+		const { updateId } = await createTargetedUpdate();
+		await updatesService.startUpdate(updateId, {});
+		await db.insert(githubInstallations).values({
+			tenantId: installation.tenantId,
+			installationId: installation.installationId,
+			accountLogin: installation.accountLogin,
+			accountType: installation.accountType,
+			repositorySelection: installation.repositorySelection,
+		});
+		let repositoryRequests = 0;
+		const appClient = {
+			request: mock(async () => {
+				repositoryRequests += 1;
+				if (repositoryRequests === 1) throw new DOMException("timed out", "TimeoutError");
+				return { data: { id: installation.installationId } };
+			}),
+		} as unknown as Octokit;
+		const createComment = mock(async () => ({ data: { id: 123 } }));
+		const createCommitStatus = mock(async () => ({}));
+		const installationClient = {
+			rest: {
+				issues: {
+					listComments: mock(async () => ({ data: [] })),
+					createComment,
+					updateComment: mock(async () => ({})),
+				},
+				repos: { createCommitStatus },
+			},
+		} as unknown as Octokit;
+		const github = new OctokitGitHubDeliveryService({
+			db,
+			config: { appId: "123", privateKey: "unused" },
+			appClient,
+			installationClientFactory: () => installationClient,
+		});
+		const worker = new GitHubOutboxWorker({ db, github, maxPerRun: 1 });
+
+		expect(await worker.runOnce({ deadlineMs: Date.now() + 40_000 })).toBe(0);
+		let [row] = await db
+			.select()
+			.from(githubUpdateOutbox)
+			.where(eq(githubUpdateOutbox.updateId, updateId));
+		expect(row.attempts).toBe(0);
+		expect(row.deliveredRevision).toBe(0);
+		expect(row.failedRevision).toBe(0);
+		expect(row.claimedBy).toBeNull();
+
+		expect(await worker.runOnce({ deadlineMs: Date.now() + 40_000 })).toBe(1);
+		[row] = await db
+			.select()
+			.from(githubUpdateOutbox)
+			.where(eq(githubUpdateOutbox.updateId, updateId));
+		expect(row.attempts).toBe(0);
+		expect(row.deliveredRevision).toBe(1);
+		expect(row.failedRevision).toBe(0);
+		expect(createComment).toHaveBeenCalledTimes(1);
+		expect(createCommitStatus).toHaveBeenCalledTimes(1);
+	});
 
 	test("expired claims are retried and concurrent workers do not overlap", async () => {
 		const { updateId } = await createTargetedUpdate();

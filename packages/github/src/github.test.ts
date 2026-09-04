@@ -505,6 +505,27 @@ describe("OctokitGitHubService repository resolution", () => {
 			await service.resolveInstallation({ tenantId: "tenant-a", owner: "acme", repo: "infra" }),
 		).toEqual(allowed);
 	});
+	test("normalizes an in-flight repository timeout and succeeds on retry", async () => {
+		let attempts = 0;
+		const request = mock(async () => {
+			attempts += 1;
+			if (attempts === 1) throw new DOMException("timed out", "TimeoutError");
+			return { data: { id: 101 } };
+		});
+		const service = new OctokitGitHubDeliveryService({
+			db: readOnlyDb([installationRow]),
+			config: { appId: "123", privateKey: "unused" },
+			appClient: { request } as unknown as Octokit,
+		});
+		const target = { tenantId: "tenant-a", owner: "acme", repo: "infra" };
+
+		await expect(
+			service.resolveInstallation(target, { deadlineMs: Date.now() + 10_000 }),
+		).rejects.toThrow("deadline exceeded");
+		await expect(
+			service.resolveInstallation(target, { deadlineMs: Date.now() + 10_000 }),
+		).resolves.toEqual(installationRow);
+	});
 });
 
 describe("OctokitGitHubDeliveryService comments", () => {
@@ -590,6 +611,36 @@ describe("OctokitGitHubDeliveryService comments", () => {
 		} finally {
 			Date.now = originalNow;
 		}
+	});
+
+	test("normalizes an in-flight paginated lookup abort and succeeds later", async () => {
+		let calls = 0;
+		const listComments = mock(async () => {
+			calls += 1;
+			if (calls === 1) {
+				return { data: Array.from({ length: 100 }, (_, id) => ({ id, body: "unrelated" })) };
+			}
+			if (calls === 2) throw new DOMException("aborted", "AbortError");
+			return { data: [{ id: 123, body: "<!-- procella:update:update-1 -->" }] };
+		});
+		const service = new OctokitGitHubDeliveryService({
+			db: readOnlyDb([]),
+			config: { appId: "123", privateKey: "unused" },
+			appClient: {} as Octokit,
+			installationClientFactory: () =>
+				({ rest: { issues: { listComments } } }) as unknown as Octokit,
+		});
+
+		await expect(
+			service.findPRComment(101, "acme", "infra", 42, "missing", {
+				deadlineMs: Date.now() + 10_000,
+			}),
+		).rejects.toThrow("deadline exceeded");
+		await expect(
+			service.findPRComment(101, "acme", "infra", 42, "<!-- procella:update:update-1 -->", {
+				deadlineMs: Date.now() + 10_000,
+			}),
+		).resolves.toBe(123);
 	});
 	test("rejects an unsafe comment identifier", async () => {
 		const service = new OctokitGitHubDeliveryService({
