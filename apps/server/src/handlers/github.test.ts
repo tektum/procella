@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
-import type { GitHubService } from "@procella/github";
+import { type GitHubService, GitHubSetupError } from "@procella/github";
 import type { Caller } from "@procella/types";
 import { Hono } from "hono";
 import type { Env } from "../types.js";
@@ -36,11 +36,13 @@ const mockInstallation = {
 function mockGitHubService(overrides?: Partial<GitHubService>): GitHubService {
 	return {
 		handleWebhookEvent: mock(async () => {}),
+		issueInstallationUrl: mock(async () => "https://github.com/apps/procella/installations/new"),
+		completeInstallation: mock(async () => mockInstallation),
+		listInstallations: mock(async () => [mockInstallation]),
+		resolveInstallation: mock(async () => mockInstallation),
 		postPRComment: mock(async () => {}),
 		setCommitStatus: mock(async () => {}),
-		saveInstallation: mock(async () => {}),
 		removeInstallation: mock(async () => {}),
-		getInstallation: mock(async () => mockInstallation),
 		...overrides,
 	};
 }
@@ -146,6 +148,58 @@ describe("githubHandlers", () => {
 		});
 	});
 
+	describe("completeInstallation", () => {
+		test("accepts a valid GitHub setup callback and ignores forged account fields", async () => {
+			const github = mockGitHubService();
+			const app = new Hono<Env>();
+			const h = githubHandlers({ github, verifySignature: mock(async () => true) });
+			app.get("/github/setup", h.completeInstallation);
+
+			const res = await app.request(
+				"/github/setup?installation_id=12345&setup_action=install&state=signed-state&account_login=attacker",
+			);
+			expect(res.status).toBe(303);
+			expect(res.headers.get("location")).toBe("/settings?github=connected#github");
+			expect(github.completeInstallation).toHaveBeenCalledWith("signed-state", 12345);
+		});
+
+		test("rejects missing or malformed callback parameters before persistence", async () => {
+			const github = mockGitHubService();
+			const app = new Hono<Env>();
+			const h = githubHandlers({ github, verifySignature: mock(async () => true) });
+			app.get("/github/setup", h.completeInstallation);
+
+			for (const query of [
+				"installation_id=123&setup_action=install",
+				"installation_id=not-a-number&setup_action=install&state=state",
+				"installation_id=123&setup_action=other&state=state",
+				`installation_id=123&setup_action=install&state=${"x".repeat(4097)}`,
+			]) {
+				const res = await app.request(`/github/setup?${query}`);
+				expect(res.status).toBe(303);
+				expect(res.headers.get("location")).toContain("reason=invalid_callback");
+			}
+			expect(github.completeInstallation).not.toHaveBeenCalled();
+		});
+
+		test("surfaces signed-state failures without persisting", async () => {
+			const github = mockGitHubService({
+				completeInstallation: mock(async () => {
+					throw new GitHubSetupError("expired_state");
+				}),
+			});
+			const app = new Hono<Env>();
+			const h = githubHandlers({ github, verifySignature: mock(async () => true) });
+			app.get("/github/setup", h.completeInstallation);
+
+			const res = await app.request(
+				"/github/setup?installation_id=123&setup_action=update&state=expired",
+			);
+			expect(res.status).toBe(303);
+			expect(res.headers.get("location")).toContain("reason=expired_state");
+		});
+	});
+
 	describe("getInstallation", () => {
 		test("returns installation when configured", async () => {
 			const github = mockGitHubService();
@@ -206,12 +260,12 @@ describe("githubHandlers", () => {
 
 			const res = await app.request("/orgs/my-org/integrations/github", { method: "DELETE" });
 			expect(res.status).toBe(204);
-			expect(github.removeInstallation).toHaveBeenCalledWith(12345);
+			expect(github.removeInstallation).toHaveBeenCalledWith("t-1", 12345);
 		});
 
 		test("returns 204 when no installation exists", async () => {
 			const github = mockGitHubService({
-				getInstallation: mock(async () => null),
+				listInstallations: mock(async () => []),
 			});
 			const app = new Hono<Env>();
 			app.use("*", injectCaller(validCaller));

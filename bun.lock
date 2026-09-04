@@ -185,6 +185,7 @@
         "@procella/config": "workspace:*",
         "@procella/db": "workspace:*",
         "drizzle-orm": "catalog:",
+        "jose": "^6.0.0",
       },
     },
     "packages/migrate": {

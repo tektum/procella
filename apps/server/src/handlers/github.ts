@@ -1,4 +1,4 @@
-import type { GitHubService } from "@procella/github";
+import { type GitHubService, GitHubSetupError } from "@procella/github";
 import { BadRequestError } from "@procella/types";
 import type { Context } from "hono";
 import type { Env } from "../types.js";
@@ -38,6 +38,39 @@ export function githubHandlers(deps: {
 			return c.body(null, 200);
 		},
 
+		completeInstallation: async (c: Context<Env>) => {
+			c.header("Cache-Control", "no-store");
+			if (!deps.github) {
+				return redirectToGitHubSettings(c, "not_configured");
+			}
+
+			const state = c.req.query("state");
+			const installationIdValue = c.req.query("installation_id");
+			const setupAction = c.req.query("setup_action");
+			if (
+				!state ||
+				state.length > 4096 ||
+				!installationIdValue ||
+				!/^[1-9]\d*$/.test(installationIdValue) ||
+				(setupAction !== "install" && setupAction !== "update")
+			) {
+				return redirectToGitHubSettings(c, "invalid_callback");
+			}
+
+			const installationId = Number(installationIdValue);
+			if (!Number.isSafeInteger(installationId)) {
+				return redirectToGitHubSettings(c, "invalid_callback");
+			}
+
+			try {
+				await deps.github.completeInstallation(state, installationId);
+				return c.redirect("/settings?github=connected#github", 303);
+			} catch (error) {
+				const reason = error instanceof GitHubSetupError ? error.code : "github_error";
+				return redirectToGitHubSettings(c, reason);
+			}
+		},
+
 		getInstallation: async (c: Context<Env>) => {
 			const caller = c.get("caller");
 			const org = param(c, "org");
@@ -49,8 +82,8 @@ export function githubHandlers(deps: {
 				return c.json({ installation: null });
 			}
 
-			const installation = await deps.github.getInstallation(caller.tenantId);
-			return c.json({ installation });
+			const installations = await deps.github.listInstallations(caller.tenantId);
+			return c.json({ installation: installations[0] ?? null });
 		},
 
 		removeInstallation: async (c: Context<Env>) => {
@@ -64,12 +97,18 @@ export function githubHandlers(deps: {
 				return c.body(null, 204);
 			}
 
-			const installation = await deps.github.getInstallation(caller.tenantId);
-			if (installation) {
-				await deps.github.removeInstallation(installation.installationId);
-			}
+			const installations = await deps.github.listInstallations(caller.tenantId);
+			await Promise.all(
+				installations.map((installation) =>
+					deps.github?.removeInstallation(caller.tenantId, installation.installationId),
+				),
+			);
 
 			return c.body(null, 204);
 		},
 	};
+}
+
+function redirectToGitHubSettings(c: Context<Env>, reason: string) {
+	return c.redirect(`/settings?github=error&reason=${encodeURIComponent(reason)}#github`, 303);
 }

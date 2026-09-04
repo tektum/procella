@@ -23,6 +23,8 @@ Fill in:
 | GitHub App name | `procella-your-org` (must be globally unique) |
 | Homepage URL | Your Procella instance URL |
 | Webhook URL | `https://your-procella.example.com/api/webhooks/github` |
+| Setup URL | `https://your-procella.example.com/github/setup` |
+| Redirect on update | Enabled |
 | Webhook secret | A random string you generate (save it, you'll need it) |
 
 Under **Permissions**, set:
@@ -50,6 +52,7 @@ Add these to your Procella deployment:
 | Variable | Description |
 |---|---|
 | `PROCELLA_GITHUB_APP_ID` | The numeric App ID from the GitHub App settings page |
+| `PROCELLA_GITHUB_APP_SLUG` | The URL slug shown on the GitHub App settings page |
 | `PROCELLA_GITHUB_APP_PRIVATE_KEY` | Contents of the `.pem` file (include the `-----BEGIN RSA PRIVATE KEY-----` headers) |
 | `PROCELLA_GITHUB_APP_WEBHOOK_SECRET` | The webhook secret you set in step 1 |
 
@@ -57,6 +60,7 @@ For Docker or docker-compose, pass these as environment variables:
 
 ```bash
 PROCELLA_GITHUB_APP_ID=123456
+PROCELLA_GITHUB_APP_SLUG=procella-your-org
 PROCELLA_GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----
 MIIEowIBAAK...
 -----END RSA PRIVATE KEY-----"
@@ -65,21 +69,23 @@ PROCELLA_GITHUB_APP_WEBHOOK_SECRET=my-random-secret
 
 For Vercel or similar platforms, use the environment variable UI. The private key value should be the raw multiline PEM string.
 
-### 3. Install the App on Your GitHub Org
+### 3. Connect the App to a Tenant
 
-Go back to your GitHub App settings and click **Install App**. Choose your organization and select which repositories should have access.
+Sign in to Procella as a tenant administrator, open **Settings** > **GitHub**, and select **Connect GitHub App**. Procella sends you to GitHub with signed, expiring state bound to the current tenant. After you install or configure the app, GitHub redirects to `/github/setup`; Procella validates the state and loads the installation details directly from GitHub before saving the binding.
 
-After installation, the app starts receiving webhook events from GitHub.
+Webhook events can update or remove an existing binding, but cannot create one.
+
+Existing installations created before tenant-bound setup are removed during migration because their tenant ownership was inferred from a GitHub account name. Reconnect them from **Settings** > **GitHub**.
 
 ### Moving a Repository Between Organizations
 
-Use a GitHub App owned by the destination organization when the previous organization-owned App cannot move with the repository. Create the replacement App under the destination organization, install it on the required repositories, and replace all three `PROCELLA_GITHUB_APP_*` values together with the new App ID, private key, and webhook secret. Procella rejects partial GitHub App configuration.
+Use a GitHub App owned by the destination organization when the previous organization-owned App cannot move with the repository. Create the replacement App under the destination organization, connect it from Procella Settings, and replace all four `PROCELLA_GITHUB_APP_*` values together. Procella rejects partial GitHub App configuration.
 
 The new App may keep the existing webhook URL. Confirm a signed delivery succeeds after installation before retiring the old App.
 
 ### Deployment Credentials
 
-The deployed Procella instance needs its own GitHub App credentials. Do not supply the Renovate App ID or private key as `PROCELLA_GITHUB_APP_*`; the two apps have different permissions and purposes. For SST deployments, map the dedicated Procella App to the `PROCELLA_GITHUB_APP_ID` and `PROCELLA_GITHUB_APP_PRIVATE_KEY` GitHub Actions secrets, then keep the matching webhook secret in `PROCELLA_GITHUB_APP_WEBHOOK_SECRET`.
+The deployed Procella instance needs its own GitHub App credentials and slug. Do not supply the Renovate App ID or private key as `PROCELLA_GITHUB_APP_*`; the two apps have different permissions and purposes. For SST deployments, configure the dedicated Procella App values in the matching `ProcellaGitHubApp*` secrets.
 
 ## How PR Comments Work
 
@@ -131,9 +137,10 @@ The metadata is attached to each update rather than stored on the stack, so conc
 
 Go to **Settings** in the dashboard and open the **GitHub** tab. From here you can:
 
-- See which repositories the app is installed on
-- View recent webhook deliveries from GitHub
-- Disconnect the integration (removes the webhook config from Procella, but doesn't uninstall the GitHub App)
+- Connect the configured GitHub App to the current tenant
+- See every GitHub account installation bound to the tenant
+- Reopen GitHub to configure repository access
+- Disconnect a tenant binding without uninstalling the GitHub App
 
 ## Roadmap
 

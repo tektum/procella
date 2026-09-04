@@ -1,4 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
+import type { GitHubService } from "@procella/github";
 import type { StackInfo, StacksService } from "@procella/stacks";
 import type { Caller } from "@procella/types";
 import type { UpdatesService } from "@procella/updates";
@@ -369,8 +370,8 @@ describe("updateHandlers", () => {
 			getStackById_systemOnly: mock(async () => stackWithGithubTags),
 		});
 		const published = Promise.withResolvers<void>();
-		const github = {
-			getInstallation: mock(async () => ({
+		const github: GitHubService = {
+			resolveInstallation: mock(async () => ({
 				id: "inst-1",
 				installationId: 999,
 				tenantId: "t-1",
@@ -383,7 +384,11 @@ describe("updateHandlers", () => {
 			setCommitStatus: mock(async () => {}),
 			postPRComment: mock(async () => published.resolve()),
 			handleWebhookEvent: mock(async () => {}),
-			saveInstallation: mock(async () => {}),
+			issueInstallationUrl: mock(async () => ""),
+			completeInstallation: mock(async () => {
+				throw new Error("not used");
+			}),
+			listInstallations: mock(async () => []),
 			removeInstallation: mock(async () => {}),
 		};
 		const webhooks = { emit: mock(() => {}), emitAndWait: mock(async () => {}) } as never;
@@ -402,7 +407,11 @@ describe("updateHandlers", () => {
 		});
 		expect(res.status).toBe(204);
 		await published.promise;
-		expect(github.getInstallation).toHaveBeenCalledWith("t-1");
+		expect(github.resolveInstallation).toHaveBeenCalledWith({
+			tenantId: "t-1",
+			owner: "octocat",
+			repo: "hello-world",
+		});
 		expect(github.setCommitStatus).toHaveBeenCalledWith(
 			999,
 			"octocat",
@@ -443,8 +452,8 @@ describe("updateHandlers", () => {
 		const firstPublished = Promise.withResolvers<void>();
 		const fallbackPublished = Promise.withResolvers<void>();
 		let publishedCount = 0;
-		const github = {
-			getInstallation: mock(async () => ({
+		const github: GitHubService = {
+			resolveInstallation: mock(async () => ({
 				id: "inst-2",
 				installationId: 999,
 				tenantId: "t-1",
@@ -461,7 +470,11 @@ describe("updateHandlers", () => {
 				if (publishedCount === 2) fallbackPublished.resolve();
 			}),
 			handleWebhookEvent: mock(async () => {}),
-			saveInstallation: mock(async () => {}),
+			issueInstallationUrl: mock(async () => ""),
+			completeInstallation: mock(async () => {
+				throw new Error("not used");
+			}),
+			listInstallations: mock(async () => []),
 			removeInstallation: mock(async () => {}),
 		};
 		const app = new Hono<Env>();
@@ -482,7 +495,11 @@ describe("updateHandlers", () => {
 		expect(res.status).toBe(204);
 		await firstPublished.promise;
 		expect(stacks.getStackById_systemOnly).toHaveBeenCalledWith("s-1");
-		expect(github.getInstallation).toHaveBeenCalledWith("t-1");
+		expect(github.resolveInstallation).toHaveBeenCalledWith({
+			tenantId: "t-1",
+			owner: "octocat",
+			repo: "hello-world",
+		});
 		expect(github.setCommitStatus).toHaveBeenCalledWith(
 			999,
 			"octocat",
@@ -529,25 +546,16 @@ describe("updateHandlers", () => {
 			})),
 		});
 		const stacks = mockStacksService();
-		const installationChecked = Promise.withResolvers<void>();
-		const github = {
-			getInstallation: mock(async () => {
-				installationChecked.resolve();
-				return {
-					id: "inst-2",
-					installationId: 999,
-					tenantId: "t-1",
-					accountLogin: "octocat",
-					accountType: "Organization" as const,
-					repositorySelection: "all" as const,
-					createdAt: new Date(),
-					updatedAt: new Date(),
-				};
-			}),
+		const github: GitHubService = {
+			resolveInstallation: mock(async () => null),
 			setCommitStatus: mock(async () => {}),
 			postPRComment: mock(async () => {}),
 			handleWebhookEvent: mock(async () => {}),
-			saveInstallation: mock(async () => {}),
+			issueInstallationUrl: mock(async () => ""),
+			completeInstallation: mock(async () => {
+				throw new Error("not used");
+			}),
+			listInstallations: mock(async () => []),
 			removeInstallation: mock(async () => {}),
 		};
 		const app = new Hono<Env>();
@@ -564,8 +572,9 @@ describe("updateHandlers", () => {
 			body: JSON.stringify({ status: "succeeded" }),
 		});
 		expect(res.status).toBe(204);
-		await installationChecked.promise;
 		await Promise.resolve();
+		await Promise.resolve();
+		expect(github.resolveInstallation).not.toHaveBeenCalled();
 		// Metadata for another repository must not reach the GitHub API.
 		expect(github.setCommitStatus).not.toHaveBeenCalled();
 		expect(github.postPRComment).not.toHaveBeenCalled();

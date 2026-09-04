@@ -228,7 +228,7 @@ export const githubInstallations = pgTable(
 	},
 	(table) => [
 		index("idx_github_tenant").on(table.tenantId),
-		uniqueIndex("idx_github_tenant_installation").on(table.tenantId, table.installationId),
+		uniqueIndex("idx_github_installation_id").on(table.installationId),
 	],
 );
 

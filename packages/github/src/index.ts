@@ -1,10 +1,11 @@
-import { timingSafeEqual } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { createAppAuth } from "@octokit/auth-app";
 import { Octokit } from "@octokit/rest";
 import type { Config } from "@procella/config";
 import type { Database } from "@procella/db";
 import { githubInstallations } from "@procella/db";
-import { desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
+import { errors as joseErrors, jwtVerify, SignJWT } from "jose";
 
 export interface GitHubInstallationData {
 	installationId: number;
@@ -22,12 +23,25 @@ export interface GitHubInstallationInfo extends GitHubInstallationData {
 
 export interface GitHubAppConfig {
 	appId: string;
+	slug: string;
 	privateKey: string;
 	webhookSecret: string;
+	stateSigningKey: string;
+}
+
+export interface GitHubRepositoryTarget {
+	tenantId: string;
+	owner: string;
+	repo: string;
 }
 
 export interface GitHubService {
 	handleWebhookEvent(event: string, payload: unknown): Promise<void>;
+	issueInstallationUrl(tenantId: string): Promise<string>;
+	completeInstallation(state: string, installationId: number): Promise<GitHubInstallationInfo>;
+	listInstallations(tenantId: string): Promise<GitHubInstallationInfo[]>;
+	resolveInstallation(target: GitHubRepositoryTarget): Promise<GitHubInstallationInfo | null>;
+	removeInstallation(tenantId: string, installationId: number): Promise<void>;
 	postPRComment(
 		installationId: number,
 		owner: string,
@@ -44,20 +58,90 @@ export interface GitHubService {
 		description: string,
 		context?: string,
 	): Promise<void>;
-	saveInstallation(tenantId: string, installation: GitHubInstallationData): Promise<void>;
-	removeInstallation(installationId: number): Promise<void>;
-	getInstallation(tenantId: string): Promise<GitHubInstallationInfo | null>;
+}
+
+export const GITHUB_SETUP_STATE_TTL_SECONDS = 10 * 60;
+const GITHUB_SETUP_STATE_ISSUER = "procella";
+const GITHUB_SETUP_STATE_AUDIENCE = "procella:github-app-installation";
+
+export type GitHubSetupErrorCode =
+	| "invalid_state"
+	| "expired_state"
+	| "installation_conflict"
+	| "invalid_installation";
+
+export class GitHubSetupError extends Error {
+	constructor(readonly code: GitHubSetupErrorCode) {
+		super(code);
+		this.name = "GitHubSetupError";
+	}
+}
+
+export interface GitHubSetupStateService {
+	issue(tenantId: string): Promise<string>;
+	verify(state: string): Promise<string>;
+}
+
+export function createGitHubSetupStateService(
+	signingKey: string,
+	options: { now?: () => Date; ttlSeconds?: number } = {},
+): GitHubSetupStateService {
+	const secret = new TextEncoder().encode(signingKey);
+	const now = options.now ?? (() => new Date());
+	const ttlSeconds = options.ttlSeconds ?? GITHUB_SETUP_STATE_TTL_SECONDS;
+
+	return {
+		async issue(tenantId) {
+			const issuedAt = Math.floor(now().getTime() / 1000);
+			return new SignJWT({ tenantId })
+				.setProtectedHeader({ alg: "HS256", typ: "JWT" })
+				.setIssuer(GITHUB_SETUP_STATE_ISSUER)
+				.setAudience(GITHUB_SETUP_STATE_AUDIENCE)
+				.setJti(randomUUID())
+				.setIssuedAt(issuedAt)
+				.setExpirationTime(issuedAt + ttlSeconds)
+				.sign(secret);
+		},
+		async verify(state) {
+			try {
+				const { payload } = await jwtVerify(state, secret, {
+					algorithms: ["HS256"],
+					audience: GITHUB_SETUP_STATE_AUDIENCE,
+					issuer: GITHUB_SETUP_STATE_ISSUER,
+					currentDate: now(),
+				});
+				if (typeof payload.tenantId !== "string" || payload.tenantId.length === 0) {
+					throw new GitHubSetupError("invalid_state");
+				}
+				return payload.tenantId;
+			} catch (error) {
+				if (error instanceof GitHubSetupError) throw error;
+				if (error instanceof joseErrors.JWTExpired) {
+					throw new GitHubSetupError("expired_state");
+				}
+				throw new GitHubSetupError("invalid_state");
+			}
+		},
+	};
 }
 
 export function buildGitHubAppConfig(config: Config): GitHubAppConfig | null {
-	if (!config.githubAppId || !config.githubAppPrivateKey || !config.githubAppWebhookSecret) {
+	if (
+		!config.githubAppId ||
+		!config.githubAppSlug ||
+		!config.githubAppPrivateKey ||
+		!config.githubAppWebhookSecret ||
+		!config.ticketSigningKey
+	) {
 		return null;
 	}
 
 	return {
 		appId: config.githubAppId,
+		slug: config.githubAppSlug,
 		privateKey: config.githubAppPrivateKey,
 		webhookSecret: config.githubAppWebhookSecret,
+		stateSigningKey: config.ticketSigningKey,
 	};
 }
 
@@ -154,13 +238,50 @@ export function mapUpdateStatusToCommitState(
 export class OctokitGitHubService implements GitHubService {
 	private readonly db: Database;
 	private readonly config: GitHubAppConfig;
+	private readonly appClient: Octokit;
+	private readonly installationClientFactory: (installationId: number) => Octokit;
+	private readonly setupStates: GitHubSetupStateService;
 
-	constructor({ db, config }: { db: Database; config: GitHubAppConfig }) {
+	constructor({
+		db,
+		config,
+		appClient,
+		installationClientFactory,
+		setupStates,
+	}: {
+		db: Database;
+		config: GitHubAppConfig;
+		appClient?: Octokit;
+		installationClientFactory?: (installationId: number) => Octokit;
+		setupStates?: GitHubSetupStateService;
+	}) {
 		this.db = db;
 		this.config = config;
+		this.appClient = appClient ?? this.createAppClient();
+		this.installationClientFactory =
+			installationClientFactory ??
+			((installationId) => this.createInstallationClient(installationId));
+		this.setupStates = setupStates ?? createGitHubSetupStateService(config.stateSigningKey);
+	}
+
+	async issueInstallationUrl(tenantId: string): Promise<string> {
+		const url = new URL(`https://github.com/apps/${this.config.slug}/installations/new`);
+		url.searchParams.set("state", await this.setupStates.issue(tenantId));
+		return url.toString();
+	}
+
+	async completeInstallation(
+		state: string,
+		installationId: number,
+	): Promise<GitHubInstallationInfo> {
+		const tenantId = await this.setupStates.verify(state);
+		const installation = await this.loadInstallation(installationId);
+		return this.saveInstallation(tenantId, installation);
 	}
 
 	async handleWebhookEvent(event: string, payload: unknown): Promise<void> {
+		if (event !== "installation" && event !== "installation_repositories") return;
+
 		const body = payload as {
 			action?: string;
 			installation?: {
@@ -169,30 +290,72 @@ export class OctokitGitHubService implements GitHubService {
 				repository_selection?: "all" | "selected";
 			};
 		};
+		const installation = body.installation;
+		if (!Number.isSafeInteger(installation?.id) || (installation?.id ?? 0) <= 0) return;
 
-		if (event === "installation" || event === "installation_repositories") {
-			const installation = body.installation;
-			if (!installation?.id) {
-				return;
-			}
+		const existing = await this.getInstallationById(installation?.id as number);
+		if (!existing) return;
 
-			if (event === "installation" && body.action === "deleted") {
-				await this.removeInstallation(installation.id);
-				return;
-			}
-
-			const accountLogin = installation.account?.login;
-			if (!accountLogin) {
-				return;
-			}
-
-			await this.saveInstallation(accountLogin, {
-				installationId: installation.id,
-				accountLogin,
-				accountType: installation.account?.type ?? "Organization",
-				repositorySelection: installation.repository_selection ?? "all",
-			});
+		if (event === "installation" && body.action === "deleted") {
+			await this.removeInstallationById(existing.installationId);
+			return;
 		}
+
+		const accountLogin = installation?.account?.login;
+		const accountType = installation?.account?.type;
+		const repositorySelection = installation?.repository_selection;
+		await this.db
+			.update(githubInstallations)
+			.set({
+				...(accountLogin ? { accountLogin } : {}),
+				...(accountType === "Organization" || accountType === "User" ? { accountType } : {}),
+				...(repositorySelection === "all" || repositorySelection === "selected"
+					? { repositorySelection }
+					: {}),
+				updatedAt: sql`now()`,
+			})
+			.where(eq(githubInstallations.installationId, existing.installationId));
+	}
+
+	async listInstallations(tenantId: string): Promise<GitHubInstallationInfo[]> {
+		const rows = await this.db
+			.select()
+			.from(githubInstallations)
+			.where(eq(githubInstallations.tenantId, tenantId))
+			.orderBy(desc(githubInstallations.updatedAt));
+		return rows.map(mapInstallationRow);
+	}
+
+	async resolveInstallation(
+		target: GitHubRepositoryTarget,
+	): Promise<GitHubInstallationInfo | null> {
+		const installations = await this.listInstallations(target.tenantId);
+		const owner = target.owner.toLowerCase();
+
+		for (const installation of installations) {
+			if (installation.accountLogin.toLowerCase() !== owner) continue;
+			try {
+				const client = this.installationClientFactory(installation.installationId);
+				await client.rest.repos.get({ owner: target.owner, repo: target.repo });
+				return installation;
+			} catch {
+				// Any GitHub lookup failure denies access. Notifications must never use
+				// an installation that has not proven access to this repository.
+			}
+		}
+
+		return null;
+	}
+
+	async removeInstallation(tenantId: string, installationId: number): Promise<void> {
+		await this.db
+			.delete(githubInstallations)
+			.where(
+				and(
+					eq(githubInstallations.tenantId, tenantId),
+					eq(githubInstallations.installationId, installationId),
+				),
+			);
 	}
 
 	async postPRComment(
@@ -202,15 +365,8 @@ export class OctokitGitHubService implements GitHubService {
 		prNumber: number,
 		body: string,
 	): Promise<void> {
-		const octokit = this.createInstallationClient(installationId);
-		// Phase 1 limitation: post a new Procella comment for each update.
-		// Phase 2 will switch to find-and-update existing Procella comment threads.
-		await octokit.rest.issues.createComment({
-			owner,
-			repo,
-			issue_number: prNumber,
-			body,
-		});
+		const octokit = this.installationClientFactory(installationId);
+		await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
 	}
 
 	async setCommitStatus(
@@ -222,7 +378,7 @@ export class OctokitGitHubService implements GitHubService {
 		description: string,
 		context = "procella/preview",
 	): Promise<void> {
-		const octokit = this.createInstallationClient(installationId);
+		const octokit = this.installationClientFactory(installationId);
 		await octokit.rest.repos.createCommitStatus({
 			owner,
 			repo,
@@ -233,55 +389,79 @@ export class OctokitGitHubService implements GitHubService {
 		});
 	}
 
-	async saveInstallation(tenantId: string, installation: GitHubInstallationData): Promise<void> {
-		await this.db
+	private async saveInstallation(
+		tenantId: string,
+		installation: GitHubInstallationData,
+	): Promise<GitHubInstallationInfo> {
+		const [row] = await this.db
 			.insert(githubInstallations)
-			.values({
-				tenantId,
-				installationId: installation.installationId,
-				accountLogin: installation.accountLogin,
-				accountType: installation.accountType,
-				repositorySelection: installation.repositorySelection,
-			})
+			.values({ tenantId, ...installation })
 			.onConflictDoUpdate({
-				target: [githubInstallations.tenantId, githubInstallations.installationId],
+				target: githubInstallations.installationId,
 				set: {
 					accountLogin: installation.accountLogin,
 					accountType: installation.accountType,
 					repositorySelection: installation.repositorySelection,
 					updatedAt: sql`now()`,
 				},
-			});
+				setWhere: eq(githubInstallations.tenantId, tenantId),
+			})
+			.returning();
+
+		if (!row) throw new GitHubSetupError("installation_conflict");
+		return mapInstallationRow(row);
 	}
 
-	async removeInstallation(installationId: number): Promise<void> {
+	private async getInstallationById(
+		installationId: number,
+	): Promise<GitHubInstallationInfo | null> {
+		const [row] = await this.db
+			.select()
+			.from(githubInstallations)
+			.where(eq(githubInstallations.installationId, installationId))
+			.limit(1);
+		return row ? mapInstallationRow(row) : null;
+	}
+
+	private async removeInstallationById(installationId: number): Promise<void> {
 		await this.db
 			.delete(githubInstallations)
 			.where(eq(githubInstallations.installationId, installationId));
 	}
 
-	async getInstallation(tenantId: string): Promise<GitHubInstallationInfo | null> {
-		const [row] = await this.db
-			.select()
-			.from(githubInstallations)
-			.where(eq(githubInstallations.tenantId, tenantId))
-			.orderBy(desc(githubInstallations.updatedAt))
-			.limit(1);
+	private async loadInstallation(installationId: number): Promise<GitHubInstallationData> {
+		try {
+			const { data } = await this.appClient.request("GET /app/installations/{installation_id}", {
+				installation_id: installationId,
+			});
+			const account = data.account;
+			const accountLogin =
+				typeof account === "object" && account && "login" in account ? account.login : undefined;
+			const accountType = data.target_type;
+			const appId = Number(data.app_id);
+			const repositorySelection = data.repository_selection;
+			if (
+				appId !== Number(this.config.appId) ||
+				data.id !== installationId ||
+				typeof accountLogin !== "string" ||
+				(accountType !== "Organization" && accountType !== "User") ||
+				(repositorySelection !== "all" && repositorySelection !== "selected")
+			) {
+				throw new GitHubSetupError("invalid_installation");
+			}
 
-		if (!row) {
-			return null;
+			return { installationId, accountLogin, accountType, repositorySelection };
+		} catch (error) {
+			if (error instanceof GitHubSetupError) throw error;
+			throw new GitHubSetupError("invalid_installation");
 		}
+	}
 
-		return {
-			id: row.id,
-			tenantId: row.tenantId,
-			installationId: row.installationId,
-			accountLogin: row.accountLogin,
-			accountType: row.accountType as "Organization" | "User",
-			repositorySelection: row.repositorySelection as "all" | "selected",
-			createdAt: row.createdAt,
-			updatedAt: row.updatedAt,
-		};
+	private createAppClient(): Octokit {
+		return new Octokit({
+			authStrategy: createAppAuth,
+			auth: { appId: this.config.appId, privateKey: this.config.privateKey },
+		});
 	}
 
 	private createInstallationClient(installationId: number): Octokit {
@@ -294,4 +474,17 @@ export class OctokitGitHubService implements GitHubService {
 			},
 		});
 	}
+}
+
+function mapInstallationRow(row: typeof githubInstallations.$inferSelect): GitHubInstallationInfo {
+	return {
+		id: row.id,
+		tenantId: row.tenantId,
+		installationId: row.installationId,
+		accountLogin: row.accountLogin,
+		accountType: row.accountType as "Organization" | "User",
+		repositorySelection: row.repositorySelection as "all" | "selected",
+		createdAt: row.createdAt,
+		updatedAt: row.updatedAt,
+	};
 }
