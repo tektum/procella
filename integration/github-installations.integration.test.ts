@@ -6,7 +6,6 @@ import { getTestDb, truncateTables } from "./setup.js";
 
 const config = {
 	appId: "123",
-	slug: "procella-test",
 	privateKey: "unused-in-tests",
 	webhookSecret: "webhook-secret",
 	stateSigningKey: "state-signing-key-state-signing-key",
@@ -57,8 +56,10 @@ afterEach(async () => {
 
 function createService() {
 	const appClient = {
-		request: async (_route: string, input: { installation_id: number }) => {
-			const data = installations.get(input.installation_id as 101 | 102 | 201);
+		request: async (route: string, input?: { installation_id: number }) => {
+			if (route === "GET /app") return { data: { id: 123, slug: "procella-test" } };
+			const installationId = input?.installation_id;
+			const data = installations.get(installationId as 101 | 102 | 201);
 			if (!data) throw Object.assign(new Error("Not Found"), { status: 404 });
 			return { data };
 		},

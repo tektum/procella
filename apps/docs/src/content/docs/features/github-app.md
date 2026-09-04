@@ -52,7 +52,6 @@ Add these to your Procella deployment:
 | Variable | Description |
 |---|---|
 | `PROCELLA_GITHUB_APP_ID` | The numeric App ID from the GitHub App settings page |
-| `PROCELLA_GITHUB_APP_SLUG` | The URL slug shown on the GitHub App settings page |
 | `PROCELLA_GITHUB_APP_PRIVATE_KEY` | Contents of the `.pem` file (include the `-----BEGIN RSA PRIVATE KEY-----` headers) |
 | `PROCELLA_GITHUB_APP_WEBHOOK_SECRET` | The webhook secret you set in step 1 |
 
@@ -60,7 +59,6 @@ For Docker or docker-compose, pass these as environment variables:
 
 ```bash
 PROCELLA_GITHUB_APP_ID=123456
-PROCELLA_GITHUB_APP_SLUG=procella-your-org
 PROCELLA_GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----
 MIIEowIBAAK...
 -----END RSA PRIVATE KEY-----"
@@ -79,13 +77,13 @@ Existing installations created before tenant-bound setup are removed during migr
 
 ### Moving a Repository Between Organizations
 
-Use a GitHub App owned by the destination organization when the previous organization-owned App cannot move with the repository. Create the replacement App under the destination organization, connect it from Procella Settings, and replace all four `PROCELLA_GITHUB_APP_*` values together. Procella rejects partial GitHub App configuration.
+Use a GitHub App owned by the destination organization when the previous organization-owned App cannot move with the repository. Create the replacement App under the destination organization, connect it from Procella Settings, and replace all three `PROCELLA_GITHUB_APP_*` credential values together. Procella rejects partial GitHub App configuration.
 
 The new App may keep the existing webhook URL. Confirm a signed delivery succeeds after installation before retiring the old App.
 
 ### Deployment Credentials
 
-The deployed Procella instance needs its own GitHub App credentials and slug. Do not supply the Renovate App ID or private key as `PROCELLA_GITHUB_APP_*`; the two apps have different permissions and purposes. For SST deployments, configure the dedicated Procella App values in the matching `ProcellaGitHubApp*` secrets.
+The deployed Procella instance needs its own GitHub App credentials. Procella loads the current public App slug from GitHub using those credentials when an administrator starts installation, so App renames do not require configuration changes. Do not supply the Renovate App ID or private key as `PROCELLA_GITHUB_APP_*`; the two apps have different permissions and purposes. For SST deployments, configure the dedicated Procella App values in the matching `ProcellaGitHubApp*` secrets.
 
 ## How PR Comments Work
 

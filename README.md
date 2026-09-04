@@ -116,13 +116,12 @@ All configuration is via `PROCELLA_*` environment variables. Set these as Vercel
 | `PROCELLA_CRON_SECRET` | *(required when `/cron/gc` is enabled)* | Bearer token used to authorize the GC cron endpoint |
 | `PROCELLA_CORS_ORIGINS` | *(optional)* | Comma-separated allowed CORS origins; omit for strict same-origin |
 | `PROCELLA_GITHUB_APP_ID` | *(optional)* | GitHub App ID for PR comments and commit status checks |
-| `PROCELLA_GITHUB_APP_SLUG` | *(optional)* | URL slug from the GitHub App settings page; required with the other GitHub App variables |
 | `PROCELLA_GITHUB_APP_PRIVATE_KEY` | *(optional)* | GitHub App private key (PEM format) |
 | `PROCELLA_GITHUB_APP_WEBHOOK_SECRET` | *(optional)* | GitHub App webhook secret for signature verification |
 
 | `PROCELLA_TRUST_PROXY` | *(optional)* | Set to `true` only behind a trusted reverse proxy so Procella honors `X-Forwarded-For` / `X-Real-IP` |
 
-For the GitHub App integration, use a dedicated App and configure all four `PROCELLA_GITHUB_APP_*` variables with that App's slug and credentials. Do not reuse the Renovate App credentials; it requires broader repository permissions and should remain scoped to dependency updates. After moving this repository to another GitHub organization, connect the Procella App to the destination tenant and grant it access to this repository. See the [GitHub App setup guide](apps/docs/src/content/docs/features/github-app.md).
+For the GitHub App integration, use a dedicated App and configure the three `PROCELLA_GITHUB_APP_*` credential variables. Procella derives the App's public slug from GitHub whenever an administrator starts installation, so App renames require no deployment configuration change. Do not reuse the Renovate App credentials; it requires broader repository permissions and should remain scoped to dependency updates. After moving this repository to another GitHub organization, connect the Procella App to the destination tenant and grant it access to this repository. See the [GitHub App setup guide](apps/docs/src/content/docs/features/github-app.md).
 
 Encryption keys must be set explicitly in every environment. Generate one with `openssl rand -hex 32`.
 

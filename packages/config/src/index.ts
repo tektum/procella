@@ -90,10 +90,6 @@ const configSchema = z
 			.transform((v) => v === "true" || v === "1"),
 
 		githubAppId: z.string().regex(/^\d+$/, "Must be a numeric GitHub App ID").optional(),
-		githubAppSlug: z
-			.string()
-			.regex(/^[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?$/, "Must be a valid GitHub App slug")
-			.optional(),
 		githubAppPrivateKey: z
 			.string()
 			.transform((key) => key.replace(/\\n/g, "\n"))
@@ -138,18 +134,13 @@ const configSchema = z
 		}
 		// OIDC enabled by default; dev mode silently disables it in bootstrap
 
-		const githubFields = [
-			data.githubAppId,
-			data.githubAppSlug,
-			data.githubAppPrivateKey,
-			data.githubAppWebhookSecret,
-		];
+		const githubFields = [data.githubAppId, data.githubAppPrivateKey, data.githubAppWebhookSecret];
 		const githubProvided = githubFields.filter((value) => Boolean(value)).length;
 		if (githubProvided > 0 && githubProvided < githubFields.length) {
 			ctx.addIssue({
 				code: z.ZodIssueCode.custom,
 				message:
-					"GitHub App integration requires PROCELLA_GITHUB_APP_ID, PROCELLA_GITHUB_APP_SLUG, PROCELLA_GITHUB_APP_PRIVATE_KEY, and PROCELLA_GITHUB_APP_WEBHOOK_SECRET together.",
+					"GitHub App integration requires PROCELLA_GITHUB_APP_ID, PROCELLA_GITHUB_APP_PRIVATE_KEY, and PROCELLA_GITHUB_APP_WEBHOOK_SECRET together.",
 				path: ["githubAppId"],
 			});
 		}
@@ -191,7 +182,6 @@ const envMapping = {
 	oidcEnabled: "PROCELLA_OIDC_ENABLED",
 	deltaCheckpointsEnabled: "PROCELLA_DELTA_CHECKPOINTS_ENABLED",
 	githubAppId: "PROCELLA_GITHUB_APP_ID",
-	githubAppSlug: "PROCELLA_GITHUB_APP_SLUG",
 	githubAppPrivateKey: "PROCELLA_GITHUB_APP_PRIVATE_KEY",
 	githubAppWebhookSecret: "PROCELLA_GITHUB_APP_WEBHOOK_SECRET",
 	escEvaluatorFnName: "PROCELLA_ESC_EVALUATOR_FN_NAME",
