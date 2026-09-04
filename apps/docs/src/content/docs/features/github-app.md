@@ -47,13 +47,13 @@ Scroll down to **Private keys** and click **Generate a private key**. This downl
 
 ### 2. Configure Environment Variables
 
-Add these to your Procella deployment:
+The integration is optional. Omit all three variables to start Procella with GitHub integration disabled. To enable it, configure all three; empty, partial, and invalid values are rejected.
 
 | Variable | Description |
 |---|---|
-| `PROCELLA_GITHUB_APP_ID` | The numeric App ID from the GitHub App settings page |
-| `PROCELLA_GITHUB_APP_PRIVATE_KEY` | Contents of the `.pem` file (include the `-----BEGIN RSA PRIVATE KEY-----` headers) |
-| `PROCELLA_GITHUB_APP_WEBHOOK_SECRET` | The webhook secret you set in step 1 |
+| `PROCELLA_GITHUB_APP_ID` | The positive numeric App ID from GitHub, without signs, whitespace, decimals, exponents, or leading zeros |
+| `PROCELLA_GITHUB_APP_PRIVATE_KEY` | A valid RSA private key PEM from GitHub (raw multiline or `\\n`-escaped) |
+| `PROCELLA_GITHUB_APP_WEBHOOK_SECRET` | The non-whitespace webhook secret you set in step 1; surrounding bytes are significant and preserved |
 
 For Docker or docker-compose, pass these as environment variables:
 
@@ -83,7 +83,11 @@ The new App may keep the existing webhook URL. Confirm a signed delivery succeed
 
 ### Deployment Credentials
 
-The deployed Procella instance needs its own GitHub App credentials. Procella loads the current public App slug from GitHub using those credentials when an administrator starts installation, so App renames do not require configuration changes. Do not supply the Renovate App ID or private key as `PROCELLA_GITHUB_APP_*`; the two apps have different permissions and purposes. For SST deployments, configure the dedicated Procella App values in the matching `ProcellaGitHubApp*` secrets.
+The deployed Procella instance needs its own dedicated GitHub App credentials. Procella loads the current public App slug from GitHub using those credentials when an administrator starts installation, so App renames do not require configuration changes. Do not supply the Renovate App ID or private key as `PROCELLA_GITHUB_APP_*`; the two apps have different permissions and purposes.
+
+For a direct SST deployment, export `PROCELLA_GITHUB_APP_ENABLED=true` and set `ProcellaGitHubAppId`, `ProcellaGitHubAppPrivateKey`, and `ProcellaGitHubAppWebhookSecret` for that stage (or as SST fallbacks). The GitHub Actions deployment workflows source the opt-in from the non-secret environment variable of the same name and the credentials from the matching `PROCELLA_GITHUB_APP_*` environment secrets. When the variable is unset or `false`, SST does not link the integration, even if a preview stage retains values from an older deployment. This cleanly removes obsolete secret resources on the next deploy. A partial group or invalid credential fails deployment when the integration is enabled.
+
+With the integration disabled, preview and production deployments remain healthy but GitHub setup, webhooks, PR comments, and commit statuses are unavailable. Live PR-comment end-to-end testing requires a dedicated Procella GitHub App installed on the test repository, all three credentials in the preview environment, and `PROCELLA_GITHUB_APP_ENABLED=true`. It cannot use the Renovate App.
 
 ## How PR Comments Work
 

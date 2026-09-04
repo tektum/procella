@@ -5,6 +5,14 @@
 // Uses process.env for portability across Bun, Node.js, and Vercel.
 
 import { z } from "zod";
+import {
+	GITHUB_APP_ID_ERROR,
+	GITHUB_APP_PRIVATE_KEY_ERROR,
+	GITHUB_APP_WEBHOOK_SECRET_ERROR,
+	isValidGitHubAppId,
+	isValidGitHubAppWebhookSecret,
+	parseGitHubAppPrivateKey,
+} from "./github-app.js";
 
 const roleSchema = z.enum(["admin", "member", "viewer"]);
 const devUserSchema = z.object({
@@ -89,12 +97,27 @@ const configSchema = z
 			.default("false")
 			.transform((v) => v === "true" || v === "1"),
 
-		githubAppId: z.string().regex(/^\d+$/, "Must be a numeric GitHub App ID").optional(),
+		// Optional as one atomic group. Empty values remain invalid; deployment
+		// adapters must omit the group when the integration is not configured.
+		githubAppId: z.string().refine(isValidGitHubAppId, GITHUB_APP_ID_ERROR).optional(),
 		githubAppPrivateKey: z
 			.string()
-			.transform((key) => key.replace(/\\n/g, "\n"))
+			.transform((key, ctx) => {
+				try {
+					return parseGitHubAppPrivateKey(key);
+				} catch {
+					ctx.addIssue({
+						code: z.ZodIssueCode.custom,
+						message: GITHUB_APP_PRIVATE_KEY_ERROR,
+					});
+					return z.NEVER;
+				}
+			})
 			.optional(),
-		githubAppWebhookSecret: z.string().optional(),
+		githubAppWebhookSecret: z
+			.string()
+			.refine(isValidGitHubAppWebhookSecret, GITHUB_APP_WEBHOOK_SECRET_ERROR)
+			.optional(),
 
 		// ESC
 		escEvaluatorFnName: z.string().optional(),
@@ -153,6 +176,15 @@ const configSchema = z
 export type Config = z.infer<typeof configSchema>;
 export type AuthMode = z.infer<typeof authModeSchema>;
 export type BlobBackend = z.infer<typeof blobBackendSchema>;
+
+export {
+	GITHUB_APP_ID_ERROR,
+	GITHUB_APP_PRIVATE_KEY_ERROR,
+	GITHUB_APP_WEBHOOK_SECRET_ERROR,
+	isValidGitHubAppId,
+	isValidGitHubAppWebhookSecret,
+	parseGitHubAppPrivateKey,
+};
 
 // ============================================================================
 // Loader

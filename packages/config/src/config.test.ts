@@ -1,5 +1,17 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { generateKeyPairSync } from "node:crypto";
 import { formatConfigErrors, loadConfig, tryLoadConfig } from "./index.js";
+
+const TEST_GITHUB_APP_PRIVATE_KEY = generateKeyPairSync("rsa", {
+	modulusLength: 2048,
+})
+	.privateKey.export({ format: "pem", type: "pkcs1" })
+	.toString();
+const TEST_EC_PRIVATE_KEY = generateKeyPairSync("ec", {
+	namedCurve: "P-256",
+})
+	.privateKey.export({ format: "pem", type: "pkcs8" })
+	.toString();
 
 // Save original env and restore after each test
 let savedEnv: Record<string, string | undefined>;
@@ -10,6 +22,12 @@ function setMinimalEnv() {
 	Bun.env.PROCELLA_AUTH_MODE = "dev";
 	Bun.env.PROCELLA_DEV_AUTH_TOKEN = "devtoken123";
 	Bun.env.PROCELLA_TICKET_SIGNING_KEY = "ticket-signing-key-ticket-signing-key";
+}
+
+function setValidGitHubEnv() {
+	Bun.env.PROCELLA_GITHUB_APP_ID = "12345";
+	Bun.env.PROCELLA_GITHUB_APP_PRIVATE_KEY = TEST_GITHUB_APP_PRIVATE_KEY.replace(/\n/g, "\\n");
+	Bun.env.PROCELLA_GITHUB_APP_WEBHOOK_SECRET = "webhook-secret";
 }
 
 function clearProcellaEnv() {
@@ -213,17 +231,44 @@ describe("@procella/config", () => {
 			expect(config.listenAddr).toBe(":9090");
 		});
 
+		test("leaves the GitHub integration disabled when credentials are absent", () => {
+			clearProcellaEnv();
+			setMinimalEnv();
+
+			const config = loadConfig();
+			expect(config.githubAppId).toBeUndefined();
+			expect(config.githubAppPrivateKey).toBeUndefined();
+			expect(config.githubAppWebhookSecret).toBeUndefined();
+		});
+
 		test("accepts complete GitHub app configuration", () => {
 			clearProcellaEnv();
 			setMinimalEnv();
-			Bun.env.PROCELLA_GITHUB_APP_ID = "12345";
-			Bun.env.PROCELLA_GITHUB_APP_PRIVATE_KEY = "-----BEGIN KEY-----\\nline\\n-----END KEY-----";
-			Bun.env.PROCELLA_GITHUB_APP_WEBHOOK_SECRET = "secret";
+			setValidGitHubEnv();
 
 			const config = loadConfig();
 			expect(config.githubAppId).toBe("12345");
-			expect(config.githubAppPrivateKey).toContain("\nline\n");
-			expect(config.githubAppWebhookSecret).toBe("secret");
+			expect(config.githubAppPrivateKey).toBe(TEST_GITHUB_APP_PRIVATE_KEY);
+			expect(config.githubAppWebhookSecret).toBe("webhook-secret");
+		});
+
+		test("preserves non-whitespace webhook secret bytes", () => {
+			clearProcellaEnv();
+			setMinimalEnv();
+			setValidGitHubEnv();
+			Bun.env.PROCELLA_GITHUB_APP_WEBHOOK_SECRET = "  webhook-secret  ";
+
+			expect(loadConfig().githubAppWebhookSecret).toBe("  webhook-secret  ");
+		});
+
+		test("rejects empty GitHub app secret values", () => {
+			clearProcellaEnv();
+			setMinimalEnv();
+			Bun.env.PROCELLA_GITHUB_APP_ID = "";
+			Bun.env.PROCELLA_GITHUB_APP_PRIVATE_KEY = "";
+			Bun.env.PROCELLA_GITHUB_APP_WEBHOOK_SECRET = "";
+
+			expect(() => loadConfig()).toThrow("positive safe integer");
 		});
 
 		test("throws when GitHub app configuration is partial", () => {
@@ -231,6 +276,49 @@ describe("@procella/config", () => {
 			setMinimalEnv();
 			Bun.env.PROCELLA_GITHUB_APP_ID = "12345";
 			expect(() => loadConfig()).toThrow();
+		});
+
+		test("rejects noncanonical or unsafe GitHub App IDs", () => {
+			for (const appId of [
+				"0",
+				"00",
+				"0001",
+				"-1",
+				"1.0",
+				"1e3",
+				"+1",
+				" 1",
+				"1 ",
+				"9007199254740992",
+				"placeholder",
+			]) {
+				clearProcellaEnv();
+				setMinimalEnv();
+				setValidGitHubEnv();
+				Bun.env.PROCELLA_GITHUB_APP_ID = appId;
+
+				expect(() => loadConfig()).toThrow("positive safe integer");
+			}
+		});
+
+		test("rejects whitespace, malformed, placeholder, and non-RSA private keys", () => {
+			for (const privateKey of ["   ", "not-a-key", "placeholder", TEST_EC_PRIVATE_KEY]) {
+				clearProcellaEnv();
+				setMinimalEnv();
+				setValidGitHubEnv();
+				Bun.env.PROCELLA_GITHUB_APP_PRIVATE_KEY = privateKey;
+
+				expect(() => loadConfig()).toThrow("valid RSA private key");
+			}
+		});
+
+		test("rejects a whitespace-only webhook secret", () => {
+			clearProcellaEnv();
+			setMinimalEnv();
+			setValidGitHubEnv();
+			Bun.env.PROCELLA_GITHUB_APP_WEBHOOK_SECRET = " \t\n ";
+
+			expect(() => loadConfig()).toThrow("non-whitespace characters");
 		});
 	});
 

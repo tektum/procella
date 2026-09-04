@@ -1,9 +1,30 @@
+import type { Input } from "@pulumi/pulumi";
+
+import { resolveGitHubAppSecretNames } from "./github-app-secrets";
+
 export const encryptionKey = new sst.Secret("ProcellaEncryptionKey");
 export const devAuthToken = new sst.Secret("ProcellaDevAuthToken");
 export const descopeManagementKey = new sst.Secret("ProcellaDescopeManagementKey");
-export const githubAppId = new sst.Secret("ProcellaGitHubAppId");
-export const githubAppPrivateKey = new sst.Secret("ProcellaGitHubAppPrivateKey");
-export const githubAppWebhookSecret = new sst.Secret("ProcellaGitHubAppWebhookSecret");
+// GitHub App credentials are optional and linked only as an atomic group.
+// Workflow opt-in is authoritative so stale SST stage/fallback values cannot
+// silently re-enable the integration after its deployment secrets are removed.
+const githubAppSecretNames = resolveGitHubAppSecretNames(process.env);
+export const githubAppSecrets = githubAppSecretNames
+	? {
+			appId: new sst.Secret(githubAppSecretNames.appId),
+			privateKey: new sst.Secret(githubAppSecretNames.privateKey),
+			webhookSecret: new sst.Secret(githubAppSecretNames.webhookSecret),
+		}
+	: null;
+
+export const githubAppEnvironment: Record<string, Input<string>> = githubAppSecrets
+	? {
+			PROCELLA_GITHUB_APP_ID: githubAppSecrets.appId.value,
+			PROCELLA_GITHUB_APP_PRIVATE_KEY: githubAppSecrets.privateKey.value,
+			PROCELLA_GITHUB_APP_WEBHOOK_SECRET: githubAppSecrets.webhookSecret.value,
+		}
+	: {};
+
 export const otelEndpoint = new sst.Secret("ProcellaOtelEndpoint");
 export const otelHeaders = new sst.Secret("ProcellaOtelHeaders");
 export const ticketSigningKey = new sst.Secret("ProcellaTicketSigningKey");
@@ -21,8 +42,6 @@ export const sharedSecrets = [encryptionKey, devAuthToken, otelEndpoint, otelHea
 export const apiSecrets = [
 	...sharedSecrets,
 	descopeManagementKey,
-	githubAppId,
-	githubAppPrivateKey,
-	githubAppWebhookSecret,
+	...(githubAppSecrets ? Object.values(githubAppSecrets) : []),
 	ticketSigningKey,
 ];
