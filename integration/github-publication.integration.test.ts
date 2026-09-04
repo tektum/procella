@@ -259,7 +259,7 @@ describe("durable GitHub update publication", () => {
 		});
 		expect(delivery.calls.created).toHaveLength(1);
 		expect(delivery.calls.updated).toHaveLength(1);
-		expect(delivery.calls.updated[0].body).toContain("**Changes:** +3 ~0 -0 =0");
+		expect(delivery.calls.updated[0].body).toContain("**Changes:** create 3");
 		expect(delivery.calls.statuses.map((entry) => entry.state)).toEqual(["pending", "success"]);
 		expect(new Set(delivery.calls.statuses.map((entry) => entry.context)).size).toBe(1);
 
@@ -279,7 +279,7 @@ describe("durable GitHub update publication", () => {
 		[row] = await db.select().from(updates).where(eq(updates.id, updateId));
 		expect(row.summarySequence).toBe(11);
 		expect(delivery.calls.created).toHaveLength(1);
-		expect(delivery.calls.updated.at(-1)?.body).toContain("**Changes:** +4 ~0 -0 =0");
+		expect(delivery.calls.updated.at(-1)?.body).toContain("**Changes:** create 4");
 	});
 
 	test("renders each update with only its own persisted summary", async () => {
@@ -301,8 +301,8 @@ describe("durable GitHub update publication", () => {
 		const secondBody = delivery.calls.updated.find((call) =>
 			call.body.includes(`/${second.stack.stackName}\``),
 		)?.body;
-		expect(firstBody).toContain("**Changes:** +1 ~0 -0 =0");
-		expect(secondBody).toContain("**Changes:** +7 ~0 -0 =0");
+		expect(firstBody).toContain("**Changes:** create 1");
+		expect(secondBody).toContain("**Changes:** create 7");
 	});
 
 

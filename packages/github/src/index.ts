@@ -236,10 +236,10 @@ export function buildPRCommentBody(update: {
 
 	if (update.status !== "running") {
 		if (update.resourceChanges) {
-			const changes = update.resourceChanges;
-			lines.push(
-				`**Changes:** +${changes.create ?? 0} ~${changes.update ?? 0} -${changes.delete ?? 0} =${changes.same ?? 0}`,
-			);
+			const changes = Object.entries(update.resourceChanges)
+				.sort(([left], [right]) => left.localeCompare(right))
+				.map(([operation, count]) => `${operation} ${count}`);
+			lines.push(`**Changes:** ${changes.length > 0 ? changes.join(", ") : "none"}`);
 		} else {
 			lines.push("**Summary:** unavailable");
 		}
@@ -275,330 +275,12 @@ export function mapUpdateStatusToCommitState(
 	return "error";
 }
 
-export class OctokitGitHubService implements GitHubService {
-	private readonly db: Database;
-	private readonly config: GitHubAppConfig;
-	private readonly appClient: Octokit;
-	private readonly installationClientFactory: (installationId: number) => Octokit;
-	private readonly setupStates: GitHubSetupStateService;
-
-	constructor({
-		db,
-		config,
-		appClient,
-		installationClientFactory,
-		setupStates,
-	}: {
-		db: Database;
-		config: GitHubAppConfig;
-		appClient?: Octokit;
-		installationClientFactory?: (installationId: number) => Octokit;
-		setupStates?: GitHubSetupStateService;
-	}) {
-		this.db = db;
-		this.config = config;
-		this.appClient = appClient ?? this.createAppClient();
-		this.installationClientFactory =
-			installationClientFactory ??
-			((installationId) => this.createInstallationClient(installationId));
-		this.setupStates = setupStates ?? createGitHubSetupStateService(config.stateSigningKey);
-	}
-
-	async issueInstallationUrl(tenantId: string): Promise<string> {
-		const slug = await this.loadAppSlug();
-		const { state, claims } = await this.setupStates.issue(tenantId);
-		await this.db.delete(githubSetupStates).where(lt(githubSetupStates.expiresAt, sql`now()`));
-		await this.db.insert(githubSetupStates).values({
-			jti: claims.jti,
-			tenantId: claims.tenantId,
-			expiresAt: claims.expiresAt,
-		});
-
-		const url = new URL(`https://github.com/apps/${slug}/installations/new`);
-		url.searchParams.set("state", state);
-		return url.toString();
-	}
-
-	async completeInstallation(
-		state: string,
-		installationId: number,
-	): Promise<GitHubInstallationInfo> {
-		const claims = await this.setupStates.verify(state);
-		const installation = await this.loadInstallation(installationId);
-
-		return this.db.transaction(async (tx) => {
-			const [consumed] = await tx
-				.delete(githubSetupStates)
-				.where(
-					and(
-						eq(githubSetupStates.jti, claims.jti),
-						eq(githubSetupStates.tenantId, claims.tenantId),
-						gt(githubSetupStates.expiresAt, sql`now()`),
-					),
-				)
-				.returning({ jti: githubSetupStates.jti });
-			if (!consumed) throw new GitHubSetupError("replayed_state");
-
-			return this.saveInstallation(claims.tenantId, installation, tx as Database);
-		});
-	}
-
-	async handleWebhookEvent(event: string, payload: unknown): Promise<void> {
-		if (event !== "installation" && event !== "installation_repositories") return;
-
-		const body = payload as {
-			action?: string;
-			installation?: {
-				id?: number;
-				account?: { login?: string; type?: "Organization" | "User" };
-				repository_selection?: "all" | "selected";
-			};
-		};
-		const installation = body.installation;
-		if (!Number.isSafeInteger(installation?.id) || (installation?.id ?? 0) <= 0) return;
-
-		const existing = await this.getInstallationById(installation?.id as number);
-		if (!existing) return;
-
-		if (event === "installation" && body.action === "deleted") {
-			await this.removeInstallationById(existing.installationId);
-			return;
-		}
-
-		const accountLogin = installation?.account?.login;
-		const accountType = installation?.account?.type;
-		const repositorySelection = installation?.repository_selection;
-		await this.db
-			.update(githubInstallations)
-			.set({
-				...(accountLogin ? { accountLogin } : {}),
-				...(accountType === "Organization" || accountType === "User" ? { accountType } : {}),
-				...(repositorySelection === "all" || repositorySelection === "selected"
-					? { repositorySelection }
-					: {}),
-				updatedAt: sql`now()`,
-			})
-			.where(eq(githubInstallations.installationId, existing.installationId));
-	}
-
-	async listInstallations(tenantId: string): Promise<GitHubInstallationInfo[]> {
-		const rows = await this.db
-			.select()
-			.from(githubInstallations)
-			.where(eq(githubInstallations.tenantId, tenantId))
-			.orderBy(desc(githubInstallations.updatedAt));
-		return rows.map(mapInstallationRow);
-	}
-
-	async resolveInstallation(
-		target: GitHubRepositoryTarget,
-	): Promise<GitHubInstallationInfo | null> {
-		const installations = await this.listInstallations(target.tenantId);
-
-		try {
-			const { data } = await this.appClient.request("GET /repos/{owner}/{repo}/installation", {
-				owner: target.owner,
-				repo: target.repo,
-			});
-			if (!Number.isSafeInteger(data.id)) return null;
-			return installations.find((installation) => installation.installationId === data.id) ?? null;
-		} catch {
-			// The app-JWT endpoint is authoritative for repository selection. Any
-			// lookup failure denies access, including public repository metadata access.
-			return null;
-		}
-	}
-
-	async removeInstallation(tenantId: string, installationId: number): Promise<void> {
-		await this.db
-			.delete(githubInstallations)
-			.where(
-				and(
-					eq(githubInstallations.tenantId, tenantId),
-					eq(githubInstallations.installationId, installationId),
-				),
-			);
-	}
-
-	async createPRComment(
-		installationId: number,
-		owner: string,
-		repo: string,
-		prNumber: number,
-		body: string,
-	): Promise<number> {
-		const octokit = this.installationClientFactory(installationId);
-		const { data } = await octokit.rest.issues.createComment({
-			owner,
-			repo,
-			issue_number: prNumber,
-			body,
-		});
-		if (!Number.isSafeInteger(data.id)) throw new Error("GitHub returned an invalid comment ID");
-		return data.id;
-	}
-
-	async findPRComment(
-		installationId: number,
-		owner: string,
-		repo: string,
-		prNumber: number,
-		marker: string,
-	): Promise<number | null> {
-		const octokit = this.installationClientFactory(installationId);
-		const comments = await octokit.paginate(octokit.rest.issues.listComments, {
-			owner,
-			repo,
-			issue_number: prNumber,
-			per_page: 100,
-		});
-		const match = comments.find((comment) => comment.body?.includes(marker));
-		return match && Number.isSafeInteger(match.id) ? match.id : null;
-	}
-
-	async updatePRComment(
-		installationId: number,
-		owner: string,
-		repo: string,
-		commentId: number,
-		body: string,
-	): Promise<void> {
-		const octokit = this.installationClientFactory(installationId);
-		await octokit.rest.issues.updateComment({ owner, repo, comment_id: commentId, body });
-	}
-
-	async setCommitStatus(
-		installationId: number,
-		owner: string,
-		repo: string,
-		sha: string,
-		state: "pending" | "success" | "failure" | "error",
-		description: string,
-		context = "procella/preview",
-	): Promise<void> {
-		const octokit = this.installationClientFactory(installationId);
-		await octokit.rest.repos.createCommitStatus({
-			owner,
-			repo,
-			sha,
-			state,
-			description,
-			context,
-		});
-	}
-
-	private async saveInstallation(
-		tenantId: string,
-		installation: GitHubInstallationData,
-		database: Database = this.db,
-	): Promise<GitHubInstallationInfo> {
-		const [row] = await database
-			.insert(githubInstallations)
-			.values({ tenantId, ...installation })
-			.onConflictDoUpdate({
-				target: githubInstallations.installationId,
-				set: {
-					accountLogin: installation.accountLogin,
-					accountType: installation.accountType,
-					repositorySelection: installation.repositorySelection,
-					updatedAt: sql`now()`,
-				},
-				setWhere: eq(githubInstallations.tenantId, tenantId),
-			})
-			.returning();
-
-		if (!row) throw new GitHubSetupError("installation_conflict");
-		return mapInstallationRow(row);
-	}
-
-	private async getInstallationById(
-		installationId: number,
-	): Promise<GitHubInstallationInfo | null> {
-		const [row] = await this.db
-			.select()
-			.from(githubInstallations)
-			.where(eq(githubInstallations.installationId, installationId))
-			.limit(1);
-		return row ? mapInstallationRow(row) : null;
-	}
-
-	private async removeInstallationById(installationId: number): Promise<void> {
-		await this.db
-			.delete(githubInstallations)
-			.where(eq(githubInstallations.installationId, installationId));
-	}
-
-	private async loadInstallation(installationId: number): Promise<GitHubInstallationData> {
-		try {
-			const { data } = await this.appClient.request("GET /app/installations/{installation_id}", {
-				installation_id: installationId,
-			});
-			const account = data.account;
-			const accountLogin =
-				typeof account === "object" && account && "login" in account ? account.login : undefined;
-			const accountType = data.target_type;
-			const appId = Number(data.app_id);
-			const repositorySelection = data.repository_selection;
-			if (
-				appId !== Number(this.config.appId) ||
-				data.id !== installationId ||
-				typeof accountLogin !== "string" ||
-				(accountType !== "Organization" && accountType !== "User") ||
-				(repositorySelection !== "all" && repositorySelection !== "selected")
-			) {
-				throw new GitHubSetupError("invalid_installation");
-			}
-
-			return { installationId, accountLogin, accountType, repositorySelection };
-		} catch (error) {
-			if (error instanceof GitHubSetupError) throw error;
-			throw new GitHubSetupError("invalid_installation");
-		}
-	}
-
-	private async loadAppSlug(): Promise<string> {
-		try {
-			const { data } = await this.appClient.request("GET /app");
-			if (
-				!data ||
-				data.id !== Number(this.config.appId) ||
-				typeof data.slug !== "string" ||
-				!/^[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?$/.test(data.slug)
-			) {
-				throw new Error("GitHub App identity did not match configured credentials");
-			}
-			return data.slug;
-		} catch {
-			throw new Error("Unable to verify configured GitHub App");
-		}
-	}
-
-	private createAppClient(): Octokit {
-		return new Octokit({
-			authStrategy: createAppAuth,
-			auth: { appId: this.config.appId, privateKey: this.config.privateKey },
-			request: { timeout: GITHUB_REQUEST_TIMEOUT_MS },
-		});
-	}
-
-	private createInstallationClient(installationId: number): Octokit {
-		return new Octokit({
-			authStrategy: createAppAuth,
-			auth: {
-				appId: this.config.appId,
-				privateKey: this.config.privateKey,
-				installationId,
-			},
-			request: { timeout: GITHUB_REQUEST_TIMEOUT_MS },
-		});
-	}
-}
 
 /** GitHub client used by background delivery workers. It needs only App signing credentials. */
 export class OctokitGitHubDeliveryService implements GitHubDeliveryService {
-	private readonly db: Database;
-	private readonly appClient: Octokit;
-	private readonly installationClientFactory: (installationId: number) => Octokit;
+	protected readonly db: Database;
+	protected readonly appClient: Octokit;
+	protected readonly installationClientFactory: (installationId: number) => Octokit;
 
 	constructor({
 		db,
@@ -627,6 +309,15 @@ export class OctokitGitHubDeliveryService implements GitHubDeliveryService {
 					auth: { appId: config.appId, privateKey: config.privateKey, installationId },
 					request: { timeout: GITHUB_REQUEST_TIMEOUT_MS },
 				}));
+	}
+
+	async listInstallations(tenantId: string): Promise<GitHubInstallationInfo[]> {
+		const rows = await this.db
+			.select()
+			.from(githubInstallations)
+			.where(eq(githubInstallations.tenantId, tenantId))
+			.orderBy(desc(githubInstallations.updatedAt));
+		return rows.map(mapInstallationRow);
 	}
 
 	async resolveInstallation(
@@ -715,6 +406,202 @@ export class OctokitGitHubDeliveryService implements GitHubDeliveryService {
 			context,
 		});
 	}
+}
+export class OctokitGitHubService extends OctokitGitHubDeliveryService implements GitHubService {
+	private readonly config: GitHubAppConfig;
+	private readonly setupStates: GitHubSetupStateService;
+
+	constructor({
+		db,
+		config,
+		appClient,
+		installationClientFactory,
+		setupStates,
+	}: {
+		db: Database;
+		config: GitHubAppConfig;
+		appClient?: Octokit;
+		installationClientFactory?: (installationId: number) => Octokit;
+		setupStates?: GitHubSetupStateService;
+	}) {
+		super({ db, config, appClient, installationClientFactory });
+		this.config = config;
+		this.setupStates = setupStates ?? createGitHubSetupStateService(config.stateSigningKey);
+	}
+
+	async issueInstallationUrl(tenantId: string): Promise<string> {
+		const slug = await this.loadAppSlug();
+		const { state, claims } = await this.setupStates.issue(tenantId);
+		await this.db.delete(githubSetupStates).where(lt(githubSetupStates.expiresAt, sql`now()`));
+		await this.db.insert(githubSetupStates).values({
+			jti: claims.jti,
+			tenantId: claims.tenantId,
+			expiresAt: claims.expiresAt,
+		});
+
+		const url = new URL(`https://github.com/apps/${slug}/installations/new`);
+		url.searchParams.set("state", state);
+		return url.toString();
+	}
+
+	async completeInstallation(
+		state: string,
+		installationId: number,
+	): Promise<GitHubInstallationInfo> {
+		const claims = await this.setupStates.verify(state);
+		const installation = await this.loadInstallation(installationId);
+
+		return this.db.transaction(async (tx) => {
+			const [consumed] = await tx
+				.delete(githubSetupStates)
+				.where(
+					and(
+						eq(githubSetupStates.jti, claims.jti),
+						eq(githubSetupStates.tenantId, claims.tenantId),
+						gt(githubSetupStates.expiresAt, sql`now()`),
+					),
+				)
+				.returning({ jti: githubSetupStates.jti });
+			if (!consumed) throw new GitHubSetupError("replayed_state");
+
+			return this.saveInstallation(claims.tenantId, installation, tx as Database);
+		});
+	}
+
+	async handleWebhookEvent(event: string, payload: unknown): Promise<void> {
+		if (event !== "installation" && event !== "installation_repositories") return;
+
+		const body = payload as {
+			action?: string;
+			installation?: {
+				id?: number;
+				account?: { login?: string; type?: "Organization" | "User" };
+				repository_selection?: "all" | "selected";
+			};
+		};
+		const installation = body.installation;
+		if (!Number.isSafeInteger(installation?.id) || (installation?.id ?? 0) <= 0) return;
+
+		const existing = await this.getInstallationById(installation?.id as number);
+		if (!existing) return;
+
+		if (event === "installation" && body.action === "deleted") {
+			await this.removeInstallationById(existing.installationId);
+			return;
+		}
+
+		const accountLogin = installation?.account?.login;
+		const accountType = installation?.account?.type;
+		const repositorySelection = installation?.repository_selection;
+		await this.db
+			.update(githubInstallations)
+			.set({
+				...(accountLogin ? { accountLogin } : {}),
+				...(accountType === "Organization" || accountType === "User" ? { accountType } : {}),
+				...(repositorySelection === "all" || repositorySelection === "selected"
+					? { repositorySelection }
+					: {}),
+				updatedAt: sql`now()`,
+			})
+			.where(eq(githubInstallations.installationId, existing.installationId));
+	}
+
+	async removeInstallation(tenantId: string, installationId: number): Promise<void> {
+		await this.db
+			.delete(githubInstallations)
+			.where(
+				and(
+					eq(githubInstallations.tenantId, tenantId),
+					eq(githubInstallations.installationId, installationId),
+				),
+			);
+	}
+
+	private async saveInstallation(
+		tenantId: string,
+		installation: GitHubInstallationData,
+		database: Database = this.db,
+	): Promise<GitHubInstallationInfo> {
+		const [row] = await database
+			.insert(githubInstallations)
+			.values({ tenantId, ...installation })
+			.onConflictDoUpdate({
+				target: githubInstallations.installationId,
+				set: {
+					accountLogin: installation.accountLogin,
+					accountType: installation.accountType,
+					repositorySelection: installation.repositorySelection,
+					updatedAt: sql`now()`,
+				},
+				setWhere: eq(githubInstallations.tenantId, tenantId),
+			})
+			.returning();
+
+		if (!row) throw new GitHubSetupError("installation_conflict");
+		return mapInstallationRow(row);
+	}
+
+	private async getInstallationById(
+		installationId: number,
+	): Promise<GitHubInstallationInfo | null> {
+		const [row] = await this.db
+			.select()
+			.from(githubInstallations)
+			.where(eq(githubInstallations.installationId, installationId))
+			.limit(1);
+		return row ? mapInstallationRow(row) : null;
+	}
+
+	private async removeInstallationById(installationId: number): Promise<void> {
+		await this.db
+			.delete(githubInstallations)
+			.where(eq(githubInstallations.installationId, installationId));
+	}
+
+	private async loadInstallation(installationId: number): Promise<GitHubInstallationData> {
+		try {
+			const { data } = await this.appClient.request("GET /app/installations/{installation_id}", {
+				installation_id: installationId,
+			});
+			const account = data.account;
+			const accountLogin =
+				typeof account === "object" && account && "login" in account ? account.login : undefined;
+			const accountType = data.target_type;
+			const appId = Number(data.app_id);
+			const repositorySelection = data.repository_selection;
+			if (
+				appId !== Number(this.config.appId) ||
+				data.id !== installationId ||
+				typeof accountLogin !== "string" ||
+				(accountType !== "Organization" && accountType !== "User") ||
+				(repositorySelection !== "all" && repositorySelection !== "selected")
+			) {
+				throw new GitHubSetupError("invalid_installation");
+			}
+
+			return { installationId, accountLogin, accountType, repositorySelection };
+		} catch (error) {
+			if (error instanceof GitHubSetupError) throw error;
+			throw new GitHubSetupError("invalid_installation");
+		}
+	}
+	private async loadAppSlug(): Promise<string> {
+		try {
+			const { data } = await this.appClient.request("GET /app");
+			if (
+				!data ||
+				data.id !== Number(this.config.appId) ||
+				typeof data.slug !== "string" ||
+				!/^[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?$/.test(data.slug)
+			) {
+				throw new Error("GitHub App identity did not match configured credentials");
+			}
+			return data.slug;
+		} catch {
+			throw new Error("Unable to verify configured GitHub App");
+		}
+	}
+
 }
 
 export const GITHUB_OUTBOX_CLAIM_SECONDS = 120;

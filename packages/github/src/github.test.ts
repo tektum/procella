@@ -70,11 +70,10 @@ describe("@procella/github", () => {
 				resourceChanges: { create: 3, update: 1, delete: 0, same: 4 },
 				permalink: "https://example.com/update/1",
 			});
-
+			expect(body).toContain("**Changes:** create 3, delete 0, same 4, update 1");
 			expect(body).toContain("<!-- procella:update:11111111-1111-4111-8111-111111111111 -->");
 			expect(body).toContain("## Pulumi Preview");
 			expect(body).toContain("**Stack:** `acme/infra/dev`");
-			expect(body).toContain("**Changes:** +3 ~1 -0 =4");
 			expect(body).toContain("[View details](https://example.com/update/1)");
 		});
 
