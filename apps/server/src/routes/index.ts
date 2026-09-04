@@ -246,6 +246,7 @@ export function createApp(deps: {
 	app.post("/api/oauth/token", withOauthTokenRateLimit, oauth.tokenExchange);
 
 	app.post("/api/webhooks/github", githubH.handleGitHubWebhook);
+	app.get("/github/setup", githubH.completeInstallation);
 
 	// ========================================================================
 	// Update-token authenticated routes (during active update execution)

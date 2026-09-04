@@ -32,7 +32,9 @@ router.route(rootDomain, site.url);
 // and startsWith() in the CloudFront Function won't treat it as a wildcard).
 router.route(`app.${rootDomain}/trpc`, webApi.url);
 router.route(`app.${rootDomain}/api/auth`, webApi.url);
+router.route(`app.${rootDomain}/github/setup`, webApi.url);
 router.route(`app.${rootDomain}/api/esc`, api.url);
 router.route(`${rootDomain}/trpc`, webApi.url);
 router.route(`${rootDomain}/api/auth`, webApi.url);
 router.route(`${rootDomain}/api/esc`, api.url);
+router.route(`${rootDomain}/github/setup`, webApi.url);

@@ -95,10 +95,6 @@ export function updateHandlers(
 				void (async () => {
 					const completed = await updates.getUpdateContext(updateId);
 					const stackInfo = await stacks.getStackById_systemOnly(completed.stackId);
-					const installation = await github.getInstallation(stackInfo.tenantId);
-					if (!installation) {
-						return;
-					}
 
 					const taggedOwner = stackInfo.tags["github:owner"];
 					const taggedRepo = stackInfo.tags["github:repo"];
@@ -123,6 +119,12 @@ export function updateHandlers(
 							: null;
 					const target = taggedTarget ?? metadataTarget;
 					if (!target) return;
+					const installation = await github.resolveInstallation({
+						tenantId: stackInfo.tenantId,
+						owner: target.owner,
+						repo: target.repo,
+					});
+					if (!installation) return;
 
 					const prNumber = Number(target.pr);
 					if (Number.isNaN(prNumber)) return;

@@ -114,6 +114,22 @@ describe("createWebApp tRPC auth", () => {
 	});
 });
 
+describe("createWebApp GitHub setup callback", () => {
+	test("serves the public callback outside the Pulumi API namespace", async () => {
+		const app = makeApp();
+		const callback = await app.request(
+			"/github/setup?installation_id=123&setup_action=install&state=signed",
+		);
+		expect(callback.status).toBe(303);
+		expect(callback.headers.get("location")).toContain("reason=not_configured");
+
+		const sacredApiPath = await app.request(
+			"/api/github/setup?installation_id=123&setup_action=install&state=signed",
+		);
+		expect(sacredApiPath.status).toBe(404);
+	});
+});
+
 describe("createWebApp auth config discovery", () => {
 	test("GET /api/auth/config returns descope config with authBaseUrl when configured", async () => {
 		const app = makeApp({

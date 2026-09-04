@@ -228,8 +228,19 @@ export const githubInstallations = pgTable(
 	},
 	(table) => [
 		index("idx_github_tenant").on(table.tenantId),
-		uniqueIndex("idx_github_tenant_installation").on(table.tenantId, table.installationId),
+		uniqueIndex("idx_github_installation_id").on(table.installationId),
 	],
+);
+
+export const githubSetupStates = pgTable(
+	"github_setup_states",
+	{
+		jti: uuid().primaryKey(),
+		tenantId: text("tenant_id").notNull(),
+		expiresAt: timestamp("expires_at").notNull(),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+	},
+	(table) => [index("idx_github_setup_states_expires").on(table.expiresAt)],
 );
 
 export const oidcTrustPolicies = pgTable(
@@ -419,6 +430,7 @@ export const schema = {
 	webhooks,
 	webhookDeliveries,
 	githubInstallations,
+	githubSetupStates,
 	oidcTrustPolicies,
 	escProjects,
 	escEnvironments,

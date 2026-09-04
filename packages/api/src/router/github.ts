@@ -1,23 +1,32 @@
+import { TRPCError } from "@trpc/server";
+import { z } from "zod/v4";
 import { adminProcedure, protectedProcedure, router } from "../trpc.js";
 
 export const githubRouter = router({
-	installation: protectedProcedure.query(async ({ ctx }) => {
+	status: protectedProcedure.query(async ({ ctx }) => {
 		if (!ctx.github) {
-			return null;
+			return { configured: false as const, installations: [] };
 		}
-		return ctx.github.getInstallation(ctx.caller.tenantId);
+		return {
+			configured: true as const,
+			installations: await ctx.github.listInstallations(ctx.caller.tenantId),
+		};
 	}),
 
-	removeInstallation: adminProcedure.mutation(async ({ ctx }) => {
+	createInstallationUrl: adminProcedure.mutation(async ({ ctx }) => {
 		if (!ctx.github) {
+			throw new TRPCError({
+				code: "PRECONDITION_FAILED",
+				message: "GitHub App is not configured on this server",
+			});
+		}
+		return { url: await ctx.github.issueInstallationUrl(ctx.caller.tenantId) };
+	}),
+
+	removeInstallation: adminProcedure
+		.input(z.object({ installationId: z.number().int().positive() }))
+		.mutation(async ({ ctx, input }) => {
+			await ctx.github?.removeInstallation(ctx.caller.tenantId, input.installationId);
 			return { success: true };
-		}
-
-		const installation = await ctx.github.getInstallation(ctx.caller.tenantId);
-		if (installation) {
-			await ctx.github.removeInstallation(installation.installationId);
-		}
-
-		return { success: true };
-	}),
+		}),
 });

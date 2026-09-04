@@ -20,6 +20,7 @@ export {
 	escRevisionTags,
 	escSessions,
 	githubInstallations,
+	githubSetupStates,
 	journalEntries,
 	oidcTrustPolicies,
 	projects,

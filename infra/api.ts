@@ -8,6 +8,7 @@ import {
 	encryptionKey,
 	githubAppId,
 	githubAppPrivateKey,
+	githubAppSlug,
 	githubAppWebhookSecret,
 	otelEndpoint,
 	otelHeaders,
@@ -72,6 +73,7 @@ export const api = new sst.aws.Function("ProcellaCliApi", {
 					PROCELLA_DESCOPE_AUTH_BASE_URL: descopeAuthBaseUrl,
 					PROCELLA_DESCOPE_MANAGEMENT_KEY: descopeManagementKey.value,
 					PROCELLA_GITHUB_APP_ID: githubAppId.value,
+					PROCELLA_GITHUB_APP_SLUG: githubAppSlug.value,
 					PROCELLA_GITHUB_APP_PRIVATE_KEY: githubAppPrivateKey.value,
 					PROCELLA_GITHUB_APP_WEBHOOK_SECRET: githubAppWebhookSecret.value,
 				}

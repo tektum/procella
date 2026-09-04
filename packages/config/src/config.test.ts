@@ -217,10 +217,12 @@ describe("@procella/config", () => {
 			clearProcellaEnv();
 			setMinimalEnv();
 			Bun.env.PROCELLA_GITHUB_APP_ID = "12345";
+			Bun.env.PROCELLA_GITHUB_APP_SLUG = "procella-test";
 			Bun.env.PROCELLA_GITHUB_APP_PRIVATE_KEY = "-----BEGIN KEY-----\\nline\\n-----END KEY-----";
 			Bun.env.PROCELLA_GITHUB_APP_WEBHOOK_SECRET = "secret";
 
 			const config = loadConfig();
+			expect(config.githubAppSlug).toBe("procella-test");
 			expect(config.githubAppId).toBe("12345");
 			expect(config.githubAppPrivateKey).toContain("\nline\n");
 			expect(config.githubAppWebhookSecret).toBe("secret");
@@ -230,6 +232,17 @@ describe("@procella/config", () => {
 			clearProcellaEnv();
 			setMinimalEnv();
 			Bun.env.PROCELLA_GITHUB_APP_ID = "12345";
+			Bun.env.PROCELLA_GITHUB_APP_SLUG = "procella-test";
+			expect(() => loadConfig()).toThrow();
+		});
+
+		test("rejects an invalid GitHub App slug", () => {
+			clearProcellaEnv();
+			setMinimalEnv();
+			Bun.env.PROCELLA_GITHUB_APP_ID = "12345";
+			Bun.env.PROCELLA_GITHUB_APP_SLUG = "Invalid Slug";
+			Bun.env.PROCELLA_GITHUB_APP_PRIVATE_KEY = "private-key";
+			Bun.env.PROCELLA_GITHUB_APP_WEBHOOK_SECRET = "secret";
 			expect(() => loadConfig()).toThrow();
 		});
 	});

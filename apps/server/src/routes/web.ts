@@ -10,7 +10,7 @@ import type { AuditService } from "@procella/audit";
 import type { AuthConfig, AuthService } from "@procella/auth";
 import type { Database } from "@procella/db";
 import type { EscService } from "@procella/esc";
-import type { GitHubService } from "@procella/github";
+import { type GitHubService, verifyGitHubWebhookSignature } from "@procella/github";
 import type { OidcService, TrustPolicyRepository } from "@procella/oidc";
 import type { StacksService } from "@procella/stacks";
 import { tracingMiddleware } from "@procella/telemetry";
@@ -18,7 +18,7 @@ import type { UpdatesService } from "@procella/updates";
 import type { WebhooksService } from "@procella/webhooks";
 import { fetchRequestHandler } from "@trpc/server/adapters/fetch";
 import { Hono } from "hono";
-import { healthHandlers, oauthHandlers } from "../handlers/index.js";
+import { githubHandlers, healthHandlers, oauthHandlers } from "../handlers/index.js";
 import {
 	createIpRateLimiter,
 	createSecurityHeadersMiddleware,
@@ -67,6 +67,11 @@ export function createWebApp(deps: WebAppDeps): Hono<Env> {
 
 	// Health check
 	const health = healthHandlers({ db: deps.db });
+	const github = githubHandlers({
+		github: deps.github,
+		verifySignature: verifyGitHubWebhookSignature,
+	});
+	app.get("/github/setup", github.completeInstallation);
 	app.get("/healthz", health.health);
 
 	// Auth config discovery — UI fetches this to determine auth mode

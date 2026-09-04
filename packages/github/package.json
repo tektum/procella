@@ -9,6 +9,7 @@
 		"@octokit/rest": "^22.0.0",
 		"@procella/db": "workspace:*",
 		"@procella/config": "workspace:*",
+		"jose": "^6.0.0",
 		"drizzle-orm": "catalog:"
 	}
 }

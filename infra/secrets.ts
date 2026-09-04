@@ -2,6 +2,7 @@ export const encryptionKey = new sst.Secret("ProcellaEncryptionKey");
 export const devAuthToken = new sst.Secret("ProcellaDevAuthToken");
 export const descopeManagementKey = new sst.Secret("ProcellaDescopeManagementKey");
 export const githubAppId = new sst.Secret("ProcellaGitHubAppId");
+export const githubAppSlug = new sst.Secret("ProcellaGitHubAppSlug");
 export const githubAppPrivateKey = new sst.Secret("ProcellaGitHubAppPrivateKey");
 export const githubAppWebhookSecret = new sst.Secret("ProcellaGitHubAppWebhookSecret");
 export const otelEndpoint = new sst.Secret("ProcellaOtelEndpoint");
@@ -22,6 +23,7 @@ export const apiSecrets = [
 	...sharedSecrets,
 	descopeManagementKey,
 	githubAppId,
+	githubAppSlug,
 	githubAppPrivateKey,
 	githubAppWebhookSecret,
 	ticketSigningKey,
