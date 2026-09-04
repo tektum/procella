@@ -22,8 +22,8 @@ const mockPolicy: OidcTrustPolicy = {
 	issuer: "https://token.actions.githubusercontent.com",
 	maxExpiration: 7200,
 	claimConditions: {
-		iss: "https://token.actions.githubusercontent.com",
-		repository_owner: "my-org",
+		repository_owner_id: "12345",
+		repository_id: "67890",
 	},
 	grantedRole: "member",
 	active: true,
@@ -38,7 +38,6 @@ const mockPolicy: OidcTrustPolicy = {
 function mockPolicies(overrides?: Partial<TrustPolicyRepository>): TrustPolicyRepository {
 	return {
 		findByOrgSlugAndIssuer: mock(async () => [mockPolicy]),
-		findByOrgSlug: mock(async () => [mockPolicy]),
 		listByOrgSlug: mock(async () => [mockPolicy]),
 		create: mock(async () => mockPolicy),
 		update: mock(async () => mockPolicy),
@@ -98,6 +97,7 @@ describe("oidcRouter", () => {
 			expect(result).toBeArray();
 			expect(result).toHaveLength(1);
 			expect(result[0]?.id).toBe(VALID_UUID);
+			expect(ctx.oidcPolicies?.listByOrgSlug).toHaveBeenCalledWith("my-org", "t-1");
 		});
 
 		test("non-admin is rejected", () => {
@@ -117,8 +117,8 @@ describe("oidcRouter", () => {
 			displayName: "CI Policy",
 			issuer: "https://token.actions.githubusercontent.com",
 			claimConditions: {
-				iss: "https://token.actions.githubusercontent.com",
-				repository_owner: "my-org",
+				repository_owner_id: "12345",
+				repository_id: "67890",
 			},
 			grantedRole: "member" as const,
 		};
@@ -162,6 +162,17 @@ describe("oidcRouter", () => {
 					claimConditions: { sub: "*" },
 				}),
 			).rejects.toThrow("at least two claim conditions");
+		});
+
+		test("rejects GitHub ref and environment without repository identity", () => {
+			const caller = oidcRouter.createCaller(mockContext());
+
+			return expect(
+				caller.createPolicy({
+					...validInput,
+					claimConditions: { ref: "refs/heads/main", environment: "production" },
+				}),
+			).rejects.toThrow("must include a GitHub repository identity claim");
 		});
 
 		test("surfaces policy_conflict as conflict error", () => {

@@ -130,6 +130,7 @@ describe_oidc("OIDC CI authentication", () => {
 				maxExpiration: 3600,
 				claimConditions: {
 					repository_owner_id: "99999",
+					repository_id: "11111",
 				},
 				grantedRole: "member",
 			},

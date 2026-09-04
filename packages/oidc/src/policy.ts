@@ -1,6 +1,6 @@
 import { type Database, oidcTrustPolicies } from "@procella/db";
 import { ProcellaError } from "@procella/types";
-import { and, eq, ne } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { OidcTrustPolicy, TrustPolicyRepository } from "./types.js";
 
 const GITHUB_ACTIONS_PROVIDER = "github-actions";
@@ -39,39 +39,15 @@ export class PostgresTrustPolicyRepository implements TrustPolicyRepository {
 		const rows = await this.db
 			.select()
 			.from(oidcTrustPolicies)
-			.where(
-				and(
-					eq(oidcTrustPolicies.orgSlug, orgSlug),
-					eq(oidcTrustPolicies.issuer, issuer),
-					eq(oidcTrustPolicies.active, true),
-				),
-			);
+			.where(and(eq(oidcTrustPolicies.orgSlug, orgSlug), eq(oidcTrustPolicies.issuer, issuer)));
 		return rows.map(mapRow);
 	}
 
-	async findByOrgSlug(orgSlug: string, tenantId?: string): Promise<OidcTrustPolicy[]> {
+	async listByOrgSlug(orgSlug: string, tenantId: string): Promise<OidcTrustPolicy[]> {
 		const rows = await this.db
 			.select()
 			.from(oidcTrustPolicies)
-			.where(
-				and(
-					eq(oidcTrustPolicies.orgSlug, orgSlug),
-					eq(oidcTrustPolicies.active, true),
-					...(tenantId ? [eq(oidcTrustPolicies.tenantId, tenantId)] : []),
-				),
-			);
-		return rows.map(mapRow);
-	}
-
-	async listByOrgSlug(orgSlug: string, tenantId?: string): Promise<OidcTrustPolicy[]> {
-		const rows = await this.db
-			.select()
-			.from(oidcTrustPolicies)
-			.where(
-				tenantId
-					? and(eq(oidcTrustPolicies.orgSlug, orgSlug), eq(oidcTrustPolicies.tenantId, tenantId))
-					: eq(oidcTrustPolicies.orgSlug, orgSlug),
-			);
+			.where(and(eq(oidcTrustPolicies.orgSlug, orgSlug), eq(oidcTrustPolicies.tenantId, tenantId)));
 		return rows.map(mapRow);
 	}
 
@@ -80,9 +56,24 @@ export class PostgresTrustPolicyRepository implements TrustPolicyRepository {
 	): Promise<OidcTrustPolicy> {
 		validateTrustPolicyClaimConditions(policy);
 
-		let row: typeof oidcTrustPolicies.$inferSelect | undefined;
 		try {
-			row = await this.db.transaction(async (tx) => {
+			const row = await this.db.transaction(async (tx) => {
+				// Phase A keeps the tenant-scoped index for rolling-deploy compatibility.
+				// Every upgraded replica serializes ownership checks on the global pair.
+				const ownershipKey = JSON.stringify([policy.orgSlug, policy.issuer]);
+				await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${ownershipKey}, 0))`);
+
+				const [existing] = await tx
+					.select({ id: oidcTrustPolicies.id })
+					.from(oidcTrustPolicies)
+					.where(
+						and(
+							eq(oidcTrustPolicies.orgSlug, policy.orgSlug),
+							eq(oidcTrustPolicies.issuer, policy.issuer),
+						),
+					);
+				if (existing) throw new OidcPolicyConflictError();
+
 				const [inserted] = await tx
 					.insert(oidcTrustPolicies)
 					.values({
@@ -98,44 +89,19 @@ export class PostgresTrustPolicyRepository implements TrustPolicyRepository {
 					})
 					.returning();
 
-				await tx
-					.update(oidcTrustPolicies)
-					.set({ active: false, updatedAt: new Date() })
-					.where(
-						and(
-							eq(oidcTrustPolicies.orgSlug, policy.orgSlug),
-							eq(oidcTrustPolicies.issuer, policy.issuer),
-							eq(oidcTrustPolicies.active, true),
-							ne(oidcTrustPolicies.tenantId, policy.tenantId),
-						),
-					);
-
+				if (!inserted) throw new Error("Failed to create trust policy");
 				return inserted;
 			});
+			return mapRow(row);
 		} catch (error) {
 			if (pgErrorCode(error) === "23505") {
-				const constraint = pgConstraintName(error);
-				if (constraint === "idx_oidc_trust_org_name") {
+				if (pgConstraintName(error) === "idx_oidc_trust_org_name") {
 					throw new OidcPolicyDisplayNameConflictError();
 				}
-				await this.db
-					.update(oidcTrustPolicies)
-					.set({ active: false, updatedAt: new Date() })
-					.where(
-						and(
-							eq(oidcTrustPolicies.orgSlug, policy.orgSlug),
-							eq(oidcTrustPolicies.issuer, policy.issuer),
-							eq(oidcTrustPolicies.active, true),
-							ne(oidcTrustPolicies.tenantId, policy.tenantId),
-						),
-					);
 				throw new OidcPolicyConflictError();
 			}
 			throw error;
 		}
-
-		if (!row) throw new Error("Failed to create trust policy");
-		return mapRow(row);
 	}
 
 	async update(
@@ -194,7 +160,10 @@ function getTrustPolicyClaimConditionsError(policy: PolicyClaimValidationInput):
 	}
 
 	if (!hasNarrowingClaim(policy)) {
-		return "OIDC trust policy must include a narrowing claim (repository_owner, repository, non-wildcard sub, non-default aud, email, email_verified=true, or tid)";
+		if (policy.provider === GITHUB_ACTIONS_PROVIDER) {
+			return "OIDC trust policy must include a GitHub repository identity claim (repository_owner_id, repository_id, repository_owner, repository, or non-wildcard sub)";
+		}
+		return "OIDC trust policy must include a narrowing claim (non-wildcard sub, non-default aud, email, email_verified=true, or tid)";
 	}
 
 	return null;
@@ -202,12 +171,14 @@ function getTrustPolicyClaimConditionsError(policy: PolicyClaimValidationInput):
 
 function hasNarrowingClaim(policy: PolicyClaimValidationInput): boolean {
 	const { claimConditions, issuer, provider } = policy;
+	if (hasNonEmptyClaim(claimConditions.repository_owner_id)) return true;
+	if (hasNonEmptyClaim(claimConditions.repository_id)) return true;
 	if (hasNonEmptyClaim(claimConditions.repository_owner)) return true;
 	if (hasNonEmptyClaim(claimConditions.repository)) return true;
-	if (isNarrowingSub(claimConditions.sub)) return true;
-	if (isNarrowingAudience(claimConditions.aud, issuer)) return true;
+	if (hasNonEmptyClaim(claimConditions.sub) && claimConditions.sub !== "*") return true;
 
 	if (provider !== GITHUB_ACTIONS_PROVIDER) {
+		if (hasNonEmptyClaim(claimConditions.aud) && claimConditions.aud !== issuer) return true;
 		if (hasNonEmptyClaim(claimConditions.email)) return true;
 		if (claimConditions.email_verified === "true") return true;
 		if (hasNonEmptyClaim(claimConditions.tid)) return true;
@@ -218,14 +189,6 @@ function hasNarrowingClaim(policy: PolicyClaimValidationInput): boolean {
 
 function hasNonEmptyClaim(value: string | undefined): boolean {
 	return typeof value === "string" && value.trim().length > 0;
-}
-
-function isNarrowingSub(value: string | undefined): boolean {
-	return hasNonEmptyClaim(value) && value !== "*";
-}
-
-function isNarrowingAudience(value: string | undefined, issuer: string): boolean {
-	return hasNonEmptyClaim(value) && value !== issuer;
 }
 
 function pgErrorCode(err: unknown): string | undefined {

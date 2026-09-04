@@ -386,8 +386,8 @@ function OidcSettingsTab() {
 			setFormError("Expiration must be between 60 and 86400 seconds");
 			return;
 		}
-		if (Object.keys(conditions).length === 0) {
-			setFormError("At least one claim condition is required");
+		if (Object.keys(conditions).length < 2) {
+			setFormError("At least two claim conditions are required");
 			return;
 		}
 		try {
@@ -557,6 +557,11 @@ function OidcSettingsTab() {
 								Add
 							</button>
 						</div>
+						<p className="text-xs text-cloud/70 mb-2">
+							Recommended: add <code>repository_owner_id</code> and <code>repository_id</code>
+							using stable numeric GitHub IDs. <code>ref</code> and <code>environment</code> only
+							add restrictions; they do not authorize a repository by themselves.
+						</p>
 						{Object.entries(conditions).map(([k, v]) => (
 							<div
 								key={k}

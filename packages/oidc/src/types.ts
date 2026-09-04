@@ -49,12 +49,10 @@ export interface JwksValidator {
 }
 
 export interface TrustPolicyRepository {
-	/** Active policies for a given org+issuer — used by the exchange service. */
+	/** All policies for an org+issuer, including inactive rows, for fail-closed ownership checks. */
 	findByOrgSlugAndIssuer(orgSlug: string, issuer: string): Promise<OidcTrustPolicy[]>;
-	/** @deprecated Use findByOrgSlugAndIssuer for exchange. This is kept for admin listing. */
-	findByOrgSlug(orgSlug: string, tenantId?: string): Promise<OidcTrustPolicy[]>;
 	/** All policies including inactive — used by admin management UI. */
-	listByOrgSlug(orgSlug: string, tenantId?: string): Promise<OidcTrustPolicy[]>;
+	listByOrgSlug(orgSlug: string, tenantId: string): Promise<OidcTrustPolicy[]>;
 	create(policy: Omit<OidcTrustPolicy, "id" | "createdAt" | "updatedAt">): Promise<OidcTrustPolicy>;
 	update(
 		id: string,
