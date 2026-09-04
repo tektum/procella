@@ -625,18 +625,29 @@ export class PostgresUpdatesService implements UpdatesService {
 					kind: detectEventKind(event),
 					fields: event as unknown,
 				}));
-				const latestSummary = events.reduce<
-					{ sequence: number; summary: SummaryEvent } | undefined
-				>((latest, event) => {
-					if (!event.summaryEvent || !Number.isSafeInteger(event.sequence)) return latest;
-					return !latest || event.sequence > latest.sequence
-						? { sequence: event.sequence, summary: event.summaryEvent }
-						: latest;
-				}, undefined);
 
 				await this.db.transaction(async (tx) => {
-					// An event sequence is immutable. Replays never replace the original payload.
-					await tx.insert(updateEvents).values(rows).onConflictDoNothing();
+					// Event sequences are immutable. Only newly inserted summary events may advance the snapshot.
+					const inserted = await tx
+						.insert(updateEvents)
+						.values(rows)
+						.onConflictDoNothing()
+						.returning({ sequence: updateEvents.sequence });
+					const insertedSequences = new Set(inserted.map((row) => row.sequence));
+					const latestSummary = events.reduce<
+						{ sequence: number; summary: SummaryEvent } | undefined
+					>((latest, event) => {
+						if (
+							!insertedSequences.has(event.sequence) ||
+							!event.summaryEvent ||
+							!Number.isSafeInteger(event.sequence)
+						) {
+							return latest;
+						}
+						return !latest || event.sequence > latest.sequence
+							? { sequence: event.sequence, summary: event.summaryEvent }
+							: latest;
+					}, undefined);
 
 					if (latestSummary) {
 						const [updated] = await tx

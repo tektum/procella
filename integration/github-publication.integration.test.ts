@@ -224,6 +224,19 @@ describe("durable GitHub update publication", () => {
 		expect(outbox.map((entry) => entry.phase).sort()).toEqual(["started", "terminal"]);
 	});
 
+	test("does not derive a summary from a conflicting event replay", async () => {
+		const { updateId } = await createTargetedUpdate();
+		await updatesService.startUpdate(updateId, {});
+		await updatesService.postEvents(updateId, {
+			events: [{ sequence: 7, timestamp: 7, preludeEvent: { config: {} } }],
+		});
+		await updatesService.postEvents(updateId, { events: [summary(7, 99)] });
+
+		const [row] = await db.select().from(updates).where(eq(updates.id, updateId));
+		expect(row.summarySequence).toBeNull();
+		expect(row.summary).toBeNull();
+	});
+
 	test("keeps the exact highest-sequence summary and revises a delivered terminal", async () => {
 		const { updateId } = await createTargetedUpdate();
 		await updatesService.startUpdate(updateId, {});
