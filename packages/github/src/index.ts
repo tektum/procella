@@ -275,7 +275,6 @@ export function mapUpdateStatusToCommitState(
 	return "error";
 }
 
-
 /** GitHub client used by background delivery workers. It needs only App signing credentials. */
 export class OctokitGitHubDeliveryService implements GitHubDeliveryService {
 	protected readonly db: Database;
@@ -601,7 +600,6 @@ export class OctokitGitHubService extends OctokitGitHubDeliveryService implement
 			throw new Error("Unable to verify configured GitHub App");
 		}
 	}
-
 }
 
 export const GITHUB_OUTBOX_CLAIM_SECONDS = 120;
@@ -938,7 +936,8 @@ export function githubRetryDelaySeconds(attempts: number): number {
 export function sanitizeDeliveryError(error: unknown): string {
 	const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
 	return message
-		.replace(/(authorization|token|secret|private[-_ ]?key)\s*[:=]\s*\S+/gi, "$1=[redacted]")
+		.replace(/authorization["']?\s*[:=]\s*[^\r\n,}]+/gi, "authorization=[redacted]")
+		.replace(/(token|secret|private[-_ ]?key)["']?\s*[:=]\s*["']?[^"',\s}]+/gi, "$1=[redacted]")
 		.replace(/(https?:\/\/)[^@\s/]+@/gi, "$1[redacted]@")
 		.slice(0, 500);
 }

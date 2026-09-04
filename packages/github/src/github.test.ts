@@ -4,8 +4,8 @@ import type { Octokit } from "@octokit/rest";
 import type { Config } from "@procella/config";
 import type { Database } from "@procella/db";
 import {
-	buildGitHubAppConfig,
 	buildCommitStatusContext,
+	buildGitHubAppConfig,
 	buildPRCommentBody,
 	createGitHubSetupStateService,
 	type GitHubInstallationInfo,
@@ -134,7 +134,7 @@ describe("@procella/github", () => {
 	describe("sanitizeDeliveryError", () => {
 		test("redacts credentials and bounds persisted errors", () => {
 			const error = new Error(
-				`Authorization: bearer-secret https://user:pass@example.com/${"x".repeat(600)}`,
+				`Authorization: Bearer top-secret https://user:pass@example.com/${"x".repeat(600)}`,
 			);
 			const sanitized = sanitizeDeliveryError(error);
 			expect(sanitized).not.toContain("bearer-secret");
