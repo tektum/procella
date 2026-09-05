@@ -1,4 +1,4 @@
-LOCK TABLE "oidc_trust_policies" IN SHARE ROW EXCLUSIVE MODE;
+LOCK TABLE "oidc_trust_policies" IN ACCESS EXCLUSIVE MODE;
 --> statement-breakpoint
 DO $$
 BEGIN

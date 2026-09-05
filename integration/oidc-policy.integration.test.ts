@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { type Database, oidcTrustPolicies } from "@procella/db";
 import { type OidcTrustPolicy, PostgresTrustPolicyRepository } from "@procella/oidc";
 import { sql } from "drizzle-orm";
-import { getTestDb, truncateTables } from "./setup.js";
+import { getTestDb, getTestDbUrl, truncateTables } from "./setup.js";
 
 let db: Database;
 let repo: PostgresTrustPolicyRepository;
@@ -90,6 +90,31 @@ describe("PostgresTrustPolicyRepository — integration", () => {
 		}
 		expect(row.indexdef).toContain("USING btree (org_slug, issuer)");
 		expect(row.indexdef).not.toContain("tenant_id");
+	});
+
+	test("migration lock blocks new ownership reads before the index swap", async () => {
+		const statements = await readOwnershipMigrationStatements();
+		expect(statements[0]).toBe(
+			'LOCK TABLE "oidc_trust_policies" IN ACCESS EXCLUSIVE MODE;',
+		);
+
+		const { SQL } = require("bun") as typeof import("bun");
+		const reader = new SQL({ url: getTestDbUrl(), max: 1 });
+		await reader.unsafe("SET statement_timeout = 250");
+		try {
+			await db.transaction(async (tx) => {
+				await tx.execute(sql.raw(statements[0]!));
+				let readError: unknown;
+				try {
+					await reader.unsafe('SELECT id FROM "oidc_trust_policies" LIMIT 1');
+				} catch (error) {
+					readError = error;
+				}
+				expect(getSqlState(readError)).toBe("57014");
+			});
+		} finally {
+			await reader.close();
+		}
 	});
 
 	test("ownership migration fails closed on ambiguous legacy rows", async () => {

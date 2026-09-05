@@ -8,9 +8,8 @@ interface PreviewDatabaseResetOptions {
 }
 
 const PREVIEW_DATABASE_NAME = /^procella_pr_[1-9]\d*$/;
-const LEGACY_PREVIEW_OWNERSHIP_MIGRATION_TIMESTAMP = 1788550736903;
 
-/** Clear preview-only OIDC fixtures and repair the superseded PR migration marker. */
+/** Clear OIDC fixtures only in an explicitly enabled ephemeral PR database. */
 export async function resetPreviewDatabase({
 	databaseName,
 	enabled,
@@ -26,10 +25,6 @@ export async function resetPreviewDatabase({
 					BEGIN
 						IF to_regclass('public.oidc_trust_policies') IS NOT NULL THEN
 							DELETE FROM "public"."oidc_trust_policies";
-						END IF;
-						IF to_regclass('drizzle.__drizzle_migrations') IS NOT NULL THEN
-							DELETE FROM "drizzle"."__drizzle_migrations"
-							WHERE "created_at" = ${LEGACY_PREVIEW_OWNERSHIP_MIGRATION_TIMESTAMP};
 						END IF;
 					END
 				$$;`),

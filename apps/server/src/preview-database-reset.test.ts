@@ -23,7 +23,7 @@ function resetHarness(transactionError?: Error) {
 }
 
 describe("resetPreviewDatabase", () => {
-	test("clears only preview OIDC rows and the superseded migration marker", async () => {
+	test("clears only preview OIDC rows when the table exists", async () => {
 		const harness = resetHarness();
 
 		const reset = await resetPreviewDatabase({
@@ -41,9 +41,7 @@ describe("resetPreviewDatabase", () => {
 		const resetSql = dialect.sqlToQuery(query.getSQL()).sql;
 		expect(resetSql).toContain("to_regclass('public.oidc_trust_policies')");
 		expect(resetSql).toContain('DELETE FROM "public"."oidc_trust_policies"');
-		expect(resetSql).toContain("to_regclass('drizzle.__drizzle_migrations')");
-		expect(resetSql).toContain('DELETE FROM "drizzle"."__drizzle_migrations"');
-		expect(resetSql).toContain('"created_at" = 1788550736903');
+		expect(resetSql).not.toContain("__drizzle_migrations");
 		expect(resetSql).not.toContain("DROP SCHEMA");
 		expect(resetSql).not.toContain('DELETE FROM "public"."updates"');
 		expect(resetSql).not.toContain("github_update_outbox");
