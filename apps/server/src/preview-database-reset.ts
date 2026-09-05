@@ -13,6 +13,19 @@ const PREVIEW_DATABASE_NAME = /^procella_pr_[1-9]\d*$/;
 // head 4500597952ed34275fad8ca5153824279f93d5ad.
 const SUPERSEDED_PREVIEW_MIGRATION_TIMESTAMP = 1788550736903;
 
+function readExecuteRows(result: unknown): Record<string, unknown>[] {
+	if (Array.isArray(result)) return result as Record<string, unknown>[];
+	if (
+		typeof result === "object" &&
+		result !== null &&
+		"rows" in result &&
+		Array.isArray(result.rows)
+	) {
+		return result.rows as Record<string, unknown>[];
+	}
+	return [];
+}
+
 /** Reset the preview OIDC fixture once when the superseded migration marker exists. */
 export async function resetPreviewDatabase({
 	databaseName,
@@ -24,25 +37,26 @@ export async function resetPreviewDatabase({
 	const { db, client } = await openDatabase();
 	try {
 		return await db.transaction(async (tx) => {
-			const [tables] = await tx.execute(
+			const tableResult = await tx.execute(
 				sql.raw(`SELECT
 					to_regclass('public.oidc_trust_policies') AS oidc_trust_policies,
 					to_regclass('drizzle.__drizzle_migrations') AS drizzle_migrations`),
 			);
+			const [tables] = readExecuteRows(tableResult);
 			if (!tables?.oidc_trust_policies || !tables.drizzle_migrations) return false;
 
-			const [marker] = await tx.execute(sql`
+			const markerResult = await tx.execute(sql`
 				SELECT 1 AS "found"
 				FROM "drizzle"."__drizzle_migrations"
 				WHERE "created_at" = ${SUPERSEDED_PREVIEW_MIGRATION_TIMESTAMP}
 				LIMIT 1
 			`);
-			if (!marker) return false;
+			if (readExecuteRows(markerResult).length === 0) return false;
 
 			await tx.execute(sql.raw('DELETE FROM "public"."oidc_trust_policies"'));
 			await tx.execute(sql`
 				DELETE FROM "drizzle"."__drizzle_migrations"
-				WHERE "created_at" = ${SUPERSEDED_PREVIEW_MIGRATION_TIMESTAMP}
+				WHERE "created_at" >= ${SUPERSEDED_PREVIEW_MIGRATION_TIMESTAMP}
 			`);
 			return true;
 		});

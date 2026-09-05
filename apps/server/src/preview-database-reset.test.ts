@@ -6,9 +6,9 @@ import { resetPreviewDatabase } from "./preview-database-reset.js";
 
 const dialect = new PgDialect();
 
-function resetHarness(options: { executeRows?: unknown[][]; transactionError?: Error } = {}) {
+function resetHarness(options: { executeResults?: unknown[]; transactionError?: Error } = {}) {
 	let executeCall = 0;
-	const execute = mock(async (_query: unknown) => options.executeRows?.[executeCall++] ?? []);
+	const execute = mock(async (_query: unknown) => options.executeResults?.[executeCall++] ?? []);
 	const transaction = mock(
 		async (callback: (tx: { execute: typeof execute }) => Promise<unknown>) => {
 			if (options.transactionError) throw options.transactionError;
@@ -26,7 +26,7 @@ function resetHarness(options: { executeRows?: unknown[][]; transactionError?: E
 describe("resetPreviewDatabase", () => {
 	test("removes preview OIDC rows and the exact superseded marker atomically", async () => {
 		const harness = resetHarness({
-			executeRows: [
+			executeResults: [
 				[
 					{
 						oidc_trust_policies: "oidc_trust_policies",
@@ -69,12 +69,40 @@ describe("resetPreviewDatabase", () => {
 		const markerDelete = harness.execute.mock.calls[3]?.[0] as SQLWrapper;
 		const markerDeletion = dialect.sqlToQuery(markerDelete.getSQL());
 		expect(markerDeletion.sql).toContain('DELETE FROM "drizzle"."__drizzle_migrations"');
+		expect(markerDeletion.sql).toContain('"created_at" >=');
 		expect(markerDeletion.params).toEqual([1788550736903]);
+	});
+
+	test("normalizes Neon query-result rows", async () => {
+		const harness = resetHarness({
+			executeResults: [
+				{
+					rows: [
+						{
+							oidc_trust_policies: "oidc_trust_policies",
+							drizzle_migrations: "__drizzle_migrations",
+						},
+					],
+				},
+				{ rows: [{ found: 1 }] },
+				{ rows: [] },
+				{ rows: [] },
+			],
+		});
+
+		expect(
+			await resetPreviewDatabase({
+				databaseName: "procella_pr_266",
+				enabled: true,
+				openDatabase: harness.openDatabase,
+			}),
+		).toBe(true);
+		expect(harness.execute).toHaveBeenCalledTimes(4);
 	});
 
 	test("does not write when the superseded marker is absent", async () => {
 		const harness = resetHarness({
-			executeRows: [
+			executeResults: [
 				[
 					{
 						oidc_trust_policies: "oidc_trust_policies",
@@ -104,7 +132,7 @@ describe("resetPreviewDatabase", () => {
 			drizzle_migrations: "__drizzle_migrations",
 		};
 		const harness = resetHarness({
-			executeRows: [[tables], [{ found: 1 }], [], [], [tables], []],
+			executeResults: [[tables], [{ found: 1 }], [], [], [tables], []],
 		});
 		const options = {
 			databaseName: "procella_pr_266",
@@ -126,7 +154,7 @@ describe("resetPreviewDatabase", () => {
 			{ oidc_trust_policies: null, drizzle_migrations: "__drizzle_migrations" },
 			{ oidc_trust_policies: "oidc_trust_policies", drizzle_migrations: null },
 		]) {
-			const harness = resetHarness({ executeRows: [[tables]] });
+			const harness = resetHarness({ executeResults: [[tables]] });
 			expect(
 				await resetPreviewDatabase({
 					databaseName: "procella_pr_266",
