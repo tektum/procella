@@ -116,7 +116,7 @@ jobs:
             if (( status == 0 )); then
               exit 0
             fi
-            if (( status != 124 && status != 137 )); then
+            if (( status != 124 )); then
               exit "$status"
             fi
             if (( attempt == 3 )); then
