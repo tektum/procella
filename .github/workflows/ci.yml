@@ -97,7 +97,7 @@ jobs:
   dependency-hygiene:
     name: Dependency Hygiene
     runs-on: namespace-profile-amd64-4cpu-8ram
-    timeout-minutes: 5
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
@@ -105,7 +105,30 @@ jobs:
         with:
           persist-credentials: false
       - uses: $/.github/actions/setup-bun
-      - run: bun run check:dependencies
+      - name: Audit production dependencies
+        run: |
+          # Bun's HTTP idle timeout is longer than one CI attempt should consume.
+          # Retry only process timeouts; audit findings and other errors fail immediately.
+          for attempt in 1 2 3; do
+            status=0
+            timeout --kill-after=5s 90s bun audit --prod --audit-level=high || status=$?
+
+            if (( status == 0 )); then
+              exit 0
+            fi
+            if (( status != 124 && status != 137 )); then
+              exit "$status"
+            fi
+            if (( attempt == 3 )); then
+              echo "::error::bun audit timed out after $attempt attempts"
+              exit "$status"
+            fi
+
+            echo "::warning::bun audit timed out on attempt $attempt; retrying"
+            sleep $((attempt * 5))
+          done
+      - name: Verify dependency deduplication
+        run: bun dedupe --check
 
   dependency-review:
     name: Dependency Review
