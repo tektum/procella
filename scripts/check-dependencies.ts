@@ -36,11 +36,8 @@ export async function runCommand(command: string[], timeoutMs?: number): Promise
 				}, timeoutMs);
 
 	try {
-		const exitCode = await process.exited;
-		return {
-			exitCode: process.signalCode === null ? exitCode : exitCode || 1,
-			timedOut,
-		};
+		const exitCode = (await process.exited) as number | null;
+		return { exitCode: exitCode ?? 1, timedOut };
 	} finally {
 		clearTimeout(timer);
 	}

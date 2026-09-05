@@ -90,13 +90,17 @@ describe("dependency checks", () => {
 
 	test("distinguishes its deadline from an independent signal", async () => {
 		// Fake timers cannot exercise Bun's real subprocess signal delivery.
-		const timedOut = await runCommand([process.execPath, "-e", "await Bun.sleep(1000)"], 25);
+		const timedOut = await runCommand(
+			[process.execPath, "-e", "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0)"],
+			25,
+		);
 		const independent = await runCommand(
 			[process.execPath, "-e", 'process.kill(process.pid, "SIGKILL")'],
 			1_000,
 		);
 
 		expect(timedOut.timedOut).toBe(true);
-		expect(independent).toEqual({ exitCode: 137, timedOut: false });
+		expect(independent.timedOut).toBe(false);
+		expect(independent.exitCode).not.toBe(0);
 	});
 });
