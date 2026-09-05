@@ -87,6 +87,7 @@ export const migrateFn = new sst.aws.Function("ProcellaMigrate", {
 	link: [database, devAuthToken, encryptionKey],
 	environment: {
 		PROCELLA_DATABASE_URL: databaseUrl,
+		PROCELLA_RESET_PREVIEW_DATABASE: stage.startsWith("pr-") ? "true" : "false",
 		PROCELLA_AUTH_MODE: "dev",
 		PROCELLA_DEV_AUTH_TOKEN: devAuthToken.value,
 		PROCELLA_ENCRYPTION_KEY: encryptionKey.value,

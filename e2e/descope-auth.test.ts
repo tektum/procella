@@ -12,8 +12,7 @@
 //   PROCELLA_DESCOPE_MANAGEMENT_KEY  — Descope management key (GitHub secret)
 //
 // Optional:
-//   PROCELLA_E2E_DESCOPE_TENANT_ID   — Descope tenant ID (defaults to project ID)
-//   PROCELLA_E2E_ORG_SLUG            — Org slug for OIDC audience (defaults to tenant ID)
+//   PROCELLA_E2E_ORG_SLUG            — Org slug for OIDC audience (defaults to preview tenant name)
 //   ACTIONS_ID_TOKEN_REQUEST_URL     — GitHub Actions OIDC endpoint (set automatically in CI)
 //   ACTIONS_ID_TOKEN_REQUEST_TOKEN   — GitHub Actions OIDC token (set automatically in CI)
 //
@@ -259,6 +258,28 @@ describe("OIDC policy reconciliation", () => {
 		expect(update).toHaveBeenCalledTimes(1);
 	});
 
+	test("fails closed when stale ownership is not visible to the current tenant", async () => {
+		const list = mock(async () => []);
+		const update = mock(async () => undefined);
+
+		await expect(
+			reconcileOidcPolicy(
+				{
+					list,
+					create: mock(async () => {
+						throw new Error(
+							"tRPC oidc.createPolicy failed (409): OIDC trust policy with this org/issuer pair already exists",
+						);
+					}),
+					update,
+				},
+				testOidcPolicy,
+			),
+		).rejects.toThrow("OIDC trust policy with this org/issuer pair already exists");
+		expect(list).toHaveBeenCalledTimes(2);
+		expect(update).not.toHaveBeenCalled();
+	});
+
 	test("rejects ambiguous same-issuer policies before updating", async () => {
 		const update = mock(async () => undefined);
 		await expect(
@@ -335,12 +356,12 @@ describe_descope("Descope auth (deployed preview)", () => {
 		});
 
 		// Use PROCELLA_E2E_ORG_SLUG if given, otherwise derive a stable tenant
-		// name from the deployed preview's stage. The Descope project's JWT
-		// template emits tenant_name as the human-friendly slug; the server
-		// slugifies it into caller.orgSlug. Preview deployments therefore use
-		// procella-pr-N as both their stable test tenant name and org slug.
-		// Stable ownership lets reruns reconcile the tenant's existing policy
-		// through tenant-scoped list and update operations.
+		// name from the deployed preview stage. Descope tenant IDs are generated
+		// inside each project, so recreating the project can assign a new ID to the
+		// same name. The migration Lambda resets only explicitly enabled
+		// `procella_pr_N` databases before replaying migrations, preventing policy
+		// rows owned by an earlier project tenant from crossing that boundary.
+		// Normal policy APIs remain tenant-scoped and never take over those rows.
 		// API_URL is `https://api.pr-NN.procella.cloud`. Extract the `pr-NN`
 		// segment as the stage; the Descope project name (and therefore the
 		// JWT-emitted `tenant_name` → slugified `orgSlug`) is `procella-${stage}`.

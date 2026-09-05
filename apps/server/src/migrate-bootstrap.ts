@@ -1,12 +1,12 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { loadConfig } from "@procella/config";
+import { createDb, ensureDatabase, runMigrations } from "@procella/db";
+import { resetPreviewDatabase } from "./preview-database-reset.js";
 
 (async () => {
 	const RUNTIME_API = process.env.AWS_LAMBDA_RUNTIME_API!;
 	const BASE_URL = `http://${RUNTIME_API}/2018-06-01/runtime`;
-
-	const { loadConfig } = await import("@procella/config");
-	const { ensureDatabase, runMigrations } = await import("@procella/db");
 
 	const config = loadConfig();
 	const dbUrl = config.databaseUrl as string;
@@ -24,6 +24,12 @@ import { join } from "node:path";
 		if (dbName && dbName !== "postgres") {
 			await ensureDatabase(dbUrl.replace(`/${dbName}`, "/postgres"), dbName);
 		}
+
+		await resetPreviewDatabase({
+			databaseName: dbName,
+			enabled: process.env.PROCELLA_RESET_PREVIEW_DATABASE === "true",
+			openDatabase: () => createDb({ url: dbUrl }),
+		});
 
 		await runMigrations(dbUrl, migrationsDir);
 
