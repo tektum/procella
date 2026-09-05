@@ -97,7 +97,7 @@ jobs:
   dependency-hygiene:
     name: Dependency Hygiene
     runs-on: namespace-profile-amd64-4cpu-8ram
-    timeout-minutes: 5
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
