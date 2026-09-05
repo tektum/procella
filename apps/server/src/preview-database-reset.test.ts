@@ -6,11 +6,12 @@ import { resetPreviewDatabase } from "./preview-database-reset.js";
 
 const dialect = new PgDialect();
 
-function resetHarness(transactionError?: Error) {
-	const execute = mock(async (_query: unknown) => []);
+function resetHarness(options: { executeRows?: unknown[][]; transactionError?: Error } = {}) {
+	let executeCall = 0;
+	const execute = mock(async (_query: unknown) => options.executeRows?.[executeCall++] ?? []);
 	const transaction = mock(
 		async (callback: (tx: { execute: typeof execute }) => Promise<unknown>) => {
-			if (transactionError) throw transactionError;
+			if (options.transactionError) throw options.transactionError;
 			return callback({ execute });
 		},
 	);
@@ -23,8 +24,20 @@ function resetHarness(transactionError?: Error) {
 }
 
 describe("resetPreviewDatabase", () => {
-	test("clears only preview OIDC rows when the table exists", async () => {
-		const harness = resetHarness();
+	test("removes preview OIDC rows and the exact superseded marker atomically", async () => {
+		const harness = resetHarness({
+			executeRows: [
+				[
+					{
+						oidc_trust_policies: "oidc_trust_policies",
+						drizzle_migrations: "__drizzle_migrations",
+					},
+				],
+				[{ found: 1 }],
+				[],
+				[],
+			],
+		});
 
 		const reset = await resetPreviewDatabase({
 			databaseName: "procella_pr_266",
@@ -33,23 +46,102 @@ describe("resetPreviewDatabase", () => {
 		});
 
 		expect(reset).toBe(true);
-		expect(harness.execute).toHaveBeenCalledTimes(1);
+		expect(harness.execute).toHaveBeenCalledTimes(4);
 		expect(harness.transaction).toHaveBeenCalledTimes(1);
 		expect(harness.close).toHaveBeenCalledTimes(1);
 
-		const query = harness.execute.mock.calls[0]?.[0] as SQLWrapper;
-		const resetSql = dialect.sqlToQuery(query.getSQL()).sql;
-		expect(resetSql).toContain("to_regclass('public.oidc_trust_policies')");
-		expect(resetSql).toContain('DELETE FROM "public"."oidc_trust_policies"');
-		expect(resetSql).not.toContain("__drizzle_migrations");
-		expect(resetSql).not.toContain("DROP SCHEMA");
-		expect(resetSql).not.toContain('DELETE FROM "public"."updates"');
-		expect(resetSql).not.toContain("github_update_outbox");
+		const tableQuery = harness.execute.mock.calls[0]?.[0] as SQLWrapper;
+		const tableSql = dialect.sqlToQuery(tableQuery.getSQL()).sql;
+		expect(tableSql).toContain("to_regclass('public.oidc_trust_policies')");
+		expect(tableSql).toContain("to_regclass('drizzle.__drizzle_migrations')");
+
+		const markerQuery = harness.execute.mock.calls[1]?.[0] as SQLWrapper;
+		const marker = dialect.sqlToQuery(markerQuery.getSQL());
+		expect(marker.sql).toContain('FROM "drizzle"."__drizzle_migrations"');
+		expect(marker.params).toEqual([1788550736903]);
+
+		const policyDelete = harness.execute.mock.calls[2]?.[0] as SQLWrapper;
+		const policyDeleteSql = dialect.sqlToQuery(policyDelete.getSQL()).sql;
+		expect(policyDeleteSql).toBe('DELETE FROM "public"."oidc_trust_policies"');
+		expect(policyDeleteSql).not.toContain('"updates"');
+		expect(policyDeleteSql).not.toContain("github_update_outbox");
+
+		const markerDelete = harness.execute.mock.calls[3]?.[0] as SQLWrapper;
+		const markerDeletion = dialect.sqlToQuery(markerDelete.getSQL());
+		expect(markerDeletion.sql).toContain('DELETE FROM "drizzle"."__drizzle_migrations"');
+		expect(markerDeletion.params).toEqual([1788550736903]);
 	});
 
-	test("never opens production or malformed database names", async () => {
+	test("does not write when the superseded marker is absent", async () => {
+		const harness = resetHarness({
+			executeRows: [
+				[
+					{
+						oidc_trust_policies: "oidc_trust_policies",
+						drizzle_migrations: "__drizzle_migrations",
+					},
+				],
+				[],
+			],
+		});
+
+		expect(
+			await resetPreviewDatabase({
+				databaseName: "procella_pr_266",
+				enabled: true,
+				openDatabase: harness.openDatabase,
+			}),
+		).toBe(false);
+		expect(harness.execute).toHaveBeenCalledTimes(2);
+		for (const [query] of harness.execute.mock.calls) {
+			expect(dialect.sqlToQuery((query as SQLWrapper).getSQL()).sql).not.toContain("DELETE");
+		}
+	});
+
+	test("repeated invocation becomes a no-op after consuming the marker", async () => {
+		const tables = {
+			oidc_trust_policies: "oidc_trust_policies",
+			drizzle_migrations: "__drizzle_migrations",
+		};
+		const harness = resetHarness({
+			executeRows: [[tables], [{ found: 1 }], [], [], [tables], []],
+		});
+		const options = {
+			databaseName: "procella_pr_266",
+			enabled: true,
+			openDatabase: harness.openDatabase,
+		};
+
+		expect(await resetPreviewDatabase(options)).toBe(true);
+		expect(await resetPreviewDatabase(options)).toBe(false);
+		expect(harness.execute).toHaveBeenCalledTimes(6);
+		const statements = harness.execute.mock.calls.map(
+			([query]) => dialect.sqlToQuery((query as SQLWrapper).getSQL()).sql,
+		);
+		expect(statements.filter((statement) => statement.includes("DELETE"))).toHaveLength(2);
+	});
+
+	test("does nothing when either guarded table is absent", async () => {
+		for (const tables of [
+			{ oidc_trust_policies: null, drizzle_migrations: "__drizzle_migrations" },
+			{ oidc_trust_policies: "oidc_trust_policies", drizzle_migrations: null },
+		]) {
+			const harness = resetHarness({ executeRows: [[tables]] });
+			expect(
+				await resetPreviewDatabase({
+					databaseName: "procella_pr_266",
+					enabled: true,
+					openDatabase: harness.openDatabase,
+				}),
+			).toBe(false);
+			expect(harness.execute).toHaveBeenCalledTimes(1);
+		}
+	});
+
+	test("never opens production, dev, or malformed database names", async () => {
 		for (const databaseName of [
 			"procella",
+			"procella_dev",
 			"postgres",
 			"procella_pr_0",
 			"procella_pr_266_backup",
@@ -80,7 +172,7 @@ describe("resetPreviewDatabase", () => {
 	});
 
 	test("closes the database and propagates reset failure", async () => {
-		const harness = resetHarness(new Error("reset failed"));
+		const harness = resetHarness({ transactionError: new Error("reset failed") });
 
 		await expect(
 			resetPreviewDatabase({

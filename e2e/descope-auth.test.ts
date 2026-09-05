@@ -12,6 +12,7 @@
 //   PROCELLA_DESCOPE_MANAGEMENT_KEY  — Descope management key (GitHub secret)
 //
 // Optional:
+//   PROCELLA_E2E_DESCOPE_TENANT_ID   — Stable tenant ID (defaults to preview tenant name)
 //   PROCELLA_E2E_ORG_SLUG            — Org slug for OIDC audience (defaults to preview tenant name)
 //   ACTIONS_ID_TOKEN_REQUEST_URL     — GitHub Actions OIDC endpoint (set automatically in CI)
 //   ACTIONS_ID_TOKEN_REQUEST_TOKEN   — GitHub Actions OIDC token (set automatically in CI)
@@ -43,6 +44,20 @@ const HAS_OIDC = Boolean(OIDC_REQUEST_URL && OIDC_REQUEST_TOKEN);
 
 const RUN_ID = Date.now().toString(36);
 const TEST_LOGIN_ID = `procella-e2e-${RUN_ID}@test.invalid`;
+
+function previewTenantIdentity(
+	apiUrl: string,
+	configuredOrgSlug: string | undefined,
+	configuredTenantId: string | undefined,
+	runId: string,
+): { tenantName: string; stableTenantId: string | undefined } {
+	const stageMatch = apiUrl.match(/api\.(pr-\d+)\./);
+	const derivedTenantName = stageMatch ? `procella-${stageMatch[1]}` : undefined;
+	return {
+		tenantName: configuredOrgSlug || derivedTenantName || `e2e-${runId}`,
+		stableTenantId: configuredTenantId?.trim() || derivedTenantName,
+	};
+}
 
 // ============================================================================
 // Helpers
@@ -207,6 +222,35 @@ const testOidcPolicy: DesiredOidcPolicy = {
 	grantedRole: "member",
 };
 
+describe("preview tenant identity", () => {
+	test("derives a stable tenant ID and org slug from the PR stage", () => {
+		expect(
+			previewTenantIdentity("https://api.pr-266.procella.cloud", undefined, undefined, "run"),
+		).toEqual({
+			tenantName: "procella-pr-266",
+			stableTenantId: "procella-pr-266",
+		});
+	});
+
+	test("honors explicit tenant identity overrides", () => {
+		expect(
+			previewTenantIdentity(
+				"https://api.pr-266.procella.cloud",
+				"custom-org",
+				"custom-tenant",
+				"run",
+			),
+		).toEqual({ tenantName: "custom-org", stableTenantId: "custom-tenant" });
+	});
+
+	test("uses a disposable per-run tenant outside preview stages", () => {
+		expect(previewTenantIdentity("https://api.example.com", undefined, undefined, "abc")).toEqual({
+			tenantName: "e2e-abc",
+			stableTenantId: undefined,
+		});
+	});
+});
+
 describe("OIDC policy reconciliation", () => {
 	test("updates the tenant-listed policy with the configured issuer", async () => {
 		const create = mock(async () => undefined);
@@ -355,38 +399,37 @@ describe_descope("Descope auth (deployed preview)", () => {
 			managementKey: DESCOPE_MANAGEMENT_KEY,
 		});
 
-		// Use PROCELLA_E2E_ORG_SLUG if given, otherwise derive a stable tenant
-		// name from the deployed preview stage. Descope tenant IDs are generated
-		// inside each project, so recreating the project can assign a new ID to the
-		// same name. The migration Lambda resets only explicitly enabled
-		// `procella_pr_N` databases before replaying migrations, preventing policy
-		// rows owned by an earlier project tenant from crossing that boundary.
-		// Normal policy APIs remain tenant-scoped and never take over those rows.
-		// API_URL is `https://api.pr-NN.procella.cloud`. Extract the `pr-NN`
-		// segment as the stage; the Descope project name (and therefore the
-		// JWT-emitted `tenant_name` → slugified `orgSlug`) is `procella-${stage}`.
-		const stageMatch = API_URL.match(/api\.(pr-\d+)\./);
-		const derivedTenantName = stageMatch ? `procella-${stageMatch[1]}` : undefined;
-		const tenantName = process.env.PROCELLA_E2E_ORG_SLUG ?? derivedTenantName ?? `e2e-${RUN_ID}`;
+		// Preview tenant names and IDs are both derived from `pr-N`, so recreating
+		// the Descope project cannot change database ownership. An explicit ID can
+		// override this outside preview environments. The migration Lambda removes
+		// only a conflicting legacy row for this stable preview identity; normal
+		// policy APIs remain tenant-scoped and never take over another tenant's row.
+		const { tenantName, stableTenantId } = previewTenantIdentity(
+			API_URL,
+			process.env.PROCELLA_E2E_ORG_SLUG,
+			process.env.PROCELLA_E2E_DESCOPE_TENANT_ID,
+			RUN_ID,
+		);
 		orgSlug = tenantName;
 
-		// Find or create the Descope tenant for this test run.
 		const tenantsResp = await sdk.management.tenant.loadAll();
-		const existing = tenantsResp.data?.find((t) => t.name === tenantName);
+		const existing = tenantsResp.data?.find((tenant) =>
+			stableTenantId ? tenant.id === stableTenantId : tenant.name === tenantName,
+		);
 		if (existing?.id) {
 			tenantId = existing.id;
 		} else {
-			// Keep the preview stage tenant for later test runs. Only the explicit
-			// per-run fallback tenant is removed during cleanup.
-			// create() signature: (name, selfProvisioningDomains[], ...)
-			const created = await sdk.management.tenant.create(tenantName, []);
+			const created = stableTenantId
+				? await sdk.management.tenant.createWithId(stableTenantId, tenantName, [])
+				: await sdk.management.tenant.create(tenantName, []);
 			const createdId = created.data?.id;
-			if (!createdId)
+			if (!createdId) {
 				throw new Error(
 					`Failed to create Descope tenant '${tenantName}': ${JSON.stringify(created)}`,
 				);
+			}
 			tenantId = createdId;
-			createdTenant = tenantName.startsWith("e2e-");
+			createdTenant = !stableTenantId;
 		}
 
 		await sdk.management.user.deleteAllTestUsers().catch(() => {});
