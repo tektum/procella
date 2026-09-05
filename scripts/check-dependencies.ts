@@ -29,7 +29,7 @@ export async function runCommand(command: string[], timeoutMs?: number): Promise
 		timeoutMs === undefined
 			? undefined
 			: setTimeout(() => {
-					if (process.exitCode === null) {
+					if (process.exitCode === null && process.signalCode === null) {
 						timedOut = true;
 						process.kill("SIGKILL");
 					}
