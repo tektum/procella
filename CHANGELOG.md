@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.6.0](https://github.com/tektum/procella/compare/procella-v0.5.0...procella-v0.6.0) (2026-09-05)
+
+
+### Features
+
+* **github:** bind installations to authenticated tenants ([#258](https://github.com/tektum/procella/issues/258)) ([76b9df1](https://github.com/tektum/procella/commit/76b9df1c6f4a049c0fcd2e39718692f016afbeb4))
+* **github:** publish updates through durable outbox ([#262](https://github.com/tektum/procella/issues/262)) ([e8d7792](https://github.com/tektum/procella/commit/e8d7792992bb8558d66f7e30072aa88b9e597431))
+
+
+### Bug Fixes
+
+* **ci:** make preview cleanup idempotent ([#267](https://github.com/tektum/procella/issues/267)) ([8ee627e](https://github.com/tektum/procella/commit/8ee627e9805980ea8d54e513e85d3deca24980c8))
+* **ci:** retry stalled dependency audits ([#268](https://github.com/tektum/procella/issues/268)) ([af04c3c](https://github.com/tektum/procella/commit/af04c3cc85ecbfdf1bab472df9c4c273bced4663))
+* **deps:** update aws-sdk-go-v2 monorepo ([#265](https://github.com/tektum/procella/issues/265)) ([f740528](https://github.com/tektum/procella/commit/f740528d79c62032c33044163ef98413bdd848c3))
+* **github:** derive app slug from credentials ([#263](https://github.com/tektum/procella/issues/263)) ([17dc3e4](https://github.com/tektum/procella/commit/17dc3e44e69398b4057deb89fd526d50981decd6))
+* **github:** make SST App secrets optional ([#264](https://github.com/tektum/procella/issues/264)) ([027ee41](https://github.com/tektum/procella/commit/027ee41cbc3ac4e6bed53a28eba4385cd9591ed6))
+* **oidc:** enforce global trust policy ownership ([#266](https://github.com/tektum/procella/issues/266)) ([3796c4f](https://github.com/tektum/procella/commit/3796c4f3160fab78a460be419247f27a6da1ff0c))
+* **oidc:** stage tenant-safe trust policy ownership ([#260](https://github.com/tektum/procella/issues/260)) ([c5c3665](https://github.com/tektum/procella/commit/c5c3665774792d172651fd076770b2de3da53b49))
+
 ## [0.5.0](https://github.com/tektum/procella/compare/procella-v0.4.0...procella-v0.5.0) (2026-09-03)
 
 
