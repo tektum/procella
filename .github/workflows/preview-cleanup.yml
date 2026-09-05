@@ -69,7 +69,20 @@ jobs:
           done
 
       - name: Remove SST stack
-        run: npx sst remove --stage pr-${{ github.event.number }}
+        shell: bash
+        run: |
+          if output=$(npx sst remove --stage pr-${{ github.event.number }} 2>&1); then
+            printf '%s\n' "$output"
+          else
+            status=$?
+            printf '%s\n' "$output"
+            if grep -Fq "Stage not found" <<<"$output"; then
+              echo "::notice::SST stage pr-${{ github.event.number }} does not exist; cleanup is already complete"
+            else
+              exit "$status"
+            fi
+          fi
+
       - name: Cleanup summary
         if: always()
         env:
