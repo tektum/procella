@@ -299,18 +299,38 @@ function githubRequestOptions(options?: GitHubDeliveryRequestOptions): {
 	return { request: { signal: AbortSignal.timeout(Math.max(1, Math.floor(remaining))) } };
 }
 
+function hasAbortCause(error: unknown): boolean {
+	let current = error;
+	for (let depth = 0; depth < 5; depth += 1) {
+		if (
+			current instanceof Error &&
+			(current.name === "AbortError" || current.name === "TimeoutError")
+		) {
+			return true;
+		}
+		if (typeof current !== "object" || current === null || !("cause" in current)) return false;
+		current = current.cause;
+	}
+	return false;
+}
+
+function githubErrorStatus(error: unknown): number | undefined {
+	if (typeof error !== "object" || error === null || !("status" in error)) return undefined;
+	return typeof error.status === "number" ? error.status : undefined;
+}
+
 async function withGitHubRequestDeadline<T>(
 	options: GitHubDeliveryRequestOptions | undefined,
 	request: (requestOptions: { request: { signal: AbortSignal } }) => Promise<T>,
 ): Promise<T> {
+	const requestOptions = githubRequestOptions(options);
 	try {
-		return await request(githubRequestOptions(options));
+		return await request(requestOptions);
 	} catch (error) {
 		if (error instanceof GitHubDeliveryDeadlineError) throw error;
 		if (
 			options?.deadlineMs !== undefined &&
-			error instanceof Error &&
-			(error.name === "AbortError" || error.name === "TimeoutError")
+			(requestOptions.request.signal.aborted || hasAbortCause(error))
 		) {
 			throw new GitHubDeliveryDeadlineError("GitHub delivery deadline exceeded");
 		}
@@ -378,8 +398,8 @@ export class OctokitGitHubDeliveryService implements GitHubDeliveryService {
 			if (!Number.isSafeInteger(data.id)) return null;
 			return installations.find((installation) => installation.installationId === data.id) ?? null;
 		} catch (error) {
-			if (error instanceof GitHubDeliveryDeadlineError) throw error;
-			return null;
+			if (githubErrorStatus(error) === 404) return null;
+			throw error;
 		}
 	}
 

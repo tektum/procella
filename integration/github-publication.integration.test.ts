@@ -16,7 +16,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { eq, sql } from "drizzle-orm";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { Octokit } from "octokit";
+import { Octokit } from "@octokit/rest";
 import { getTestDb, truncateTables } from "./setup.js";
 
 let db: Database;
@@ -636,7 +636,6 @@ describe("durable GitHub update publication", () => {
 		expect(row.claimedBy).toBeNull();
 	});
 
-
 	test("an in-flight repository abort requeues and a later invocation delivers", async () => {
 		const { updateId } = await createTargetedUpdate();
 		await updatesService.startUpdate(updateId, {});
@@ -648,13 +647,16 @@ describe("durable GitHub update publication", () => {
 			repositorySelection: installation.repositorySelection,
 		});
 		let repositoryRequests = 0;
-		const appClient = {
-			request: mock(async () => {
-				repositoryRequests += 1;
-				if (repositoryRequests === 1) throw new DOMException("timed out", "TimeoutError");
-				return { data: { id: installation.installationId } };
-			}),
-		} as unknown as Octokit;
+		const repositoryFetch = mock(async () => {
+			repositoryRequests += 1;
+			if (repositoryRequests === 1) throw new DOMException("timed out", "TimeoutError");
+			return new Response(JSON.stringify({ id: installation.installationId }), {
+				headers: { "content-type": "application/json" },
+			});
+		});
+		const appClient = new Octokit({
+			request: { fetch: repositoryFetch as unknown as typeof fetch },
+		});
 		const createComment = mock(async () => ({ data: { id: 123 } }));
 		const createCommitStatus = mock(async () => ({}));
 		const installationClient = {
@@ -697,6 +699,69 @@ describe("durable GitHub update publication", () => {
 		expect(createCommitStatus).toHaveBeenCalledTimes(1);
 	});
 
+	test("an in-flight paginated abort requeues and a later invocation delivers", async () => {
+		const { updateId } = await createTargetedUpdate();
+		await updatesService.startUpdate(updateId, {});
+		await db.insert(githubInstallations).values({
+			tenantId: installation.tenantId,
+			installationId: installation.installationId,
+			accountLogin: installation.accountLogin,
+			accountType: installation.accountType,
+			repositorySelection: installation.repositorySelection,
+		});
+		const jsonResponse = (data: unknown) =>
+			new Response(JSON.stringify(data), { headers: { "content-type": "application/json" } });
+		const appClient = new Octokit({
+			request: {
+				fetch: (async () =>
+					jsonResponse({ id: installation.installationId })) as unknown as typeof fetch,
+			},
+		});
+		let installationRequests = 0;
+		const installationFetch = mock(async () => {
+			installationRequests += 1;
+			if (installationRequests === 1) {
+				return jsonResponse(
+					Array.from({ length: 100 }, (_, id) => ({ id, body: "unrelated" })),
+				);
+			}
+			if (installationRequests === 2) throw new DOMException("aborted", "AbortError");
+			if (installationRequests === 3) return jsonResponse([]);
+			if (installationRequests === 4) return jsonResponse({ id: 123 });
+			return jsonResponse({});
+		});
+		const installationClient = new Octokit({
+			request: { fetch: installationFetch as unknown as typeof fetch },
+		});
+		const github = new OctokitGitHubDeliveryService({
+			db,
+			config: { appId: "123", privateKey: "unused" },
+			appClient,
+			installationClientFactory: () => installationClient,
+		});
+		const worker = new GitHubOutboxWorker({ db, github, maxPerRun: 1 });
+
+		expect(await worker.runOnce({ deadlineMs: Date.now() + 40_000 })).toBe(0);
+		let [row] = await db
+			.select()
+			.from(githubUpdateOutbox)
+			.where(eq(githubUpdateOutbox.updateId, updateId));
+		expect(row.attempts).toBe(0);
+		expect(row.deliveredRevision).toBe(0);
+		expect(row.failedRevision).toBe(0);
+		expect(row.claimedBy).toBeNull();
+		expect(installationRequests).toBe(2);
+
+		expect(await worker.runOnce({ deadlineMs: Date.now() + 40_000 })).toBe(1);
+		[row] = await db
+			.select()
+			.from(githubUpdateOutbox)
+			.where(eq(githubUpdateOutbox.updateId, updateId));
+		expect(row.attempts).toBe(0);
+		expect(row.deliveredRevision).toBe(1);
+		expect(row.failedRevision).toBe(0);
+		expect(installationRequests).toBe(5);
+	});
 	test("expired claims are retried and concurrent workers do not overlap", async () => {
 		const { updateId } = await createTargetedUpdate();
 		await updatesService.startUpdate(updateId, {});
