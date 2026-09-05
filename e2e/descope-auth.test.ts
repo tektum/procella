@@ -68,6 +68,7 @@ async function setupTestUser(
 	sdk: ReturnType<typeof DescopeClient>,
 	tenantId: string,
 	orgSlug: string,
+	accessKeySuffix = "",
 ): Promise<string> {
 	await sdk.management.user.createTestUser(TEST_LOGIN_ID, {
 		email: TEST_LOGIN_ID,
@@ -78,7 +79,7 @@ async function setupTestUser(
 
 	const expireTime = Math.floor(Date.now() / 1000) + 600;
 	const resp = await sdk.management.accessKey.create(
-		`procella-e2e-${RUN_ID}`,
+		`procella-e2e-${RUN_ID}${accessKeySuffix}`,
 		expireTime,
 		null,
 		[{ tenantId, roleNames: ["admin"] }],
@@ -155,6 +156,34 @@ interface OidcPolicyAdmin {
 	list(): Promise<unknown>;
 	create(policy: DesiredOidcPolicy): Promise<unknown>;
 	update(policy: OidcPolicyUpdate): Promise<unknown>;
+}
+
+interface OidcPolicyCleaner {
+	list(): Promise<unknown>;
+	delete(id: string): Promise<unknown>;
+}
+
+async function removePoliciesByIssuer(admin: OidcPolicyCleaner, issuer: string): Promise<number> {
+	const policies = await admin.list();
+	if (!Array.isArray(policies)) {
+		throw new Error("oidc.listPolicies returned an invalid response");
+	}
+
+	let removed = 0;
+	for (const candidate of policies) {
+		if (
+			typeof candidate === "object" &&
+			candidate !== null &&
+			"issuer" in candidate &&
+			candidate.issuer === issuer &&
+			"id" in candidate &&
+			typeof candidate.id === "string"
+		) {
+			await admin.delete(candidate.id);
+			removed++;
+		}
+	}
+	return removed;
 }
 
 function findExistingPolicyId(policies: unknown, issuer: string): string | undefined {
@@ -248,6 +277,26 @@ describe("preview tenant identity", () => {
 			tenantName: "e2e-abc",
 			stableTenantId: undefined,
 		});
+	});
+});
+
+describe("legacy preview policy cleanup", () => {
+	test("deletes only matching policies visible to the legacy tenant", async () => {
+		const deletePolicy = mock(async (_id: string) => undefined);
+		const removed = await removePoliciesByIssuer(
+			{
+				list: mock(async () => [
+					{ id: "legacy", issuer: testOidcPolicy.issuer },
+					{ id: "unrelated", issuer: "https://issuer.example.com" },
+				]),
+				delete: deletePolicy,
+			},
+			testOidcPolicy.issuer,
+		);
+
+		expect(removed).toBe(1);
+		expect(deletePolicy).toHaveBeenCalledTimes(1);
+		expect(deletePolicy).toHaveBeenCalledWith("legacy");
 	});
 });
 
@@ -413,9 +462,23 @@ describe_descope("Descope auth (deployed preview)", () => {
 		orgSlug = tenantName;
 
 		const tenantsResp = await sdk.management.tenant.loadAll();
-		const existing = tenantsResp.data?.find((tenant) =>
-			stableTenantId ? tenant.id === stableTenantId : tenant.name === tenantName,
-		);
+		const stableTenant = stableTenantId
+			? tenantsResp.data?.find((tenant) => tenant.id === stableTenantId)
+			: undefined;
+		const tenantWithStableName = tenantsResp.data?.find((tenant) => tenant.name === tenantName);
+		if (stableTenantId && !stableTenant && tenantWithStableName?.id) {
+			const legacyAccessKey = await setupTestUser(sdk, tenantWithStableName.id, orgSlug, "-legacy");
+			await removePoliciesByIssuer(
+				{
+					list: () => trpcQuery("oidc.listPolicies", { Authorization: `token ${legacyAccessKey}` }),
+					delete: (id) => trpcMutation("oidc.deletePolicy", { id }, legacyAccessKey),
+				},
+				testOidcPolicy.issuer,
+			);
+			await sdk.management.user.deleteAllTestUsers().catch(() => {});
+		}
+
+		const existing = stableTenantId ? stableTenant : tenantWithStableName;
 		if (existing?.id) {
 			tenantId = existing.id;
 		} else {
