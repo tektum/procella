@@ -12,7 +12,6 @@
 //   PROCELLA_DESCOPE_MANAGEMENT_KEY  — Descope management key (GitHub secret)
 //
 // Optional:
-//   PROCELLA_E2E_DESCOPE_TENANT_ID   — Stable tenant ID (defaults to preview tenant name)
 //   PROCELLA_E2E_ORG_SLUG            — Org slug for OIDC audience (defaults to preview tenant name)
 //   ACTIONS_ID_TOKEN_REQUEST_URL     — GitHub Actions OIDC endpoint (set automatically in CI)
 //   ACTIONS_ID_TOKEN_REQUEST_TOKEN   — GitHub Actions OIDC token (set automatically in CI)
@@ -45,18 +44,13 @@ const HAS_OIDC = Boolean(OIDC_REQUEST_URL && OIDC_REQUEST_TOKEN);
 const RUN_ID = Date.now().toString(36);
 const TEST_LOGIN_ID = `procella-e2e-${RUN_ID}@test.invalid`;
 
-function previewTenantIdentity(
+function previewTenantName(
 	apiUrl: string,
 	configuredOrgSlug: string | undefined,
-	configuredTenantId: string | undefined,
 	runId: string,
-): { tenantName: string; stableTenantId: string | undefined } {
+): string {
 	const stageMatch = apiUrl.match(/api\.(pr-\d+)\./);
-	const derivedTenantName = stageMatch ? `procella-${stageMatch[1]}` : undefined;
-	return {
-		tenantName: configuredOrgSlug || derivedTenantName || `e2e-${runId}`,
-		stableTenantId: configuredTenantId?.trim() || derivedTenantName,
-	};
+	return configuredOrgSlug || (stageMatch ? `procella-${stageMatch[1]}` : `e2e-${runId}`);
 }
 
 // ============================================================================
@@ -68,7 +62,6 @@ async function setupTestUser(
 	sdk: ReturnType<typeof DescopeClient>,
 	tenantId: string,
 	orgSlug: string,
-	accessKeySuffix = "",
 ): Promise<string> {
 	await sdk.management.user.createTestUser(TEST_LOGIN_ID, {
 		email: TEST_LOGIN_ID,
@@ -79,7 +72,7 @@ async function setupTestUser(
 
 	const expireTime = Math.floor(Date.now() / 1000) + 600;
 	const resp = await sdk.management.accessKey.create(
-		`procella-e2e-${RUN_ID}${accessKeySuffix}`,
+		`procella-e2e-${RUN_ID}`,
 		expireTime,
 		null,
 		[{ tenantId, roleNames: ["admin"] }],
@@ -158,32 +151,84 @@ interface OidcPolicyAdmin {
 	update(policy: OidcPolicyUpdate): Promise<unknown>;
 }
 
-interface OidcPolicyCleaner {
+interface PreviewTenantAdmin {
 	list(): Promise<unknown>;
-	delete(id: string): Promise<unknown>;
+	create(name: string): Promise<unknown>;
+	wait(): Promise<void>;
 }
 
-async function removePoliciesByIssuer(admin: OidcPolicyCleaner, issuer: string): Promise<number> {
-	const policies = await admin.list();
-	if (!Array.isArray(policies)) {
-		throw new Error("oidc.listPolicies returned an invalid response");
+interface PreviewTenantAcquisition {
+	id: string;
+	created: boolean;
+}
+
+function findTenantIdByName(tenants: unknown, tenantName: string): string | undefined {
+	if (!Array.isArray(tenants)) {
+		throw new Error("Descope tenant list returned an invalid response");
+	}
+	const matches = tenants.filter(
+		(tenant): tenant is { id: string; name: string } =>
+			typeof tenant === "object" &&
+			tenant !== null &&
+			"id" in tenant &&
+			typeof tenant.id === "string" &&
+			"name" in tenant &&
+			tenant.name === tenantName,
+	);
+	if (matches.length > 1) {
+		throw new Error(
+			`Multiple Descope tenants use name '${tenantName}': ${matches.map((tenant) => tenant.id).join(", ")}`,
+		);
+	}
+	return matches[0]?.id;
+}
+
+function createdTenantId(response: unknown): string | undefined {
+	if (typeof response !== "object" || response === null || !("data" in response)) return undefined;
+	const data = response.data;
+	if (typeof data !== "object" || data === null || !("id" in data)) return undefined;
+	return typeof data.id === "string" ? data.id : undefined;
+}
+
+function isDuplicateTenantName(response: unknown): boolean {
+	const description =
+		response instanceof Error ? response.message : (JSON.stringify(response) ?? String(response));
+	return (
+		description.includes("E073307") ||
+		/tenant (?:id or )?name (?:is duplicate|already exists)/i.test(description)
+	);
+}
+
+async function acquirePreviewTenant(
+	admin: PreviewTenantAdmin,
+	tenantName: string,
+): Promise<PreviewTenantAcquisition> {
+	const existingId = findTenantIdByName(await admin.list(), tenantName);
+	if (existingId) return { id: existingId, created: false };
+
+	let createResult: unknown;
+	try {
+		createResult = await admin.create(tenantName);
+	} catch (error) {
+		if (!isDuplicateTenantName(error)) throw error;
+		createResult = error;
+	}
+	const newId = createdTenantId(createResult);
+	if (newId) return { id: newId, created: true };
+	if (!isDuplicateTenantName(createResult)) {
+		throw new Error(
+			`Failed to create Descope tenant '${tenantName}': ${JSON.stringify(createResult)}`,
+		);
 	}
 
-	let removed = 0;
-	for (const candidate of policies) {
-		if (
-			typeof candidate === "object" &&
-			candidate !== null &&
-			"issuer" in candidate &&
-			candidate.issuer === issuer &&
-			"id" in candidate &&
-			typeof candidate.id === "string"
-		) {
-			await admin.delete(candidate.id);
-			removed++;
-		}
+	for (let attempt = 0; attempt < 5; attempt++) {
+		const reloadedId = findTenantIdByName(await admin.list(), tenantName);
+		if (reloadedId) return { id: reloadedId, created: false };
+		if (attempt < 4) await admin.wait();
 	}
-	return removed;
+	throw new Error(
+		`Descope reported duplicate tenant name '${tenantName}', but no unique matching tenant became visible`,
+	);
 }
 
 function findExistingPolicyId(policies: unknown, issuer: string): string | undefined {
@@ -252,51 +297,84 @@ const testOidcPolicy: DesiredOidcPolicy = {
 };
 
 describe("preview tenant identity", () => {
-	test("derives a stable tenant ID and org slug from the PR stage", () => {
-		expect(
-			previewTenantIdentity("https://api.pr-266.procella.cloud", undefined, undefined, "run"),
-		).toEqual({
-			tenantName: "procella-pr-266",
-			stableTenantId: "procella-pr-266",
-		});
+	test("derives a stable tenant name from the PR stage", () => {
+		expect(previewTenantName("https://api.pr-266.procella.cloud", undefined, "run")).toBe(
+			"procella-pr-266",
+		);
 	});
 
-	test("honors explicit tenant identity overrides", () => {
-		expect(
-			previewTenantIdentity(
-				"https://api.pr-266.procella.cloud",
-				"custom-org",
-				"custom-tenant",
-				"run",
-			),
-		).toEqual({ tenantName: "custom-org", stableTenantId: "custom-tenant" });
-	});
-
-	test("uses a disposable per-run tenant outside preview stages", () => {
-		expect(previewTenantIdentity("https://api.example.com", undefined, undefined, "abc")).toEqual({
-			tenantName: "e2e-abc",
-			stableTenantId: undefined,
-		});
+	test("uses an explicit org or disposable per-run fallback", () => {
+		expect(previewTenantName("https://api.pr-266.procella.cloud", "custom-org", "run")).toBe(
+			"custom-org",
+		);
+		expect(previewTenantName("https://api.example.com", undefined, "abc")).toBe("e2e-abc");
 	});
 });
 
-describe("legacy preview policy cleanup", () => {
-	test("deletes only matching policies visible to the legacy tenant", async () => {
-		const deletePolicy = mock(async (_id: string) => undefined);
-		const removed = await removePoliciesByIssuer(
+describe("preview tenant acquisition", () => {
+	test("re-lists by name after a duplicate create caused by a stale initial list", async () => {
+		const list = mock(async () =>
+			list.mock.calls.length === 1 ? [] : [{ id: "authoritative-tenant", name: "procella-pr-266" }],
+		);
+		const wait = mock(async () => undefined);
+		const result = await acquirePreviewTenant(
 			{
-				list: mock(async () => [
-					{ id: "legacy", issuer: testOidcPolicy.issuer },
-					{ id: "unrelated", issuer: "https://issuer.example.com" },
-				]),
-				delete: deletePolicy,
+				list,
+				create: mock(async () => ({
+					ok: false,
+					error: {
+						errorCode: "E073307",
+						errorMessage: "Failed creating tenant because tenant name is duplicate",
+					},
+				})),
+				wait,
 			},
-			testOidcPolicy.issuer,
+			"procella-pr-266",
 		);
 
-		expect(removed).toBe(1);
-		expect(deletePolicy).toHaveBeenCalledTimes(1);
-		expect(deletePolicy).toHaveBeenCalledWith("legacy");
+		expect(result).toEqual({ id: "authoritative-tenant", created: false });
+		expect(list).toHaveBeenCalledTimes(2);
+		expect(wait).not.toHaveBeenCalled();
+	});
+
+	test("rejects ambiguous matches after a duplicate-name create", async () => {
+		const list = mock(async () =>
+			list.mock.calls.length === 1
+				? []
+				: [
+						{ id: "first", name: "procella-pr-266" },
+						{ id: "second", name: "procella-pr-266" },
+					],
+		);
+		await expect(
+			acquirePreviewTenant(
+				{
+					list,
+					create: mock(async () => ({
+						error: { errorCode: "E073307", errorMessage: "tenant name is duplicate" },
+					})),
+					wait: mock(async () => undefined),
+				},
+				"procella-pr-266",
+			),
+		).rejects.toThrow("Multiple Descope tenants use name 'procella-pr-266'");
+		expect(list).toHaveBeenCalledTimes(2);
+	});
+
+	test("propagates non-duplicate tenant creation failures", async () => {
+		await expect(
+			acquirePreviewTenant(
+				{
+					list: mock(async () => []),
+					create: mock(async () => ({
+						ok: false,
+						error: { errorCode: "E123456", errorMessage: "tenant service unavailable" },
+					})),
+					wait: mock(async () => undefined),
+				},
+				"procella-pr-266",
+			),
+		).rejects.toThrow("Failed to create Descope tenant 'procella-pr-266'");
 	});
 });
 
@@ -448,52 +526,22 @@ describe_descope("Descope auth (deployed preview)", () => {
 			managementKey: DESCOPE_MANAGEMENT_KEY,
 		});
 
-		// Preview tenant names and IDs are both derived from `pr-N`, so recreating
-		// the Descope project cannot change database ownership. An explicit ID can
-		// override this outside preview environments. The migration Lambda removes
-		// only a conflicting legacy row for this stable preview identity; normal
-		// policy APIs remain tenant-scoped and never take over another tenant's row.
-		const { tenantName, stableTenantId } = previewTenantIdentity(
-			API_URL,
-			process.env.PROCELLA_E2E_ORG_SLUG,
-			process.env.PROCELLA_E2E_DESCOPE_TENANT_ID,
-			RUN_ID,
-		);
+		// The preview tenant name is stage-stable, but Descope owns the tenant ID.
+		// Re-list after duplicate-name creation failures so eventual consistency or
+		// concurrent setup cannot create a second identity or guess a tenant ID.
+		const tenantName = previewTenantName(API_URL, process.env.PROCELLA_E2E_ORG_SLUG, RUN_ID);
 		orgSlug = tenantName;
-
-		const tenantsResp = await sdk.management.tenant.loadAll();
-		const stableTenant = stableTenantId
-			? tenantsResp.data?.find((tenant) => tenant.id === stableTenantId)
-			: undefined;
-		const tenantWithStableName = tenantsResp.data?.find((tenant) => tenant.name === tenantName);
-		if (stableTenantId && !stableTenant && tenantWithStableName?.id) {
-			const legacyAccessKey = await setupTestUser(sdk, tenantWithStableName.id, orgSlug, "-legacy");
-			await removePoliciesByIssuer(
-				{
-					list: () => trpcQuery("oidc.listPolicies", { Authorization: `token ${legacyAccessKey}` }),
-					delete: (id) => trpcMutation("oidc.deletePolicy", { id }, legacyAccessKey),
-				},
-				testOidcPolicy.issuer,
-			);
-			await sdk.management.user.deleteAllTestUsers().catch(() => {});
-		}
-
-		const existing = stableTenantId ? stableTenant : tenantWithStableName;
-		if (existing?.id) {
-			tenantId = existing.id;
-		} else {
-			const created = stableTenantId
-				? await sdk.management.tenant.createWithId(stableTenantId, tenantName, [])
-				: await sdk.management.tenant.create(tenantName, []);
-			const createdId = created.data?.id;
-			if (!createdId) {
-				throw new Error(
-					`Failed to create Descope tenant '${tenantName}': ${JSON.stringify(created)}`,
-				);
-			}
-			tenantId = createdId;
-			createdTenant = !stableTenantId;
-		}
+		const acquiredTenant = await acquirePreviewTenant(
+			{
+				list: async () => (await sdk.management.tenant.loadAll()).data,
+				create: (name) => sdk.management.tenant.create(name, []),
+				// The real Descope API is eventually consistent; unit tests inject a no-op wait.
+				wait: () => Bun.sleep(250),
+			},
+			tenantName,
+		);
+		tenantId = acquiredTenant.id;
+		createdTenant = acquiredTenant.created && tenantName.startsWith("e2e-");
 
 		await sdk.management.user.deleteAllTestUsers().catch(() => {});
 		accessKey = await setupTestUser(sdk, tenantId, orgSlug);
