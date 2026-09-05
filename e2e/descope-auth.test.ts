@@ -162,10 +162,35 @@ interface PreviewTenantAcquisition {
 	created: boolean;
 }
 
-function findTenantIdByName(tenants: unknown, tenantName: string): string | undefined {
-	if (!Array.isArray(tenants)) {
-		throw new Error("Descope tenant list returned an invalid response");
+function tenantListFailureDetails(response: unknown): string {
+	if (typeof response === "object" && response !== null) {
+		const record = response as Record<string, unknown>;
+		const error =
+			typeof record.error === "object" && record.error !== null
+				? (record.error as Record<string, unknown>)
+				: {};
+		const details = {
+			code: typeof record.code === "number" ? record.code : undefined,
+			errorCode: typeof error.errorCode === "string" ? error.errorCode : undefined,
+			errorMessage: typeof error.errorMessage === "string" ? error.errorMessage : undefined,
+			errorDescription:
+				typeof error.errorDescription === "string" ? error.errorDescription : undefined,
+		};
+		if (Object.values(details).some((value) => value !== undefined)) return JSON.stringify(details);
 	}
+	return response === undefined ? "missing response" : `unexpected ${typeof response} response`;
+}
+
+function tenantListRows(response: unknown): unknown[] {
+	if (Array.isArray(response)) return response;
+	if (typeof response === "object" && response !== null && "data" in response) {
+		if (Array.isArray(response.data)) return response.data;
+	}
+	throw new Error(`Descope tenant list failed: ${tenantListFailureDetails(response)}`);
+}
+
+function findTenantIdByName(response: unknown, tenantName: string): string | undefined {
+	const tenants = tenantListRows(response);
 	const matches = tenants.filter(
 		(tenant): tenant is { id: string; name: string } =>
 			typeof tenant === "object" &&
@@ -376,6 +401,34 @@ describe("preview tenant acquisition", () => {
 			),
 		).rejects.toThrow("Failed to create Descope tenant 'procella-pr-266'");
 	});
+
+	test("surfaces sanitized provider diagnostics for failed or invalid tenant lists", async () => {
+		const admin = {
+			create: mock(async () => undefined),
+			wait: mock(async () => undefined),
+		};
+		await expect(
+			acquirePreviewTenant(
+				{
+					...admin,
+					list: mock(async () => ({
+						code: 401,
+						error: {
+							errorCode: "E401001",
+							errorMessage: "management key expired",
+							secret: "must-not-leak",
+						},
+					})),
+				},
+				"procella-pr-266",
+			),
+		).rejects.toThrow(
+			'Descope tenant list failed: {"code":401,"errorCode":"E401001","errorMessage":"management key expired"}',
+		);
+		await expect(
+			acquirePreviewTenant({ ...admin, list: mock(async () => undefined) }, "procella-pr-266"),
+		).rejects.toThrow("Descope tenant list failed: missing response");
+	});
 });
 
 describe("OIDC policy reconciliation", () => {
@@ -533,7 +586,7 @@ describe_descope("Descope auth (deployed preview)", () => {
 		orgSlug = tenantName;
 		const acquiredTenant = await acquirePreviewTenant(
 			{
-				list: async () => (await sdk.management.tenant.loadAll()).data,
+				list: () => sdk.management.tenant.loadAll(),
 				create: (name) => sdk.management.tenant.create(name, []),
 				// The real Descope API is eventually consistent; unit tests inject a no-op wait.
 				wait: () => Bun.sleep(250),
