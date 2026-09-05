@@ -31,15 +31,6 @@ function githubJsonResponse(data: unknown, status = 200): Response {
 	});
 }
 
-function rejectWhenAborted(signal: AbortSignal | null | undefined): Promise<Response> {
-	if (!signal) return Promise.reject(new Error("Expected an Octokit request signal"));
-	return new Promise((_resolve, reject) => {
-		const onAbort = () => reject(signal.reason);
-		if (signal.aborted) onAbort();
-		else signal.addEventListener("abort", onAbort, { once: true });
-	});
-}
-
 describe("@procella/github", () => {
 	describe("verifyGitHubWebhookSignature", () => {
 		test("returns true for valid signature", async () => {
@@ -522,14 +513,17 @@ describe("OctokitGitHubService repository resolution", () => {
 		).toEqual(allowed);
 	});
 	test("normalizes a real Octokit repository timeout and succeeds on retry", async () => {
+		let now = 0;
 		let attempts = 0;
-		const customFetch = mock(
-			async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
-				attempts += 1;
-				if (attempts === 1) return rejectWhenAborted(init?.signal);
-				return githubJsonResponse({ id: 101 });
-			},
-		);
+		const originalNow = Date.now;
+		const customFetch = mock(async () => {
+			attempts += 1;
+			if (attempts === 1) {
+				now = 100;
+				throw new DOMException("timed out", "TimeoutError");
+			}
+			return githubJsonResponse({ id: 101 });
+		});
 		const service = new OctokitGitHubDeliveryService({
 			db: readOnlyDb([installationRow]),
 			config: { appId: "123", privateKey: "unused" },
@@ -537,15 +531,23 @@ describe("OctokitGitHubService repository resolution", () => {
 		});
 		const target = { tenantId: "tenant-a", owner: "acme", repo: "infra" };
 
-		await expect(
-			service.resolveInstallation(target, { deadlineMs: Date.now() + 25 }),
-		).rejects.toThrow("deadline exceeded");
-		await expect(
-			service.resolveInstallation(target, { deadlineMs: Date.now() + 10_000 }),
-		).resolves.toEqual(installationRow);
+		Date.now = () => now;
+		try {
+			await expect(service.resolveInstallation(target, { deadlineMs: 100 })).rejects.toThrow(
+				"deadline exceeded",
+			);
+			now = 0;
+			await expect(service.resolveInstallation(target, { deadlineMs: 10_000 })).resolves.toEqual(
+				installationRow,
+			);
+			expect(attempts).toBe(2);
+		} finally {
+			Date.now = originalNow;
+		}
 	});
 
 	test("keeps a real Octokit request-cap timeout retryable with ample delivery budget", async () => {
+		const originalNow = Date.now;
 		const customFetch = mock(async () => {
 			throw new DOMException("timed out", "TimeoutError");
 		});
@@ -555,12 +557,17 @@ describe("OctokitGitHubService repository resolution", () => {
 			appClient: new Octokit({ request: { fetch: customFetch as unknown as typeof fetch } }),
 		});
 
-		await expect(
-			service.resolveInstallation(
-				{ tenantId: "tenant-a", owner: "acme", repo: "infra" },
-				{ deadlineMs: Date.now() + 40_000 },
-			),
-		).rejects.toMatchObject({ name: "HttpError", status: 500 });
+		Date.now = () => 0;
+		try {
+			await expect(
+				service.resolveInstallation(
+					{ tenantId: "tenant-a", owner: "acme", repo: "infra" },
+					{ deadlineMs: 40_000 },
+				),
+			).rejects.toMatchObject({ name: "HttpError", status: 500 });
+		} finally {
+			Date.now = originalNow;
+		}
 	});
 	test("propagates an ordinary GitHub 500 before the deadline", async () => {
 		const customFetch = mock(async () =>
@@ -667,19 +674,22 @@ describe("OctokitGitHubDeliveryService comments", () => {
 	});
 
 	test("normalizes a real Octokit paginated abort and succeeds later", async () => {
+		let now = 0;
 		let calls = 0;
-		const customFetch = mock(
-			async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
-				calls += 1;
-				if (calls === 1) {
-					return githubJsonResponse(
-						Array.from({ length: 100 }, (_, id) => ({ id, body: "unrelated" })),
-					);
-				}
-				if (calls === 2) return rejectWhenAborted(init?.signal);
-				return githubJsonResponse([{ id: 123, body: "<!-- procella:update:update-1 -->" }]);
-			},
-		);
+		const originalNow = Date.now;
+		const customFetch = mock(async () => {
+			calls += 1;
+			if (calls === 1) {
+				return githubJsonResponse(
+					Array.from({ length: 100 }, (_, id) => ({ id, body: "unrelated" })),
+				);
+			}
+			if (calls === 2) {
+				now = 100;
+				throw new DOMException("aborted", "AbortError");
+			}
+			return githubJsonResponse([{ id: 123, body: "<!-- procella:update:update-1 -->" }]);
+		});
 		const installationClient = new Octokit({
 			request: { fetch: customFetch as unknown as typeof fetch },
 		});
@@ -690,16 +700,21 @@ describe("OctokitGitHubDeliveryService comments", () => {
 			installationClientFactory: () => installationClient,
 		});
 
-		await expect(
-			service.findPRComment(101, "acme", "infra", 42, "missing", {
-				deadlineMs: Date.now() + 25,
-			}),
-		).rejects.toThrow("deadline exceeded");
-		await expect(
-			service.findPRComment(101, "acme", "infra", 42, "<!-- procella:update:update-1 -->", {
-				deadlineMs: Date.now() + 10_000,
-			}),
-		).resolves.toBe(123);
+		Date.now = () => now;
+		try {
+			await expect(
+				service.findPRComment(101, "acme", "infra", 42, "missing", { deadlineMs: 100 }),
+			).rejects.toThrow("deadline exceeded");
+			now = 0;
+			await expect(
+				service.findPRComment(101, "acme", "infra", 42, "<!-- procella:update:update-1 -->", {
+					deadlineMs: 10_000,
+				}),
+			).resolves.toBe(123);
+			expect(calls).toBe(3);
+		} finally {
+			Date.now = originalNow;
+		}
 	});
 	test("rejects an unsafe comment identifier", async () => {
 		const service = new OctokitGitHubDeliveryService({
