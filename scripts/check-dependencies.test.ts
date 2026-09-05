@@ -9,12 +9,16 @@ import {
 function queuedRunner(results: CommandResult[]): {
 	run: CommandRunner;
 	commands: string[][];
+	timeouts: Array<number | undefined>;
 } {
 	const commands: string[][] = [];
+	const timeouts: Array<number | undefined> = [];
 	return {
 		commands,
-		run: async (command) => {
+		timeouts,
+		run: async (command, timeoutMs) => {
 			commands.push(command);
+			timeouts.push(timeoutMs);
 			const result = results.shift();
 			if (result === undefined) throw new Error("unexpected command");
 			return result;
@@ -24,7 +28,7 @@ function queuedRunner(results: CommandResult[]): {
 
 describe("dependency checks", () => {
 	test("retries deadline-triggered termination before deduplication", async () => {
-		const { run, commands } = queuedRunner([
+		const { run, commands, timeouts } = queuedRunner([
 			{ exitCode: 137, timedOut: true },
 			{ exitCode: 0, timedOut: false },
 			{ exitCode: 0, timedOut: false },
@@ -45,6 +49,18 @@ describe("dependency checks", () => {
 			["bun", "audit", "--prod", "--audit-level=high"],
 			["bun", "dedupe", "--check"],
 		]);
+		expect(timeouts).toEqual([90_000, 90_000, 90_000]);
+	});
+
+	test("bounds the deduplication command", async () => {
+		const { run, commands, timeouts } = queuedRunner([
+			{ exitCode: 0, timedOut: false },
+			{ exitCode: 137, timedOut: true },
+		]);
+
+		expect(await checkDependencies({ run })).toBe(124);
+		expect(commands.at(-1)).toEqual(["bun", "dedupe", "--check"]);
+		expect(timeouts).toEqual([90_000, 90_000]);
 	});
 
 	test("propagates an unrelated SIGKILL without retrying", async () => {
@@ -72,10 +88,13 @@ describe("dependency checks", () => {
 		expect(commands).toHaveLength(3);
 	});
 
-	test("distinguishes its deadline from an independent exit 137", async () => {
+	test("distinguishes its deadline from an independent signal", async () => {
 		// Fake timers cannot exercise Bun's real subprocess signal delivery.
 		const timedOut = await runCommand([process.execPath, "-e", "await Bun.sleep(1000)"], 25);
-		const independent = await runCommand([process.execPath, "-e", "process.exit(137)"], 1_000);
+		const independent = await runCommand(
+			[process.execPath, "-e", 'process.kill(process.pid, "SIGKILL")'],
+			1_000,
+		);
 
 		expect(timedOut.timedOut).toBe(true);
 		expect(independent).toEqual({ exitCode: 137, timedOut: false });

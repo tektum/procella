@@ -14,7 +14,7 @@ interface CheckDependenciesOptions {
 	run?: CommandRunner;
 	sleep?: (milliseconds: number) => Promise<void>;
 	maxAttempts?: number;
-	auditTimeoutMs?: number;
+	commandTimeoutMs?: number;
 	retryDelayMs?: number;
 }
 
@@ -36,7 +36,11 @@ export async function runCommand(command: string[], timeoutMs?: number): Promise
 				}, timeoutMs);
 
 	try {
-		return { exitCode: await process.exited, timedOut };
+		const exitCode = await process.exited;
+		return {
+			exitCode: process.signalCode === null ? exitCode : exitCode || 1,
+			timedOut,
+		};
 	} finally {
 		clearTimeout(timer);
 	}
@@ -46,13 +50,17 @@ export async function checkDependencies({
 	run = runCommand,
 	sleep = Bun.sleep,
 	maxAttempts = 3,
-	auditTimeoutMs = 90_000,
+	commandTimeoutMs = 90_000,
 	retryDelayMs = 5_000,
 }: CheckDependenciesOptions = {}): Promise<number> {
 	for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-		const result = await run(AUDIT_COMMAND, auditTimeoutMs);
+		const result = await run(AUDIT_COMMAND, commandTimeoutMs);
 		if (result.exitCode === 0) {
-			const dedupe = await run(DEDUPE_COMMAND);
+			const dedupe = await run(DEDUPE_COMMAND, commandTimeoutMs);
+			if (dedupe.timedOut) {
+				console.error("::error::bun dedupe timed out");
+				return 124;
+			}
 			return dedupe.exitCode;
 		}
 		if (!result.timedOut) return result.exitCode;
