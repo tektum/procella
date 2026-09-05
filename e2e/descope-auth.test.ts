@@ -12,8 +12,7 @@
 //   PROCELLA_DESCOPE_MANAGEMENT_KEY  — Descope management key (GitHub secret)
 //
 // Optional:
-//   PROCELLA_E2E_DESCOPE_TENANT_ID   — Descope tenant ID (defaults to project ID)
-//   PROCELLA_E2E_ORG_SLUG            — Org slug for OIDC audience (defaults to tenant ID)
+//   PROCELLA_E2E_ORG_SLUG            — Org slug for OIDC audience (defaults to preview tenant name)
 //   ACTIONS_ID_TOKEN_REQUEST_URL     — GitHub Actions OIDC endpoint (set automatically in CI)
 //   ACTIONS_ID_TOKEN_REQUEST_TOKEN   — GitHub Actions OIDC token (set automatically in CI)
 //
@@ -44,6 +43,15 @@ const HAS_OIDC = Boolean(OIDC_REQUEST_URL && OIDC_REQUEST_TOKEN);
 
 const RUN_ID = Date.now().toString(36);
 const TEST_LOGIN_ID = `procella-e2e-${RUN_ID}@test.invalid`;
+
+function previewTenantName(
+	apiUrl: string,
+	configuredOrgSlug: string | undefined,
+	runId: string,
+): string {
+	const stageMatch = apiUrl.match(/api\.(pr-\d+)\./);
+	return configuredOrgSlug || (stageMatch ? `procella-${stageMatch[1]}` : `e2e-${runId}`);
+}
 
 // ============================================================================
 // Helpers
@@ -143,6 +151,111 @@ interface OidcPolicyAdmin {
 	update(policy: OidcPolicyUpdate): Promise<unknown>;
 }
 
+interface PreviewTenantAdmin {
+	list(): Promise<unknown>;
+	create(name: string): Promise<unknown>;
+	wait(): Promise<void>;
+}
+
+interface PreviewTenantAcquisition {
+	id: string;
+	created: boolean;
+}
+
+function tenantListFailureDetails(response: unknown): string {
+	if (typeof response === "object" && response !== null) {
+		const record = response as Record<string, unknown>;
+		const error =
+			typeof record.error === "object" && record.error !== null
+				? (record.error as Record<string, unknown>)
+				: {};
+		const details = {
+			code: typeof record.code === "number" ? record.code : undefined,
+			errorCode: typeof error.errorCode === "string" ? error.errorCode : undefined,
+			errorMessage: typeof error.errorMessage === "string" ? error.errorMessage : undefined,
+			errorDescription:
+				typeof error.errorDescription === "string" ? error.errorDescription : undefined,
+		};
+		if (Object.values(details).some((value) => value !== undefined)) return JSON.stringify(details);
+	}
+	return response === undefined ? "missing response" : `unexpected ${typeof response} response`;
+}
+
+function tenantListRows(response: unknown): unknown[] {
+	if (Array.isArray(response)) return response;
+	if (typeof response === "object" && response !== null && "data" in response) {
+		if (Array.isArray(response.data)) return response.data;
+	}
+	throw new Error(`Descope tenant list failed: ${tenantListFailureDetails(response)}`);
+}
+
+function findTenantIdByName(response: unknown, tenantName: string): string | undefined {
+	const tenants = tenantListRows(response);
+	const matches = tenants.filter(
+		(tenant): tenant is { id: string; name: string } =>
+			typeof tenant === "object" &&
+			tenant !== null &&
+			"id" in tenant &&
+			typeof tenant.id === "string" &&
+			"name" in tenant &&
+			tenant.name === tenantName,
+	);
+	if (matches.length > 1) {
+		throw new Error(
+			`Multiple Descope tenants use name '${tenantName}': ${matches.map((tenant) => tenant.id).join(", ")}`,
+		);
+	}
+	return matches[0]?.id;
+}
+
+function createdTenantId(response: unknown): string | undefined {
+	if (typeof response !== "object" || response === null || !("data" in response)) return undefined;
+	const data = response.data;
+	if (typeof data !== "object" || data === null || !("id" in data)) return undefined;
+	return typeof data.id === "string" ? data.id : undefined;
+}
+
+function isDuplicateTenantName(response: unknown): boolean {
+	const description =
+		response instanceof Error ? response.message : (JSON.stringify(response) ?? String(response));
+	return (
+		description.includes("E073307") ||
+		/tenant (?:id or )?name (?:is duplicate|already exists)/i.test(description)
+	);
+}
+
+async function acquirePreviewTenant(
+	admin: PreviewTenantAdmin,
+	tenantName: string,
+): Promise<PreviewTenantAcquisition> {
+	const existingId = findTenantIdByName(await admin.list(), tenantName);
+	if (existingId) return { id: existingId, created: false };
+
+	let createResult: unknown;
+	try {
+		createResult = await admin.create(tenantName);
+	} catch (error) {
+		if (!isDuplicateTenantName(error)) throw error;
+		createResult = error;
+	}
+	const newId = createdTenantId(createResult);
+	if (newId) return { id: newId, created: true };
+	if (!isDuplicateTenantName(createResult)) {
+		throw new Error(
+			`Failed to create Descope tenant '${tenantName}': ${JSON.stringify(createResult)}`,
+		);
+	}
+
+	for (let attempt = 0; attempt < 5; attempt++) {
+		const reloadedId = findTenantIdByName(await admin.list(), tenantName);
+		if (reloadedId) return { id: reloadedId, created: false };
+		if (attempt < 4) await admin.wait();
+	}
+	throw new Error(
+		`Descope reported duplicate tenant name '${tenantName}', but no unique matching tenant became visible`,
+	);
+}
+
 function findExistingPolicyId(policies: unknown, issuer: string): string | undefined {
 	if (!Array.isArray(policies)) {
 		throw new Error("oidc.listPolicies returned an invalid response");
@@ -208,6 +321,116 @@ const testOidcPolicy: DesiredOidcPolicy = {
 	grantedRole: "member",
 };
 
+describe("preview tenant identity", () => {
+	test("derives a stable tenant name from the PR stage", () => {
+		expect(previewTenantName("https://api.pr-266.procella.cloud", undefined, "run")).toBe(
+			"procella-pr-266",
+		);
+	});
+
+	test("uses an explicit org or disposable per-run fallback", () => {
+		expect(previewTenantName("https://api.pr-266.procella.cloud", "custom-org", "run")).toBe(
+			"custom-org",
+		);
+		expect(previewTenantName("https://api.example.com", undefined, "abc")).toBe("e2e-abc");
+	});
+});
+
+describe("preview tenant acquisition", () => {
+	test("re-lists by name after a duplicate create caused by a stale initial list", async () => {
+		const list = mock(async () =>
+			list.mock.calls.length === 1 ? [] : [{ id: "authoritative-tenant", name: "procella-pr-266" }],
+		);
+		const wait = mock(async () => undefined);
+		const result = await acquirePreviewTenant(
+			{
+				list,
+				create: mock(async () => ({
+					ok: false,
+					error: {
+						errorCode: "E073307",
+						errorMessage: "Failed creating tenant because tenant name is duplicate",
+					},
+				})),
+				wait,
+			},
+			"procella-pr-266",
+		);
+
+		expect(result).toEqual({ id: "authoritative-tenant", created: false });
+		expect(list).toHaveBeenCalledTimes(2);
+		expect(wait).not.toHaveBeenCalled();
+	});
+
+	test("rejects ambiguous matches after a duplicate-name create", async () => {
+		const list = mock(async () =>
+			list.mock.calls.length === 1
+				? []
+				: [
+						{ id: "first", name: "procella-pr-266" },
+						{ id: "second", name: "procella-pr-266" },
+					],
+		);
+		await expect(
+			acquirePreviewTenant(
+				{
+					list,
+					create: mock(async () => ({
+						error: { errorCode: "E073307", errorMessage: "tenant name is duplicate" },
+					})),
+					wait: mock(async () => undefined),
+				},
+				"procella-pr-266",
+			),
+		).rejects.toThrow("Multiple Descope tenants use name 'procella-pr-266'");
+		expect(list).toHaveBeenCalledTimes(2);
+	});
+
+	test("propagates non-duplicate tenant creation failures", async () => {
+		await expect(
+			acquirePreviewTenant(
+				{
+					list: mock(async () => []),
+					create: mock(async () => ({
+						ok: false,
+						error: { errorCode: "E123456", errorMessage: "tenant service unavailable" },
+					})),
+					wait: mock(async () => undefined),
+				},
+				"procella-pr-266",
+			),
+		).rejects.toThrow("Failed to create Descope tenant 'procella-pr-266'");
+	});
+
+	test("surfaces sanitized provider diagnostics for failed or invalid tenant lists", async () => {
+		const admin = {
+			create: mock(async () => undefined),
+			wait: mock(async () => undefined),
+		};
+		await expect(
+			acquirePreviewTenant(
+				{
+					...admin,
+					list: mock(async () => ({
+						code: 401,
+						error: {
+							errorCode: "E401001",
+							errorMessage: "management key expired",
+							secret: "must-not-leak",
+						},
+					})),
+				},
+				"procella-pr-266",
+			),
+		).rejects.toThrow(
+			'Descope tenant list failed: {"code":401,"errorCode":"E401001","errorMessage":"management key expired"}',
+		);
+		await expect(
+			acquirePreviewTenant({ ...admin, list: mock(async () => undefined) }, "procella-pr-266"),
+		).rejects.toThrow("Descope tenant list failed: missing response");
+	});
+});
+
 describe("OIDC policy reconciliation", () => {
 	test("updates the tenant-listed policy with the configured issuer", async () => {
 		const create = mock(async () => undefined);
@@ -257,6 +480,28 @@ describe("OIDC policy reconciliation", () => {
 		expect(result).toBe("updated");
 		expect(list).toHaveBeenCalledTimes(2);
 		expect(update).toHaveBeenCalledTimes(1);
+	});
+
+	test("fails closed when stale ownership is not visible to the current tenant", async () => {
+		const list = mock(async () => []);
+		const update = mock(async () => undefined);
+
+		await expect(
+			reconcileOidcPolicy(
+				{
+					list,
+					create: mock(async () => {
+						throw new Error(
+							"tRPC oidc.createPolicy failed (409): OIDC trust policy with this org/issuer pair already exists",
+						);
+					}),
+					update,
+				},
+				testOidcPolicy,
+			),
+		).rejects.toThrow("OIDC trust policy with this org/issuer pair already exists");
+		expect(list).toHaveBeenCalledTimes(2);
+		expect(update).not.toHaveBeenCalled();
 	});
 
 	test("rejects ambiguous same-issuer policies before updating", async () => {
@@ -334,39 +579,22 @@ describe_descope("Descope auth (deployed preview)", () => {
 			managementKey: DESCOPE_MANAGEMENT_KEY,
 		});
 
-		// Use PROCELLA_E2E_ORG_SLUG if given, otherwise derive a stable tenant
-		// name from the deployed preview's stage. The Descope project's JWT
-		// template emits tenant_name as the human-friendly slug; the server
-		// slugifies it into caller.orgSlug. Preview deployments therefore use
-		// procella-pr-N as both their stable test tenant name and org slug.
-		// Stable ownership lets reruns reconcile the tenant's existing policy
-		// through tenant-scoped list and update operations.
-		// API_URL is `https://api.pr-NN.procella.cloud`. Extract the `pr-NN`
-		// segment as the stage; the Descope project name (and therefore the
-		// JWT-emitted `tenant_name` → slugified `orgSlug`) is `procella-${stage}`.
-		const stageMatch = API_URL.match(/api\.(pr-\d+)\./);
-		const derivedTenantName = stageMatch ? `procella-${stageMatch[1]}` : undefined;
-		const tenantName = process.env.PROCELLA_E2E_ORG_SLUG ?? derivedTenantName ?? `e2e-${RUN_ID}`;
+		// The preview tenant name is stage-stable, but Descope owns the tenant ID.
+		// Re-list after duplicate-name creation failures so eventual consistency or
+		// concurrent setup cannot create a second identity or guess a tenant ID.
+		const tenantName = previewTenantName(API_URL, process.env.PROCELLA_E2E_ORG_SLUG, RUN_ID);
 		orgSlug = tenantName;
-
-		// Find or create the Descope tenant for this test run.
-		const tenantsResp = await sdk.management.tenant.loadAll();
-		const existing = tenantsResp.data?.find((t) => t.name === tenantName);
-		if (existing?.id) {
-			tenantId = existing.id;
-		} else {
-			// Keep the preview stage tenant for later test runs. Only the explicit
-			// per-run fallback tenant is removed during cleanup.
-			// create() signature: (name, selfProvisioningDomains[], ...)
-			const created = await sdk.management.tenant.create(tenantName, []);
-			const createdId = created.data?.id;
-			if (!createdId)
-				throw new Error(
-					`Failed to create Descope tenant '${tenantName}': ${JSON.stringify(created)}`,
-				);
-			tenantId = createdId;
-			createdTenant = tenantName.startsWith("e2e-");
-		}
+		const acquiredTenant = await acquirePreviewTenant(
+			{
+				list: () => sdk.management.tenant.loadAll(),
+				create: (name) => sdk.management.tenant.create(name, []),
+				// The real Descope API is eventually consistent; unit tests inject a no-op wait.
+				wait: () => Bun.sleep(250),
+			},
+			tenantName,
+		);
+		tenantId = acquiredTenant.id;
+		createdTenant = acquiredTenant.created && tenantName.startsWith("e2e-");
 
 		await sdk.management.user.deleteAllTestUsers().catch(() => {});
 		accessKey = await setupTestUser(sdk, tenantId, orgSlug);

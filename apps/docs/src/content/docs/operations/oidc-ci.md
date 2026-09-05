@@ -135,11 +135,11 @@ Procella recognizes `repository_owner_id`, `repository_id`, `repository_owner`, 
 
 All claim values in conditions are strings, including numbers and booleans. Write `"true"` not `true`, and `"12345"` not `12345`.
 
-### Rolling upgrade safety
+### Global ownership migration
 
-Deploy the release that serializes trust-policy ownership checks to every Procella replica and drain all older replicas before applying a later migration that makes `(org_slug, issuer)` globally unique. Do not combine those steps in one rolling deployment: older replicas can still deactivate another tenant's policy, while a new replica alone cannot prevent an older replica from inserting a collision under the tenant-scoped index.
+The global `(org_slug, issuer)` unique index is intentionally deployed after the repository compatibility release. Before applying this migration in an environment, deploy the phase A release to every Procella replica and drain every older replica. Development has completed this ordering; production must complete it independently before the phase B migration runs. Do not combine the phase A rollout and phase B migration into one rolling deployment.
 
-If the later migration preflight finds duplicate `(org_slug, issuer)` pairs, stop and reconcile them before continuing. Procella denies token exchange whenever legacy or corrupted rows resolve the same pair to more than one tenant, including inactive rows.
+The migration blocks policy writes, checks all active and inactive rows for cross-tenant ownership duplicates, and aborts without changing policy data when it finds any. Its error does not identify either tenant; operators must reconcile duplicate `(org_slug, issuer)` ownership before retrying. Until reconciliation, Procella also denies token exchange whenever legacy or corrupted rows resolve the same pair to more than one tenant.
 
 ## Token Expiration
 

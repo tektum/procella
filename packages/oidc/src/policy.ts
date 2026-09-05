@@ -58,8 +58,6 @@ export class PostgresTrustPolicyRepository implements TrustPolicyRepository {
 
 		try {
 			const row = await this.db.transaction(async (tx) => {
-				// Phase A keeps the tenant-scoped index for rolling-deploy compatibility.
-				// Every upgraded replica serializes ownership checks on the global pair.
 				const ownershipKey = JSON.stringify([policy.orgSlug, policy.issuer]);
 				await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${ownershipKey}, 0))`);
 
