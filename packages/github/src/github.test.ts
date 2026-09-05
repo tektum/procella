@@ -545,6 +545,23 @@ describe("OctokitGitHubService repository resolution", () => {
 		).resolves.toEqual(installationRow);
 	});
 
+	test("keeps a real Octokit request-cap timeout retryable with ample delivery budget", async () => {
+		const customFetch = mock(async () => {
+			throw new DOMException("timed out", "TimeoutError");
+		});
+		const service = new OctokitGitHubDeliveryService({
+			db: readOnlyDb([installationRow]),
+			config: { appId: "123", privateKey: "unused" },
+			appClient: new Octokit({ request: { fetch: customFetch as unknown as typeof fetch } }),
+		});
+
+		await expect(
+			service.resolveInstallation(
+				{ tenantId: "tenant-a", owner: "acme", repo: "infra" },
+				{ deadlineMs: Date.now() + 40_000 },
+			),
+		).rejects.toMatchObject({ name: "HttpError", status: 500 });
+	});
 	test("propagates an ordinary GitHub 500 before the deadline", async () => {
 		const customFetch = mock(async () =>
 			githubJsonResponse({ message: "Internal Server Error" }, 500),

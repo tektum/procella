@@ -290,13 +290,20 @@ class GitHubDeliveryDeadlineError extends Error {}
 
 function githubRequestOptions(options?: GitHubDeliveryRequestOptions): {
 	request: { signal: AbortSignal };
+	deadlineBounded: boolean;
 } {
-	const remaining =
-		options?.deadlineMs === undefined
-			? GITHUB_REQUEST_TIMEOUT_MS
-			: Math.min(GITHUB_REQUEST_TIMEOUT_MS, options.deadlineMs - Date.now());
-	if (remaining <= 0) throw new GitHubDeliveryDeadlineError("GitHub delivery deadline exceeded");
-	return { request: { signal: AbortSignal.timeout(Math.max(1, Math.floor(remaining))) } };
+	const deadlineRemaining =
+		options?.deadlineMs === undefined ? undefined : options.deadlineMs - Date.now();
+	if (deadlineRemaining !== undefined && deadlineRemaining <= 0) {
+		throw new GitHubDeliveryDeadlineError("GitHub delivery deadline exceeded");
+	}
+	const deadlineBounded =
+		deadlineRemaining !== undefined && deadlineRemaining <= GITHUB_REQUEST_TIMEOUT_MS;
+	const timeout = deadlineBounded ? deadlineRemaining : GITHUB_REQUEST_TIMEOUT_MS;
+	return {
+		request: { signal: AbortSignal.timeout(Math.max(1, Math.floor(timeout))) },
+		deadlineBounded,
+	};
 }
 
 function hasAbortCause(error: unknown): boolean {
@@ -323,15 +330,12 @@ async function withGitHubRequestDeadline<T>(
 	options: GitHubDeliveryRequestOptions | undefined,
 	request: (requestOptions: { request: { signal: AbortSignal } }) => Promise<T>,
 ): Promise<T> {
-	const requestOptions = githubRequestOptions(options);
+	const { deadlineBounded, ...requestOptions } = githubRequestOptions(options);
 	try {
 		return await request(requestOptions);
 	} catch (error) {
 		if (error instanceof GitHubDeliveryDeadlineError) throw error;
-		if (
-			options?.deadlineMs !== undefined &&
-			(requestOptions.request.signal.aborted || hasAbortCause(error))
-		) {
+		if (deadlineBounded && (requestOptions.request.signal.aborted || hasAbortCause(error))) {
 			throw new GitHubDeliveryDeadlineError("GitHub delivery deadline exceeded");
 		}
 		throw error;

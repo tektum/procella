@@ -5,6 +5,7 @@ import {
 	type GitHubDeliveryService,
 	GitHubOutboxWorker,
 	GITHUB_OUTBOX_MAX_ATTEMPTS,
+	GITHUB_OUTBOX_MIN_DELIVERY_BUDGET_MS,
 	type GitHubInstallationInfo,
 	OctokitGitHubDeliveryService,
 } from "@procella/github";
@@ -675,9 +676,14 @@ describe("durable GitHub update publication", () => {
 			appClient,
 			installationClientFactory: () => installationClient,
 		});
-		const worker = new GitHubOutboxWorker({ db, github, maxPerRun: 1 });
+		const worker = new GitHubOutboxWorker({
+			db,
+			github,
+			maxPerRun: 1,
+			now: () => Date.now() - GITHUB_OUTBOX_MIN_DELIVERY_BUDGET_MS,
+		});
 
-		expect(await worker.runOnce({ deadlineMs: Date.now() + 40_000 })).toBe(0);
+		expect(await worker.runOnce({ deadlineMs: Date.now() + 500 })).toBe(0);
 		let [row] = await db
 			.select()
 			.from(githubUpdateOutbox)
@@ -687,7 +693,7 @@ describe("durable GitHub update publication", () => {
 		expect(row.failedRevision).toBe(0);
 		expect(row.claimedBy).toBeNull();
 
-		expect(await worker.runOnce({ deadlineMs: Date.now() + 40_000 })).toBe(1);
+		expect(await worker.runOnce({ deadlineMs: Date.now() + 500 })).toBe(1);
 		[row] = await db
 			.select()
 			.from(githubUpdateOutbox)
@@ -739,9 +745,14 @@ describe("durable GitHub update publication", () => {
 			appClient,
 			installationClientFactory: () => installationClient,
 		});
-		const worker = new GitHubOutboxWorker({ db, github, maxPerRun: 1 });
+		const worker = new GitHubOutboxWorker({
+			db,
+			github,
+			maxPerRun: 1,
+			now: () => Date.now() - GITHUB_OUTBOX_MIN_DELIVERY_BUDGET_MS,
+		});
 
-		expect(await worker.runOnce({ deadlineMs: Date.now() + 40_000 })).toBe(0);
+		expect(await worker.runOnce({ deadlineMs: Date.now() + 500 })).toBe(0);
 		let [row] = await db
 			.select()
 			.from(githubUpdateOutbox)
@@ -752,7 +763,7 @@ describe("durable GitHub update publication", () => {
 		expect(row.claimedBy).toBeNull();
 		expect(installationRequests).toBe(2);
 
-		expect(await worker.runOnce({ deadlineMs: Date.now() + 40_000 })).toBe(1);
+		expect(await worker.runOnce({ deadlineMs: Date.now() + 500 })).toBe(1);
 		[row] = await db
 			.select()
 			.from(githubUpdateOutbox)
@@ -761,6 +772,54 @@ describe("durable GitHub update publication", () => {
 		expect(row.deliveredRevision).toBe(1);
 		expect(row.failedRevision).toBe(0);
 		expect(installationRequests).toBe(5);
+	});
+
+	test("request-cap timeouts consume attempts and eventually dead-letter", async () => {
+		const { updateId } = await createTargetedUpdate();
+		await updatesService.startUpdate(updateId, {});
+		await db.insert(githubInstallations).values({
+			tenantId: installation.tenantId,
+			installationId: installation.installationId,
+			accountLogin: installation.accountLogin,
+			accountType: installation.accountType,
+			repositorySelection: installation.repositorySelection,
+		});
+		const requestCapFetch = mock(async () => {
+			throw new DOMException("timed out", "TimeoutError");
+		});
+		const github = new OctokitGitHubDeliveryService({
+			db,
+			config: { appId: "123", privateKey: "unused" },
+			appClient: new Octokit({
+				request: { fetch: requestCapFetch as unknown as typeof fetch },
+			}),
+		});
+		const worker = new GitHubOutboxWorker({ db, github, maxPerRun: 1 });
+
+		expect(await worker.runOnce({ deadlineMs: Date.now() + 40_000 })).toBe(0);
+		let [row] = await db
+			.select()
+			.from(githubUpdateOutbox)
+			.where(eq(githubUpdateOutbox.updateId, updateId));
+		expect(row.attempts).toBe(1);
+		expect(row.failedRevision).toBe(0);
+		expect(row.claimedBy).toBeNull();
+
+		await db
+			.update(githubUpdateOutbox)
+			.set({ attempts: GITHUB_OUTBOX_MAX_ATTEMPTS - 1, availableAt: sql`now()` })
+			.where(eq(githubUpdateOutbox.updateId, updateId));
+		expect(await worker.runOnce({ deadlineMs: Date.now() + 40_000 })).toBe(0);
+		[row] = await db
+			.select()
+			.from(githubUpdateOutbox)
+			.where(eq(githubUpdateOutbox.updateId, updateId));
+		expect(row.attempts).toBe(GITHUB_OUTBOX_MAX_ATTEMPTS);
+		expect(row.deliveredRevision).toBe(0);
+		expect(row.failedRevision).toBe(1);
+		expect(row.failedAt).toBeInstanceOf(Date);
+		expect(row.claimedBy).toBeNull();
+		expect(requestCapFetch).toHaveBeenCalledTimes(2);
 	});
 	test("expired claims are retried and concurrent workers do not overlap", async () => {
 		const { updateId } = await createTargetedUpdate();
