@@ -91,7 +91,7 @@ With the integration disabled, preview and production deployments remain healthy
 
 ## How PR Comments Work
 
-During an update, the Pulumi CLI sends source-control and CI metadata to Procella. For GitHub Actions pull-request runs, Procella verifies the metadata repository against the stack's persisted `vcs:owner` and `vcs:repo` tags, then uses these values automatically:
+During an update, the Pulumi CLI sends source-control and CI metadata to Procella. For GitHub pull-request runs, Procella snapshots these values when the update is created:
 
 | Update metadata | Purpose |
 |---|---|
@@ -100,13 +100,11 @@ During an update, the Pulumi CLI sends source-control and CI metadata to Procell
 | `ci.pr.number` | Pull request number |
 | `ci.pr.headSHA` | Pull request head commit |
 
-If `ci.pr.headSHA` is unavailable, Procella falls back to `git.head`. A complete set of explicit `github:owner`, `github:repo`, `github:pr`, and `github:sha` stack tags remains supported and takes precedence over update metadata.
+If `ci.pr.headSHA` is unavailable, Procella falls back to `git.head`. The metadata repository must match the stack's persisted `vcs:owner` and `vcs:repo` identity. Workload callers must also be bound to that repository. `github:*` stack tags are ignored and cannot authorize a publication.
 
-When a preview associated with a pull request succeeds or fails, Procella:
+Starting a matching update transactionally enqueues a pending commit status and PR comment. Completion or cancellation enqueues the final edit in the same database transaction as the status change. Procella stores the highest-sequence Pulumi summary event and revises the final comment if a newer summary arrives late. If no summary arrived, the comment says `summary unavailable`.
 
-1. Looks up the repository's GitHub App installation
-2. Posts a Procella summary comment on the pull request
-3. Creates or updates the commit status on the pull request head commit
+Delivery uses a PostgreSQL outbox. Workers resolve the repository's current tenant-bound GitHub App installation, recover an existing comment by its hidden update marker after a crash, and edit that same comment. Leased claims, ordered phases, idempotent revisions, and bounded retry backoff make delivery safe across replicas and Lambda invocations.
 
 ## CI/CD Integration
 

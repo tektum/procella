@@ -173,7 +173,6 @@ function makeRouteTestApp(opts?: { corsOrigins?: string[]; cronSecret?: string }
 				tokenExpiration: Math.floor(Date.now() / 1000) + 300,
 			}),
 			completeUpdate: async () => {},
-			getUpdateContext: async () => ({ stackId: "stack-1", environment: {} }),
 			cancelUpdate: async () => {},
 			patchCheckpoint: async () => {},
 			patchCheckpointVerbatim: async () => {},
@@ -478,9 +477,8 @@ describe("[security] MEDIUM regressions (vulns.txt M1-M15)", () => {
 		// Regression combines structural proof (no cache, row locking) with the integration assertion from updates.integration.test.ts.
 		const source = await Bun.file(UPDATES_SOURCE).text();
 		expect(source).not.toContain("checkpointVersionCache");
-		expect(source).toContain(
-			'SELECT stack_id AS "stackId", status, lease_token AS "leaseToken", lease_expires_at AS "leaseExpiresAt"',
-		);
+		expect(source).toContain('SELECT stack_id AS "stackId", status, version,');
+		expect(source).toContain('lease_token AS "leaseToken", lease_expires_at AS "leaseExpiresAt"');
 		expect(source).toContain("FOR UPDATE");
 		expect(source).toContain('SELECT COALESCE(MAX(version), 0) + 1 AS "nextVersion"');
 

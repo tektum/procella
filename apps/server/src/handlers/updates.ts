@@ -1,10 +1,5 @@
 // @procella/server — Update lifecycle handlers.
 
-import {
-	buildPRCommentBody,
-	type GitHubService,
-	mapUpdateStatusToCommitState,
-} from "@procella/github";
 import type { StacksService } from "@procella/stacks";
 import {
 	type CompleteUpdateRequest,
@@ -26,7 +21,6 @@ export function updateHandlers(
 	updates: UpdatesService,
 	stacks: StacksService,
 	webhooks?: WebhooksService,
-	github?: GitHubService | null,
 ) {
 	return {
 		createUpdate: async (c: Context<Env>) => {
@@ -82,90 +76,6 @@ export function updateHandlers(
 			const org = c.req.param("org");
 			const project = c.req.param("project");
 			const stack = c.req.param("stack");
-
-			// Safe: updateAuth already verified that this URL tuple resolves to the
-			// same stackId that the lease token is bound to before any side effects run.
-			if (
-				org &&
-				project &&
-				stack &&
-				github &&
-				(body.status === "succeeded" || body.status === "failed")
-			) {
-				void (async () => {
-					const completed = await updates.getUpdateContext(updateId);
-					const stackInfo = await stacks.getStackById_systemOnly(completed.stackId);
-
-					const taggedOwner = stackInfo.tags["github:owner"];
-					const taggedRepo = stackInfo.tags["github:repo"];
-					const taggedPr = stackInfo.tags["github:pr"];
-					const taggedSha = stackInfo.tags["github:sha"];
-					const taggedTarget =
-						taggedOwner && taggedRepo && taggedPr && taggedSha
-							? { owner: taggedOwner, repo: taggedRepo, pr: taggedPr, sha: taggedSha }
-							: null;
-
-					const metadataOwner = completed.environment["vcs.owner"];
-					const metadataRepo = completed.environment["vcs.repo"];
-					const metadataPr = completed.environment["ci.pr.number"];
-					const metadataSha =
-						completed.environment["ci.pr.headSHA"] ?? completed.environment["git.head"];
-					const metadataMatchesStack =
-						metadataOwner === stackInfo.tags["vcs:owner"] &&
-						metadataRepo === stackInfo.tags["vcs:repo"];
-					const metadataTarget =
-						metadataMatchesStack && metadataOwner && metadataRepo && metadataPr && metadataSha
-							? { owner: metadataOwner, repo: metadataRepo, pr: metadataPr, sha: metadataSha }
-							: null;
-					const target = taggedTarget ?? metadataTarget;
-					if (!target) return;
-					const installation = await github.resolveInstallation({
-						tenantId: stackInfo.tenantId,
-						owner: target.owner,
-						repo: target.repo,
-					});
-					if (!installation) return;
-
-					const prNumber = Number(target.pr);
-					if (Number.isNaN(prNumber)) return;
-
-					const latest = await updates.getHistory(stackInfo.id);
-					const summary = latest.updates[0];
-					const commitState = mapUpdateStatusToCommitState(body.status);
-					await github.setCommitStatus(
-						installation.installationId,
-						target.owner,
-						target.repo,
-						target.sha,
-						commitState,
-						`Procella ${body.status}`,
-					);
-
-					const resourceChanges = summary?.resourceChanges as Record<string, number> | undefined;
-					const commentBody = buildPRCommentBody({
-						org,
-						project,
-						stack,
-						kind: summary?.kind ?? "update",
-						status: body.status,
-						resourceChanges: {
-							creates: resourceChanges?.create ?? resourceChanges?.creates,
-							updates: resourceChanges?.update ?? resourceChanges?.updates,
-							deletes: resourceChanges?.delete ?? resourceChanges?.deletes,
-							sames: resourceChanges?.same ?? resourceChanges?.sames,
-						},
-					});
-					await github.postPRComment(
-						installation.installationId,
-						target.owner,
-						target.repo,
-						prNumber,
-						commentBody,
-					);
-				})().catch((error: unknown) => {
-					console.error("[updates] Failed to publish GitHub update status", error);
-				});
-			}
 
 			if (
 				caller &&

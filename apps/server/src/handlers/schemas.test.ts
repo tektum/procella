@@ -87,6 +87,19 @@ describe("Pulumi request schemas", () => {
 		expect(result.success).toBe(false);
 	});
 
+	test("rejects scalar and malformed summary events", () => {
+		expect(
+			EngineEventBatchSchema.safeParse({
+				events: [{ sequence: 1, timestamp: 1, summaryEvent: "not-an-object" }],
+			}).success,
+		).toBe(false);
+		expect(
+			EngineEventBatchSchema.safeParse({
+				events: [{ sequence: 1, timestamp: 1, summaryEvent: { resourceChanges: 3 } }],
+			}).success,
+		).toBe(false);
+	});
+
 	test("accepts Pulumi large-state batch decrypt requests", () => {
 		const result = BatchDecryptRequestSchema.safeParse({
 			ciphertexts: Array.from({ length: 160 }, () => "Y2lwaGVydGV4dA=="),

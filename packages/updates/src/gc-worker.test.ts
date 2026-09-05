@@ -23,10 +23,11 @@ describe("@procella/updates GCWorker", () => {
 
 	describe("M8: grace window excludes recently-expired leases", () => {
 		test("functional: runOnce completes the GC cycle without throwing (PR #149 review — invoke the actual cycle, not just constants)", async () => {
-			const mockDb = {
+			const mockDb: Record<string, unknown> = {};
+			Object.assign(mockDb, {
 				execute: async (query: unknown) => {
 					const queryStr = String(query);
-					if (queryStr.includes("pg_try_advisory_lock")) {
+					if (queryStr.includes("pg_try_advisory_xact_lock")) {
 						return { rows: [{ acquired: true }] };
 					}
 					return { rows: [] };
@@ -41,7 +42,8 @@ describe("@procella/updates GCWorker", () => {
 						where: () => ({ returning: () => [] }),
 					}),
 				}),
-			};
+				transaction: (callback: (tx: unknown) => unknown) => callback(mockDb),
+			});
 
 			const worker = new GCWorker({ db: mockDb as never, interval: 60_000 });
 			await expect(worker.runOnce()).resolves.toBeUndefined();

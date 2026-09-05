@@ -1,16 +1,20 @@
 import { describe, expect, mock, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
-import type { Octokit } from "@octokit/rest";
+import { Octokit } from "@octokit/rest";
 import type { Config } from "@procella/config";
 import type { Database } from "@procella/db";
 import {
+	buildCommitStatusContext,
 	buildGitHubAppConfig,
 	buildPRCommentBody,
 	createGitHubSetupStateService,
 	type GitHubInstallationInfo,
 	GitHubSetupError,
+	githubRetryDelaySeconds,
 	mapUpdateStatusToCommitState,
+	OctokitGitHubDeliveryService,
 	OctokitGitHubService,
+	sanitizeDeliveryError,
 	verifyGitHubWebhookSignature,
 } from "./index.js";
 
@@ -19,6 +23,13 @@ const TEST_GITHUB_APP_PRIVATE_KEY = generateKeyPairSync("rsa", {
 })
 	.privateKey.export({ format: "pem", type: "pkcs1" })
 	.toString();
+
+function githubJsonResponse(data: unknown, status = 200): Response {
+	return new Response(JSON.stringify(data), {
+		status,
+		headers: { "content-type": "application/json" },
+	});
+}
 
 describe("@procella/github", () => {
 	describe("verifyGitHubWebhookSignature", () => {
@@ -57,25 +68,25 @@ describe("@procella/github", () => {
 	describe("buildPRCommentBody", () => {
 		test("builds markdown body with table and details link", () => {
 			const body = buildPRCommentBody({
+				updateId: "11111111-1111-4111-8111-111111111111",
 				org: "acme",
 				project: "infra",
 				stack: "dev",
 				kind: "preview",
 				status: "succeeded",
-				resourceChanges: { creates: 3, updates: 1, deletes: 0, sames: 4 },
+				resourceChanges: { create: 3, update: 1, delete: 0, same: 4 },
 				permalink: "https://example.com/update/1",
 			});
-
-			expect(body).toContain("## Pulumi Preview Results");
+			expect(body).toContain("**Changes:** create 3, delete 0, same 4, update 1");
+			expect(body).toContain("<!-- procella:update:11111111-1111-4111-8111-111111111111 -->");
+			expect(body).toContain("## Pulumi Preview");
 			expect(body).toContain("**Stack:** `acme/infra/dev`");
-			expect(body).toContain("| Create | 3 |");
-			expect(body).toContain("| Update | 1 |");
-			expect(body).toContain("| Delete | 0 |");
 			expect(body).toContain("[View details](https://example.com/update/1)");
 		});
 
-		test("defaults missing resource changes to zero", () => {
+		test("renders unavailable when no terminal summary was captured", () => {
 			const body = buildPRCommentBody({
+				updateId: "22222222-2222-4222-8222-222222222222",
 				org: "acme",
 				project: "infra",
 				stack: "dev",
@@ -83,9 +94,8 @@ describe("@procella/github", () => {
 				status: "failed",
 			});
 
-			expect(body).toContain("| Create | 0 |");
-			expect(body).toContain("| Update | 0 |");
-			expect(body).toContain("| Delete | 0 |");
+			expect(body).toContain("**Summary:** unavailable");
+			expect(body).not.toContain("**Changes:**");
 		});
 	});
 
@@ -98,6 +108,45 @@ describe("@procella/github", () => {
 			expect(mapUpdateStatusToCommitState("requested")).toBe("pending");
 			expect(mapUpdateStatusToCommitState("not started")).toBe("pending");
 			expect(mapUpdateStatusToCommitState("unknown")).toBe("error");
+		});
+	});
+
+	describe("buildCommitStatusContext", () => {
+		test("is stable, stack-specific, and within GitHub's limit", () => {
+			const target = { org: "acme", project: "infra", stack: "production" };
+			expect(buildCommitStatusContext(target)).toBe("procella/acme/infra/production");
+			const long = buildCommitStatusContext({
+				org: "o".repeat(64),
+				project: "p".repeat(64),
+				stack: "s".repeat(64),
+			});
+			expect(long).toHaveLength(100);
+			expect(long).toBe(
+				buildCommitStatusContext({
+					org: "o".repeat(64),
+					project: "p".repeat(64),
+					stack: "s".repeat(64),
+				}),
+			);
+		});
+	});
+	describe("githubRetryDelaySeconds", () => {
+		test("backs off exponentially with a fifteen-minute ceiling", () => {
+			expect(githubRetryDelaySeconds(1)).toBe(5);
+			expect(githubRetryDelaySeconds(4)).toBe(40);
+			expect(githubRetryDelaySeconds(100)).toBe(900);
+		});
+	});
+
+	describe("sanitizeDeliveryError", () => {
+		test("redacts credentials and bounds persisted errors", () => {
+			const error = new Error(
+				`Authorization: Bearer top-secret https://user:pass@example.com/${"x".repeat(600)}`,
+			);
+			const sanitized = sanitizeDeliveryError(error);
+			expect(sanitized).not.toContain("top-secret");
+			expect(sanitized).not.toContain("user:pass");
+			expect(sanitized.length).toBeLessThanOrEqual(500);
 		});
 	});
 });
@@ -404,6 +453,7 @@ describe("OctokitGitHubService repository resolution", () => {
 		expect(request).toHaveBeenCalledWith("GET /repos/{owner}/{repo}/installation", {
 			owner: "renamed-acme",
 			repo: "infra",
+			request: { signal: expect.anything() },
 		});
 	});
 
@@ -430,6 +480,7 @@ describe("OctokitGitHubService repository resolution", () => {
 		expect(request).toHaveBeenCalledWith("GET /repos/{owner}/{repo}/installation", {
 			owner: "acme",
 			repo: "public",
+			request: { signal: expect.anything() },
 		});
 		expect(reposGet).not.toHaveBeenCalled();
 	});
@@ -460,5 +511,226 @@ describe("OctokitGitHubService repository resolution", () => {
 		expect(
 			await service.resolveInstallation({ tenantId: "tenant-a", owner: "acme", repo: "infra" }),
 		).toEqual(allowed);
+	});
+	test("normalizes a real Octokit repository timeout and succeeds on retry", async () => {
+		let now = 0;
+		let attempts = 0;
+		const originalNow = Date.now;
+		const customFetch = mock(async () => {
+			attempts += 1;
+			if (attempts === 1) {
+				now = 100;
+				throw new DOMException("timed out", "TimeoutError");
+			}
+			return githubJsonResponse({ id: 101 });
+		});
+		const service = new OctokitGitHubDeliveryService({
+			db: readOnlyDb([installationRow]),
+			config: { appId: "123", privateKey: "unused" },
+			appClient: new Octokit({ request: { fetch: customFetch as unknown as typeof fetch } }),
+		});
+		const target = { tenantId: "tenant-a", owner: "acme", repo: "infra" };
+
+		Date.now = () => now;
+		try {
+			await expect(service.resolveInstallation(target, { deadlineMs: 100 })).rejects.toThrow(
+				"deadline exceeded",
+			);
+			now = 0;
+			await expect(service.resolveInstallation(target, { deadlineMs: 10_000 })).resolves.toEqual(
+				installationRow,
+			);
+			expect(attempts).toBe(2);
+		} finally {
+			Date.now = originalNow;
+		}
+	});
+
+	test("keeps a real Octokit request-cap timeout retryable with ample delivery budget", async () => {
+		const originalNow = Date.now;
+		const customFetch = mock(async () => {
+			throw new DOMException("timed out", "TimeoutError");
+		});
+		const service = new OctokitGitHubDeliveryService({
+			db: readOnlyDb([installationRow]),
+			config: { appId: "123", privateKey: "unused" },
+			appClient: new Octokit({ request: { fetch: customFetch as unknown as typeof fetch } }),
+		});
+
+		Date.now = () => 0;
+		try {
+			await expect(
+				service.resolveInstallation(
+					{ tenantId: "tenant-a", owner: "acme", repo: "infra" },
+					{ deadlineMs: 40_000 },
+				),
+			).rejects.toMatchObject({ name: "HttpError", status: 500 });
+		} finally {
+			Date.now = originalNow;
+		}
+	});
+	test("propagates an ordinary GitHub 500 before the deadline", async () => {
+		const customFetch = mock(async () =>
+			githubJsonResponse({ message: "Internal Server Error" }, 500),
+		);
+		const service = new OctokitGitHubDeliveryService({
+			db: readOnlyDb([installationRow]),
+			config: { appId: "123", privateKey: "unused" },
+			appClient: new Octokit({ request: { fetch: customFetch as unknown as typeof fetch } }),
+		});
+
+		await expect(
+			service.resolveInstallation(
+				{ tenantId: "tenant-a", owner: "acme", repo: "infra" },
+				{ deadlineMs: Date.now() + 10_000 },
+			),
+		).rejects.toMatchObject({ status: 500 });
+	});
+});
+
+describe("OctokitGitHubDeliveryService comments", () => {
+	test("creates, finds, and edits one marked PR comment", async () => {
+		const createComment = mock(async () => ({ data: { id: 123 } }));
+		const updateComment = mock(async () => ({ data: { id: 123 } }));
+		const listComments = mock(async () => ({
+			data: [
+				{ id: 122, body: "unrelated" },
+				{ id: 123, body: "<!-- procella:update:update-1 -->\nresult" },
+			],
+		}));
+		const createCommitStatus = mock(async () => ({}));
+		const installationClient = {
+			rest: {
+				issues: { createComment, listComments, updateComment },
+				repos: { createCommitStatus },
+			},
+		} as unknown as Octokit;
+		const service = new OctokitGitHubDeliveryService({
+			db: readOnlyDb([]),
+			config: { appId: "123", privateKey: "unused" },
+			appClient: {} as Octokit,
+			installationClientFactory: () => installationClient,
+		});
+
+		expect(await service.createPRComment(101, "acme", "infra", 42, "pending")).toBe(123);
+		expect(
+			await service.findPRComment(101, "acme", "infra", 42, "<!-- procella:update:update-1 -->"),
+		).toBe(123);
+		await service.updatePRComment(101, "acme", "infra", 123, "complete");
+		await service.setCommitStatus(101, "acme", "infra", "abc123", "success", "done", "ctx");
+		expect(await service.findPRComment(101, "acme", "infra", 42, "missing-marker")).toBeNull();
+
+		expect(createComment).toHaveBeenCalledTimes(1);
+		expect(listComments).toHaveBeenCalledWith({
+			owner: "acme",
+			repo: "infra",
+			issue_number: 42,
+			per_page: 100,
+			page: 1,
+			request: { signal: expect.anything() },
+		});
+		expect(updateComment).toHaveBeenCalledWith({
+			owner: "acme",
+			repo: "infra",
+			comment_id: 123,
+			body: "complete",
+			request: { signal: expect.anything() },
+		});
+		expect(createCommitStatus).toHaveBeenCalledWith({
+			owner: "acme",
+			repo: "infra",
+			sha: "abc123",
+			state: "success",
+			description: "done",
+			context: "ctx",
+			request: { signal: expect.anything() },
+		});
+	});
+
+	test("checks the deadline before fetching another comment page", async () => {
+		let now = 0;
+		const originalNow = Date.now;
+		Date.now = () => now;
+		const listComments = mock(async () => {
+			now = 20;
+			return { data: Array.from({ length: 100 }, (_, id) => ({ id, body: "unrelated" })) };
+		});
+		const service = new OctokitGitHubDeliveryService({
+			db: readOnlyDb([]),
+			config: { appId: "123", privateKey: "unused" },
+			appClient: {} as Octokit,
+			installationClientFactory: () =>
+				({ rest: { issues: { listComments } } }) as unknown as Octokit,
+		});
+
+		try {
+			await expect(
+				service.findPRComment(101, "acme", "infra", 42, "missing", { deadlineMs: 10 }),
+			).rejects.toThrow("deadline exceeded");
+			expect(listComments).toHaveBeenCalledTimes(1);
+		} finally {
+			Date.now = originalNow;
+		}
+	});
+
+	test("normalizes a real Octokit paginated abort and succeeds later", async () => {
+		let now = 0;
+		let calls = 0;
+		const originalNow = Date.now;
+		const customFetch = mock(async () => {
+			calls += 1;
+			if (calls === 1) {
+				return githubJsonResponse(
+					Array.from({ length: 100 }, (_, id) => ({ id, body: "unrelated" })),
+				);
+			}
+			if (calls === 2) {
+				now = 100;
+				throw new DOMException("aborted", "AbortError");
+			}
+			return githubJsonResponse([{ id: 123, body: "<!-- procella:update:update-1 -->" }]);
+		});
+		const installationClient = new Octokit({
+			request: { fetch: customFetch as unknown as typeof fetch },
+		});
+		const service = new OctokitGitHubDeliveryService({
+			db: readOnlyDb([]),
+			config: { appId: "123", privateKey: "unused" },
+			appClient: {} as Octokit,
+			installationClientFactory: () => installationClient,
+		});
+
+		Date.now = () => now;
+		try {
+			await expect(
+				service.findPRComment(101, "acme", "infra", 42, "missing", { deadlineMs: 100 }),
+			).rejects.toThrow("deadline exceeded");
+			now = 0;
+			await expect(
+				service.findPRComment(101, "acme", "infra", 42, "<!-- procella:update:update-1 -->", {
+					deadlineMs: 10_000,
+				}),
+			).resolves.toBe(123);
+			expect(calls).toBe(3);
+		} finally {
+			Date.now = originalNow;
+		}
+	});
+	test("rejects an unsafe comment identifier", async () => {
+		const service = new OctokitGitHubDeliveryService({
+			db: readOnlyDb([]),
+			config: { appId: "123", privateKey: "unused" },
+			appClient: {} as Octokit,
+			installationClientFactory: () =>
+				({
+					rest: {
+						issues: { createComment: mock(async () => ({ data: { id: Number.MAX_VALUE } })) },
+					},
+				}) as unknown as Octokit,
+		});
+
+		await expect(service.createPRComment(101, "acme", "infra", 42, "body")).rejects.toThrow(
+			"invalid comment ID",
+		);
 	});
 });

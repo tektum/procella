@@ -1,4 +1,5 @@
 import { formatConfigErrors } from "@procella/config";
+import { GitHubOutboxWorker } from "@procella/github";
 import { ZodError } from "zod";
 import { logger } from "./logger.js";
 
@@ -39,7 +40,7 @@ if (process.argv.includes("--healthz")) {
 		const { shutdownTelemetry } = await import("@procella/telemetry");
 		const { GCWorker } = await import("@procella/updates");
 		const { bootstrap } = await import("./bootstrap.js");
-		const { app, auth, config, db, client } = await bootstrap();
+		const { app, auth, config, db, client, github } = await bootstrap();
 
 		const uiRoot = process.env.PROCELLA_UI_PATH || "/ui";
 		if (existsSync(`${uiRoot}/index.html`)) {
@@ -66,6 +67,8 @@ if (process.argv.includes("--healthz")) {
 
 		const gc = new GCWorker({ db });
 		void gc.start();
+		const githubOutbox = github ? new GitHubOutboxWorker({ db, github }) : null;
+		if (githubOutbox) void githubOutbox.start();
 
 		const DRAIN_TIMEOUT_MS = 10_000;
 		const shutdown = async () => {
@@ -78,6 +81,7 @@ if (process.argv.includes("--healthz")) {
 
 			await server.stop();
 			await gc.stop();
+			if (githubOutbox) await githubOutbox.stop();
 			await shutdownTelemetry();
 			auth.dispose?.();
 			await client.close();

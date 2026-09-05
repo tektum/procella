@@ -113,13 +113,19 @@
       "when": 1788444713887,
       "tag": "0015_immutable_update_versions",
       "breakpoints": true
-    }
-    ,
+    },
     {
       "idx": 16,
       "version": "7",
       "when": 1788490000000,
       "tag": "0016_github_installation_binding",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1788500000000,
+      "tag": "0017_durable_github_publication",
       "breakpoints": true
     }
   ]

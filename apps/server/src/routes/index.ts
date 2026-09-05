@@ -7,7 +7,11 @@ import type { AuditService } from "@procella/audit";
 import type { AuthConfig, AuthService } from "@procella/auth";
 import type { Database } from "@procella/db";
 import type { EscService } from "@procella/esc";
-import { type GitHubService, verifyGitHubWebhookSignature } from "@procella/github";
+import {
+	GitHubOutboxWorker,
+	type GitHubService,
+	verifyGitHubWebhookSignature,
+} from "@procella/github";
 import type { OidcService, TrustPolicyRepository } from "@procella/oidc";
 import type { StacksService } from "@procella/stacks";
 import { tracingMiddleware } from "@procella/telemetry";
@@ -46,6 +50,8 @@ import {
 } from "../middleware/index.js";
 import type { Env } from "../types.js";
 import { authenticateTrpcCaller } from "./trpc-auth.js";
+
+const CRON_WORK_DEADLINE_MS = 52_000;
 
 // ============================================================================
 // App Factory
@@ -107,7 +113,7 @@ export function createApp(deps: {
 	const user = userHandlers(deps.stacks);
 	const stackH = stackHandlers(deps.stacks, deps.webhooks);
 	const auditH = auditHandlers({ audit: deps.audit });
-	const updateH = updateHandlers(deps.updates, deps.stacks, deps.webhooks, deps.github);
+	const updateH = updateHandlers(deps.updates, deps.stacks, deps.webhooks);
 	const webhookH = webhookHandlers({ webhooks: deps.webhooks });
 	const githubH = githubHandlers({
 		github: deps.github,
@@ -210,8 +216,14 @@ export function createApp(deps: {
 		if (!safeEqualString(providedSecret, secret)) {
 			return c.json({ error: "Unauthorized" }, 401);
 		}
+		const startedAt = Date.now();
 		const gc = new GCWorker({ db: deps.db });
 		await gc.runOnce();
+		if (deps.github) {
+			await new GitHubOutboxWorker({ db: deps.db, github: deps.github, maxPerRun: 5 })
+				.runOnce({ deadlineMs: startedAt + CRON_WORK_DEADLINE_MS })
+				.catch((error) => console.error("[cron] GitHub outbox drain failed", error));
+		}
 		return c.json({ ok: true });
 	});
 

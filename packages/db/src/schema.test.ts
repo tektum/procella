@@ -5,6 +5,7 @@ import {
 	checkpoints,
 	githubInstallations,
 	githubSetupStates,
+	githubUpdateOutbox,
 	oidcTrustPolicies,
 	projects,
 	stacks,
@@ -83,6 +84,10 @@ describe("@procella/db schema", () => {
 			expect(columnNames).toContain("completed_at");
 			expect(columnNames).toContain("config");
 			expect(columnNames).toContain("program");
+			expect(columnNames).toContain("github_target");
+			expect(columnNames).toContain("github_comment_id");
+			expect(columnNames).toContain("summary_sequence");
+			expect(columnNames).toContain("summary");
 		});
 	});
 
@@ -129,6 +134,21 @@ describe("@procella/db schema", () => {
 			expect(columnNames).toContain("kind");
 			expect(columnNames).toContain("fields");
 			expect(columnNames).toContain("created_at");
+		});
+	});
+
+	describe("github_update_outbox table", () => {
+		test("stores leased revision delivery state", () => {
+			expect(getTableName(githubUpdateOutbox)).toBe("github_update_outbox");
+			const columns = getTableColumns(githubUpdateOutbox);
+			expect(columns.updateId.name).toBe("update_id");
+			expect(columns.phase.name).toBe("phase");
+			expect(columns.revision.name).toBe("revision");
+			expect(columns.deliveredRevision.name).toBe("delivered_revision");
+			expect(columns.failedRevision.name).toBe("failed_revision");
+			expect(columns.failedAt.name).toBe("failed_at");
+			expect(columns.availableAt.name).toBe("available_at");
+			expect(columns.claimedUntil.name).toBe("claimed_until");
 		});
 	});
 
@@ -184,6 +204,7 @@ describe("@procella/db schema", () => {
 			expect(getTableName(updates)).toBe("updates");
 			expect(getTableName(checkpoints)).toBe("checkpoints");
 			expect(getTableName(updateEvents)).toBe("update_events");
+			expect(getTableName(githubUpdateOutbox)).toBe("github_update_outbox");
 			expect(getTableName(githubInstallations)).toBe("github_installations");
 			expect(getTableName(githubSetupStates)).toBe("github_setup_states");
 			expect(getTableName(oidcTrustPolicies)).toBe("oidc_trust_policies");

@@ -1,9 +1,9 @@
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { createAppAuth } from "@octokit/auth-app";
 import { Octokit } from "@octokit/rest";
 import type { Config } from "@procella/config";
 import type { Database } from "@procella/db";
-import { githubInstallations, githubSetupStates } from "@procella/db";
+import { githubInstallations, githubSetupStates, githubUpdateOutbox, updates } from "@procella/db";
 import { and, desc, eq, gt, lt, sql } from "drizzle-orm";
 import { errors as joseErrors, jwtVerify, SignJWT } from "jose";
 
@@ -28,25 +28,49 @@ export interface GitHubAppConfig {
 	stateSigningKey: string;
 }
 
+export interface GitHubDeliveryConfig {
+	appId: string;
+	privateKey: string;
+}
+
 export interface GitHubRepositoryTarget {
 	tenantId: string;
 	owner: string;
 	repo: string;
 }
 
-export interface GitHubService {
-	handleWebhookEvent(event: string, payload: unknown): Promise<void>;
-	issueInstallationUrl(tenantId: string): Promise<string>;
-	completeInstallation(state: string, installationId: number): Promise<GitHubInstallationInfo>;
-	listInstallations(tenantId: string): Promise<GitHubInstallationInfo[]>;
-	resolveInstallation(target: GitHubRepositoryTarget): Promise<GitHubInstallationInfo | null>;
-	removeInstallation(tenantId: string, installationId: number): Promise<void>;
-	postPRComment(
+export interface GitHubDeliveryRequestOptions {
+	deadlineMs?: number;
+}
+
+export interface GitHubDeliveryService {
+	resolveInstallation(
+		target: GitHubRepositoryTarget,
+		options?: GitHubDeliveryRequestOptions,
+	): Promise<GitHubInstallationInfo | null>;
+	createPRComment(
 		installationId: number,
 		owner: string,
 		repo: string,
 		prNumber: number,
 		body: string,
+		options?: GitHubDeliveryRequestOptions,
+	): Promise<number>;
+	findPRComment(
+		installationId: number,
+		owner: string,
+		repo: string,
+		prNumber: number,
+		marker: string,
+		options?: GitHubDeliveryRequestOptions,
+	): Promise<number | null>;
+	updatePRComment(
+		installationId: number,
+		owner: string,
+		repo: string,
+		commentId: number,
+		body: string,
+		options?: GitHubDeliveryRequestOptions,
 	): Promise<void>;
 	setCommitStatus(
 		installationId: number,
@@ -56,12 +80,22 @@ export interface GitHubService {
 		state: "pending" | "success" | "failure" | "error",
 		description: string,
 		context?: string,
+		options?: GitHubDeliveryRequestOptions,
 	): Promise<void>;
+}
+
+export interface GitHubService extends GitHubDeliveryService {
+	handleWebhookEvent(event: string, payload: unknown): Promise<void>;
+	issueInstallationUrl(tenantId: string): Promise<string>;
+	completeInstallation(state: string, installationId: number): Promise<GitHubInstallationInfo>;
+	listInstallations(tenantId: string): Promise<GitHubInstallationInfo[]>;
+	removeInstallation(tenantId: string, installationId: number): Promise<void>;
 }
 
 export const GITHUB_SETUP_STATE_TTL_SECONDS = 10 * 60;
 const GITHUB_SETUP_STATE_ISSUER = "procella";
 const GITHUB_SETUP_STATE_AUDIENCE = "procella:github-app-installation";
+const GITHUB_REQUEST_TIMEOUT_MS = 8_000;
 
 export type GitHubSetupErrorCode =
 	| "invalid_state"
@@ -193,47 +227,48 @@ export async function verifyGitHubWebhookSignature(
 }
 
 export function buildPRCommentBody(update: {
+	updateId: string;
 	org: string;
 	project: string;
 	stack: string;
 	kind: string;
 	status: string;
-	resourceChanges?: { creates?: number; updates?: number; deletes?: number; sames?: number };
+	resourceChanges?: Record<string, number>;
 	permalink?: string;
 }): string {
-	const statusLabel =
-		update.status === "succeeded"
-			? "✅ succeeded"
-			: update.status === "failed"
-				? "❌ failed"
-				: update.status === "cancelled"
-					? "⚪ cancelled"
-					: update.status;
-
-	const creates = update.resourceChanges?.creates ?? 0;
-	const updates = update.resourceChanges?.updates ?? 0;
-	const deletes = update.resourceChanges?.deletes ?? 0;
-	const sames = update.resourceChanges?.sames ?? 0;
-
+	const title = update.kind === "preview" ? "Pulumi Preview" : "Pulumi Update";
+	const statusLabel = update.status === "running" ? "in progress" : update.status;
 	const lines = [
-		"## Pulumi Preview Results",
+		`<!-- procella:update:${update.updateId} -->`,
+		`## ${title}`,
 		`**Stack:** \`${update.org}/${update.project}/${update.stack}\``,
-		`**Operation:** ${update.kind}`,
 		`**Status:** ${statusLabel}`,
-		"",
-		"| Action | Count |",
-		"|--------|-------|",
-		`| Create | ${creates} |`,
-		`| Update | ${updates} |`,
-		`| Delete | ${deletes} |`,
-		`| Same | ${sames} |`,
 	];
 
-	if (update.permalink) {
-		lines.push("", `[View details](${update.permalink})`);
+	if (update.status !== "running") {
+		if (update.resourceChanges) {
+			const changes = Object.entries(update.resourceChanges)
+				.sort(([left], [right]) => left.localeCompare(right))
+				.map(([operation, count]) => `${operation} ${count}`);
+			lines.push(`**Changes:** ${changes.length > 0 ? changes.join(", ") : "none"}`);
+		} else {
+			lines.push("**Summary:** unavailable");
+		}
 	}
 
+	if (update.permalink) lines.push("", `[View details](${update.permalink})`);
 	return lines.join("\n");
+}
+
+export function buildCommitStatusContext(update: {
+	org: string;
+	project: string;
+	stack: string;
+}): string {
+	const context = `procella/${update.org}/${update.project}/${update.stack}`;
+	if (context.length <= 100) return context;
+	const suffix = createHash("sha256").update(context).digest("hex").slice(0, 8);
+	return `${context.slice(0, 91)}-${suffix}`;
 }
 
 export function mapUpdateStatusToCommitState(
@@ -251,11 +286,218 @@ export function mapUpdateStatusToCommitState(
 	return "error";
 }
 
-export class OctokitGitHubService implements GitHubService {
-	private readonly db: Database;
+class GitHubDeliveryDeadlineError extends Error {}
+
+function githubRequestOptions(options?: GitHubDeliveryRequestOptions): {
+	request: { signal: AbortSignal };
+	deadlineBounded: boolean;
+} {
+	const deadlineRemaining =
+		options?.deadlineMs === undefined ? undefined : options.deadlineMs - Date.now();
+	if (deadlineRemaining !== undefined && deadlineRemaining <= 0) {
+		throw new GitHubDeliveryDeadlineError("GitHub delivery deadline exceeded");
+	}
+	const deadlineBounded =
+		deadlineRemaining !== undefined && deadlineRemaining <= GITHUB_REQUEST_TIMEOUT_MS;
+	const timeout = deadlineBounded ? deadlineRemaining : GITHUB_REQUEST_TIMEOUT_MS;
+	return {
+		request: { signal: AbortSignal.timeout(Math.max(1, Math.floor(timeout))) },
+		deadlineBounded,
+	};
+}
+
+function hasAbortCause(error: unknown): boolean {
+	let current = error;
+	for (let depth = 0; depth < 5; depth += 1) {
+		if (
+			current instanceof Error &&
+			(current.name === "AbortError" || current.name === "TimeoutError")
+		) {
+			return true;
+		}
+		if (typeof current !== "object" || current === null || !("cause" in current)) return false;
+		current = current.cause;
+	}
+	return false;
+}
+
+function githubErrorStatus(error: unknown): number | undefined {
+	if (typeof error !== "object" || error === null || !("status" in error)) return undefined;
+	return typeof error.status === "number" ? error.status : undefined;
+}
+
+async function withGitHubRequestDeadline<T>(
+	options: GitHubDeliveryRequestOptions | undefined,
+	request: (requestOptions: { request: { signal: AbortSignal } }) => Promise<T>,
+): Promise<T> {
+	const { deadlineBounded, ...requestOptions } = githubRequestOptions(options);
+	try {
+		return await request(requestOptions);
+	} catch (error) {
+		if (error instanceof GitHubDeliveryDeadlineError) throw error;
+		if (deadlineBounded && (requestOptions.request.signal.aborted || hasAbortCause(error))) {
+			throw new GitHubDeliveryDeadlineError("GitHub delivery deadline exceeded");
+		}
+		throw error;
+	}
+}
+
+/** GitHub client used by background delivery workers. It needs only App signing credentials. */
+export class OctokitGitHubDeliveryService implements GitHubDeliveryService {
+	protected readonly db: Database;
+	protected readonly appClient: Octokit;
+	protected readonly installationClientFactory: (installationId: number) => Octokit;
+
+	constructor({
+		db,
+		config,
+		appClient,
+		installationClientFactory,
+	}: {
+		db: Database;
+		config: GitHubDeliveryConfig;
+		appClient?: Octokit;
+		installationClientFactory?: (installationId: number) => Octokit;
+	}) {
+		this.db = db;
+		this.appClient =
+			appClient ??
+			new Octokit({
+				authStrategy: createAppAuth,
+				auth: { appId: config.appId, privateKey: config.privateKey },
+				request: { timeout: GITHUB_REQUEST_TIMEOUT_MS },
+			});
+		this.installationClientFactory =
+			installationClientFactory ??
+			((installationId) =>
+				new Octokit({
+					authStrategy: createAppAuth,
+					auth: { appId: config.appId, privateKey: config.privateKey, installationId },
+					request: { timeout: GITHUB_REQUEST_TIMEOUT_MS },
+				}));
+	}
+
+	async listInstallations(tenantId: string): Promise<GitHubInstallationInfo[]> {
+		const rows = await this.db
+			.select()
+			.from(githubInstallations)
+			.where(eq(githubInstallations.tenantId, tenantId))
+			.orderBy(desc(githubInstallations.updatedAt));
+		return rows.map(mapInstallationRow);
+	}
+
+	async resolveInstallation(
+		target: GitHubRepositoryTarget,
+		options?: GitHubDeliveryRequestOptions,
+	): Promise<GitHubInstallationInfo | null> {
+		const installations = await this.listInstallations(target.tenantId);
+		try {
+			const { data } = await withGitHubRequestDeadline(options, (requestOptions) =>
+				this.appClient.request("GET /repos/{owner}/{repo}/installation", {
+					owner: target.owner,
+					repo: target.repo,
+					...requestOptions,
+				}),
+			);
+			if (!Number.isSafeInteger(data.id)) return null;
+			return installations.find((installation) => installation.installationId === data.id) ?? null;
+		} catch (error) {
+			if (githubErrorStatus(error) === 404) return null;
+			throw error;
+		}
+	}
+
+	async createPRComment(
+		installationId: number,
+		owner: string,
+		repo: string,
+		prNumber: number,
+		body: string,
+		options?: GitHubDeliveryRequestOptions,
+	): Promise<number> {
+		const { data } = await withGitHubRequestDeadline(options, (requestOptions) =>
+			this.installationClientFactory(installationId).rest.issues.createComment({
+				owner,
+				repo,
+				issue_number: prNumber,
+				body,
+				...requestOptions,
+			}),
+		);
+		if (!Number.isSafeInteger(data.id)) throw new Error("GitHub returned an invalid comment ID");
+		return data.id;
+	}
+
+	async findPRComment(
+		installationId: number,
+		owner: string,
+		repo: string,
+		prNumber: number,
+		marker: string,
+		options?: GitHubDeliveryRequestOptions,
+	): Promise<number | null> {
+		const octokit = this.installationClientFactory(installationId);
+		for (let page = 1; ; page += 1) {
+			const { data } = await withGitHubRequestDeadline(options, (requestOptions) =>
+				octokit.rest.issues.listComments({
+					owner,
+					repo,
+					issue_number: prNumber,
+					per_page: 100,
+					page,
+					...requestOptions,
+				}),
+			);
+			const match = data.find((comment) => comment.body?.includes(marker));
+			if (match) return Number.isSafeInteger(match.id) ? match.id : null;
+			if (data.length < 100) return null;
+		}
+	}
+
+	async updatePRComment(
+		installationId: number,
+		owner: string,
+		repo: string,
+		commentId: number,
+		body: string,
+		options?: GitHubDeliveryRequestOptions,
+	): Promise<void> {
+		await withGitHubRequestDeadline(options, (requestOptions) =>
+			this.installationClientFactory(installationId).rest.issues.updateComment({
+				owner,
+				repo,
+				comment_id: commentId,
+				body,
+				...requestOptions,
+			}),
+		);
+	}
+
+	async setCommitStatus(
+		installationId: number,
+		owner: string,
+		repo: string,
+		sha: string,
+		state: "pending" | "success" | "failure" | "error",
+		description: string,
+		context = "procella/preview",
+		options?: GitHubDeliveryRequestOptions,
+	): Promise<void> {
+		await withGitHubRequestDeadline(options, (requestOptions) =>
+			this.installationClientFactory(installationId).rest.repos.createCommitStatus({
+				owner,
+				repo,
+				sha,
+				state,
+				description,
+				context,
+				...requestOptions,
+			}),
+		);
+	}
+}
+export class OctokitGitHubService extends OctokitGitHubDeliveryService implements GitHubService {
 	private readonly config: GitHubAppConfig;
-	private readonly appClient: Octokit;
-	private readonly installationClientFactory: (installationId: number) => Octokit;
 	private readonly setupStates: GitHubSetupStateService;
 
 	constructor({
@@ -271,12 +513,8 @@ export class OctokitGitHubService implements GitHubService {
 		installationClientFactory?: (installationId: number) => Octokit;
 		setupStates?: GitHubSetupStateService;
 	}) {
-		this.db = db;
+		super({ db, config, appClient, installationClientFactory });
 		this.config = config;
-		this.appClient = appClient ?? this.createAppClient();
-		this.installationClientFactory =
-			installationClientFactory ??
-			((installationId) => this.createInstallationClient(installationId));
 		this.setupStates = setupStates ?? createGitHubSetupStateService(config.stateSigningKey);
 	}
 
@@ -357,34 +595,6 @@ export class OctokitGitHubService implements GitHubService {
 			.where(eq(githubInstallations.installationId, existing.installationId));
 	}
 
-	async listInstallations(tenantId: string): Promise<GitHubInstallationInfo[]> {
-		const rows = await this.db
-			.select()
-			.from(githubInstallations)
-			.where(eq(githubInstallations.tenantId, tenantId))
-			.orderBy(desc(githubInstallations.updatedAt));
-		return rows.map(mapInstallationRow);
-	}
-
-	async resolveInstallation(
-		target: GitHubRepositoryTarget,
-	): Promise<GitHubInstallationInfo | null> {
-		const installations = await this.listInstallations(target.tenantId);
-
-		try {
-			const { data } = await this.appClient.request("GET /repos/{owner}/{repo}/installation", {
-				owner: target.owner,
-				repo: target.repo,
-			});
-			if (!Number.isSafeInteger(data.id)) return null;
-			return installations.find((installation) => installation.installationId === data.id) ?? null;
-		} catch {
-			// The app-JWT endpoint is authoritative for repository selection. Any
-			// lookup failure denies access, including public repository metadata access.
-			return null;
-		}
-	}
-
 	async removeInstallation(tenantId: string, installationId: number): Promise<void> {
 		await this.db
 			.delete(githubInstallations)
@@ -394,37 +604,6 @@ export class OctokitGitHubService implements GitHubService {
 					eq(githubInstallations.installationId, installationId),
 				),
 			);
-	}
-
-	async postPRComment(
-		installationId: number,
-		owner: string,
-		repo: string,
-		prNumber: number,
-		body: string,
-	): Promise<void> {
-		const octokit = this.installationClientFactory(installationId);
-		await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
-	}
-
-	async setCommitStatus(
-		installationId: number,
-		owner: string,
-		repo: string,
-		sha: string,
-		state: "pending" | "success" | "failure" | "error",
-		description: string,
-		context = "procella/preview",
-	): Promise<void> {
-		const octokit = this.installationClientFactory(installationId);
-		await octokit.rest.repos.createCommitStatus({
-			owner,
-			repo,
-			sha,
-			state,
-			description,
-			context,
-		});
 	}
 
 	private async saveInstallation(
@@ -495,7 +674,6 @@ export class OctokitGitHubService implements GitHubService {
 			throw new GitHubSetupError("invalid_installation");
 		}
 	}
-
 	private async loadAppSlug(): Promise<string> {
 		try {
 			const { data } = await this.appClient.request("GET /app");
@@ -512,24 +690,462 @@ export class OctokitGitHubService implements GitHubService {
 			throw new Error("Unable to verify configured GitHub App");
 		}
 	}
+}
 
-	private createAppClient(): Octokit {
-		return new Octokit({
-			authStrategy: createAppAuth,
-			auth: { appId: this.config.appId, privateKey: this.config.privateKey },
+export const GITHUB_OUTBOX_CLAIM_SECONDS = 120;
+export const GITHUB_OUTBOX_MAX_ATTEMPTS_PER_RUN = 25;
+export const GITHUB_OUTBOX_MAX_ATTEMPTS = 8;
+export const GITHUB_OUTBOX_MIN_DELIVERY_BUDGET_MS = 35_000;
+export const GITHUB_OUTBOX_POLL_INTERVAL_MS = 5_000;
+
+interface GitHubPublicationTarget {
+	tenantId: string;
+	owner: string;
+	repo: string;
+	prNumber: number;
+	sha: string;
+	org: string;
+	project: string;
+	stack: string;
+}
+
+interface GitHubOutboxClaim {
+	id: string;
+	updateId: string;
+	phase: "started" | "terminal";
+	revision: number;
+	attempts: number;
+	target: GitHubPublicationTarget;
+	commentId: string | null;
+	kind: string;
+	status: string;
+	summary: Record<string, unknown> | null;
+}
+
+interface RawGitHubOutboxClaim extends Omit<GitHubOutboxClaim, "target" | "summary"> {
+	target: unknown;
+	summary: unknown;
+}
+
+class PermanentGitHubPublicationError extends Error {}
+
+export class GitHubOutboxWorker {
+	private readonly db: Database;
+	private readonly github: GitHubDeliveryService;
+	private readonly interval: number;
+	private readonly maxPerRun: number;
+	private readonly workerId: string;
+	private readonly now: () => number;
+	private timer: ReturnType<typeof setInterval> | null = null;
+	private running = false;
+
+	constructor({
+		db,
+		github,
+		interval,
+		maxPerRun,
+		workerId,
+		now,
+	}: {
+		db: Database;
+		github: GitHubDeliveryService;
+		interval?: number;
+		maxPerRun?: number;
+		workerId?: string;
+		now?: () => number;
+	}) {
+		this.db = db;
+		this.github = github;
+		this.interval = interval ?? GITHUB_OUTBOX_POLL_INTERVAL_MS;
+		this.maxPerRun = maxPerRun ?? GITHUB_OUTBOX_MAX_ATTEMPTS_PER_RUN;
+		this.workerId = workerId ?? randomUUID();
+		this.now = now ?? Date.now;
+	}
+
+	async start(): Promise<void> {
+		if (this.timer) return;
+		this.timer = setInterval(() => {
+			void this.runCycle().catch((error) => console.error("[github-outbox] cycle failed", error));
+		}, this.interval);
+		await this.runCycle().catch((error) => console.error("[github-outbox] cycle failed", error));
+	}
+	async stop(): Promise<void> {
+		if (this.timer) {
+			clearInterval(this.timer);
+			this.timer = null;
+		}
+		while (this.running) await Bun.sleep(25);
+	}
+
+	/** Drain one bounded batch without starting work that cannot fit before the deadline. */
+	async runOnce({ deadlineMs }: { deadlineMs?: number } = {}): Promise<number> {
+		return this.runCycle(deadlineMs);
+	}
+
+	private async runCycle(deadlineMs?: number): Promise<number> {
+		if (this.running) return 0;
+		this.running = true;
+		let delivered = 0;
+		try {
+			for (let index = 0; index < this.maxPerRun; index += 1) {
+				if (
+					deadlineMs !== undefined &&
+					deadlineMs - this.now() < GITHUB_OUTBOX_MIN_DELIVERY_BUDGET_MS
+				) {
+					break;
+				}
+				const rawClaim = await this.claimNext();
+				if (!rawClaim) break;
+				try {
+					const claim = parseOutboxClaim(rawClaim);
+					await this.deliver(claim, deadlineMs);
+					if (await this.ack(claim)) delivered += 1;
+				} catch (error) {
+					await this.retry(rawClaim, error);
+				}
+			}
+			return delivered;
+		} finally {
+			this.running = false;
+		}
+	}
+
+	private async claimNext(): Promise<RawGitHubOutboxClaim | null> {
+		return this.db.transaction(async (tx) => {
+			const result = await tx.execute(sql`
+				WITH candidate AS (
+					SELECT outbox.id
+					FROM github_update_outbox outbox
+					WHERE GREATEST(outbox.delivered_revision, outbox.failed_revision) < outbox.revision
+						AND outbox.available_at <= now()
+						AND (outbox.claimed_until IS NULL OR outbox.claimed_until < now())
+						AND (
+							outbox.phase = 'started'
+							OR NOT EXISTS (
+								SELECT 1 FROM github_update_outbox started
+								WHERE started.update_id = outbox.update_id
+									AND started.phase = 'started'
+									AND GREATEST(started.delivered_revision, started.failed_revision) < started.revision
+							)
+						)
+					ORDER BY outbox.created_at, CASE outbox.phase WHEN 'started' THEN 0 ELSE 1 END
+					FOR UPDATE SKIP LOCKED
+					LIMIT 1
+				), claimed AS (
+					UPDATE github_update_outbox outbox
+					SET claimed_by = ${this.workerId}::uuid,
+						claimed_until = now() + (${GITHUB_OUTBOX_CLAIM_SECONDS} * interval '1 second'),
+						attempts = outbox.attempts + 1,
+						updated_at = now()
+					FROM candidate
+					WHERE outbox.id = candidate.id
+					RETURNING outbox.*
+				)
+				SELECT claimed.id, claimed.update_id AS "updateId", claimed.phase,
+					claimed.revision, claimed.attempts, source_update.github_target AS target,
+					source_update.github_comment_id AS "commentId", source_update.kind,
+					source_update.status, source_update.summary
+				FROM claimed
+				JOIN updates source_update ON source_update.id = claimed.update_id
+			`);
+			const row = readExecuteRows<RawGitHubOutboxClaim>(result)[0];
+			return row ?? null;
 		});
 	}
 
-	private createInstallationClient(installationId: number): Octokit {
-		return new Octokit({
-			authStrategy: createAppAuth,
-			auth: {
-				appId: this.config.appId,
-				privateKey: this.config.privateKey,
-				installationId,
-			},
+	private async deliver(claim: GitHubOutboxClaim, deadlineMs?: number): Promise<void> {
+		const { target } = claim;
+		const options = { deadlineMs };
+		this.assertWithinDeadline(deadlineMs);
+		const installation = await this.github.resolveInstallation(target, options);
+		if (!installation) throw new Error("No authorized GitHub App installation for repository");
+		await this.renewClaim(claim);
+
+		const marker = `<!-- procella:update:${claim.updateId} -->`;
+		const body = buildPRCommentBody({
+			updateId: claim.updateId,
+			org: target.org,
+			project: target.project,
+			stack: target.stack,
+			kind: claim.kind,
+			status: claim.phase === "started" ? "running" : claim.status,
+			resourceChanges:
+				claim.phase === "terminal" ? resourceChangesFromSummary(claim.summary) : undefined,
 		});
+
+		let commentId = parseGitHubCommentId(claim.commentId);
+		if (commentId === null) {
+			this.assertWithinDeadline(deadlineMs);
+			commentId = await this.github.findPRComment(
+				installation.installationId,
+				target.owner,
+				target.repo,
+				target.prNumber,
+				marker,
+				options,
+			);
+		}
+		await this.renewClaim(claim);
+		this.assertWithinDeadline(deadlineMs);
+		if (commentId === null) {
+			commentId = await this.github.createPRComment(
+				installation.installationId,
+				target.owner,
+				target.repo,
+				target.prNumber,
+				body,
+				options,
+			);
+		} else {
+			await this.github.updatePRComment(
+				installation.installationId,
+				target.owner,
+				target.repo,
+				commentId,
+				body,
+				options,
+			);
+		}
+		if (claim.commentId === null) await this.persistCommentId(claim, commentId);
+
+		this.assertWithinDeadline(deadlineMs);
+		const status = claim.phase === "started" ? "running" : claim.status;
+		await this.github.setCommitStatus(
+			installation.installationId,
+			target.owner,
+			target.repo,
+			target.sha,
+			mapUpdateStatusToCommitState(status),
+			`Procella ${claim.kind} ${status === "running" ? "in progress" : status}`,
+			buildCommitStatusContext(target),
+			options,
+		);
 	}
+
+	private assertWithinDeadline(deadlineMs?: number): void {
+		if (deadlineMs !== undefined && this.now() >= deadlineMs) {
+			throw new GitHubDeliveryDeadlineError("GitHub delivery deadline exceeded");
+		}
+	}
+
+	private async renewClaim(claim: GitHubOutboxClaim): Promise<void> {
+		const rows = await this.db
+			.update(githubUpdateOutbox)
+			.set({
+				claimedUntil: sql`now() + (${GITHUB_OUTBOX_CLAIM_SECONDS} * interval '1 second')`,
+				updatedAt: sql`now()`,
+			})
+			.where(
+				and(
+					eq(githubUpdateOutbox.id, claim.id),
+					eq(githubUpdateOutbox.claimedBy, this.workerId),
+					eq(githubUpdateOutbox.revision, claim.revision),
+				),
+			)
+			.returning({ id: githubUpdateOutbox.id });
+		if (rows.length === 0) throw new Error("GitHub outbox claim lease lost");
+	}
+
+	private async persistCommentId(claim: GitHubOutboxClaim, commentId: number): Promise<void> {
+		const rows = await this.db.transaction(async (tx) => {
+			const owned = await tx
+				.update(githubUpdateOutbox)
+				.set({
+					claimedUntil: sql`now() + (${GITHUB_OUTBOX_CLAIM_SECONDS} * interval '1 second')`,
+					updatedAt: sql`now()`,
+				})
+				.where(
+					and(
+						eq(githubUpdateOutbox.id, claim.id),
+						eq(githubUpdateOutbox.claimedBy, this.workerId),
+						eq(githubUpdateOutbox.revision, claim.revision),
+					),
+				)
+				.returning({ id: githubUpdateOutbox.id });
+			if (owned.length === 0) return [];
+			return tx
+				.update(updates)
+				.set({ githubCommentId: String(commentId), updatedAt: sql`now()` })
+				.where(and(eq(updates.id, claim.updateId), sql`${updates.githubCommentId} IS NULL`))
+				.returning({ id: updates.id });
+		});
+		if (rows.length === 0) throw new Error("GitHub outbox claim lease lost");
+	}
+
+	private async ack(claim: GitHubOutboxClaim): Promise<boolean> {
+		const rows = await this.db
+			.update(githubUpdateOutbox)
+			.set({
+				deliveredRevision: claim.revision,
+				attempts: 0,
+				claimedBy: null,
+				claimedUntil: null,
+				failedAt: null,
+				lastError: null,
+				availableAt: sql`now()`,
+				updatedAt: sql`now()`,
+			})
+			.where(
+				and(
+					eq(githubUpdateOutbox.id, claim.id),
+					eq(githubUpdateOutbox.claimedBy, this.workerId),
+					eq(githubUpdateOutbox.revision, claim.revision),
+				),
+			)
+			.returning({ id: githubUpdateOutbox.id });
+		if (rows.length > 0) return true;
+		await this.releaseSupersededClaim(claim);
+		return false;
+	}
+
+	private async retry(claim: RawGitHubOutboxClaim, error: unknown): Promise<void> {
+		if (error instanceof GitHubDeliveryDeadlineError) {
+			const rows = await this.db
+				.update(githubUpdateOutbox)
+				.set({
+					claimedBy: null,
+					claimedUntil: null,
+					attempts: sql`GREATEST(${githubUpdateOutbox.attempts} - 1, 0)`,
+					availableAt: sql`now()`,
+					lastError: sanitizeDeliveryError(error),
+					updatedAt: sql`now()`,
+				})
+				.where(
+					and(
+						eq(githubUpdateOutbox.id, claim.id),
+						eq(githubUpdateOutbox.claimedBy, this.workerId),
+						eq(githubUpdateOutbox.revision, claim.revision),
+					),
+				)
+				.returning({ id: githubUpdateOutbox.id });
+			if (rows.length === 0) await this.releaseSupersededClaim(claim);
+			return;
+		}
+		const terminal =
+			error instanceof PermanentGitHubPublicationError ||
+			claim.attempts >= GITHUB_OUTBOX_MAX_ATTEMPTS;
+		const delaySeconds = githubRetryDelaySeconds(claim.attempts);
+		const rows = await this.db
+			.update(githubUpdateOutbox)
+			.set({
+				claimedBy: null,
+				claimedUntil: null,
+				...(terminal
+					? { failedRevision: claim.revision, failedAt: sql`now()` }
+					: { availableAt: sql`now() + (${delaySeconds} * interval '1 second')` }),
+				lastError: sanitizeDeliveryError(error),
+				updatedAt: sql`now()`,
+			})
+			.where(
+				and(
+					eq(githubUpdateOutbox.id, claim.id),
+					eq(githubUpdateOutbox.claimedBy, this.workerId),
+					eq(githubUpdateOutbox.revision, claim.revision),
+				),
+			)
+			.returning({ id: githubUpdateOutbox.id });
+		if (rows.length === 0) await this.releaseSupersededClaim(claim);
+	}
+
+	private async releaseSupersededClaim(
+		claim: Pick<RawGitHubOutboxClaim, "id" | "revision">,
+	): Promise<void> {
+		await this.db
+			.update(githubUpdateOutbox)
+			.set({
+				claimedBy: null,
+				claimedUntil: null,
+				availableAt: sql`now()`,
+				updatedAt: sql`now()`,
+			})
+			.where(
+				and(
+					eq(githubUpdateOutbox.id, claim.id),
+					eq(githubUpdateOutbox.claimedBy, this.workerId),
+					gt(githubUpdateOutbox.revision, claim.revision),
+				),
+			);
+	}
+}
+
+function parseOutboxClaim(raw: RawGitHubOutboxClaim): GitHubOutboxClaim {
+	return {
+		...raw,
+		target: parseGitHubPublicationTarget(raw.target),
+		summary: raw.summary === null ? null : parseJsonRecord(raw.summary, "update summary"),
+	};
+}
+
+function parseJsonRecord(value: unknown, label: string): Record<string, unknown> {
+	let parsed: unknown;
+	try {
+		parsed = typeof value === "string" ? JSON.parse(value) : value;
+	} catch {
+		throw new PermanentGitHubPublicationError(`Invalid ${label} in PostgreSQL`);
+	}
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+		throw new PermanentGitHubPublicationError(`Invalid ${label} in PostgreSQL`);
+	}
+	return parsed as Record<string, unknown>;
+}
+
+function parseGitHubPublicationTarget(value: unknown): GitHubPublicationTarget {
+	const target = parseJsonRecord(value, "GitHub publication target");
+	if (
+		typeof target.tenantId !== "string" ||
+		typeof target.owner !== "string" ||
+		typeof target.repo !== "string" ||
+		typeof target.prNumber !== "number" ||
+		!Number.isSafeInteger(target.prNumber) ||
+		typeof target.sha !== "string" ||
+		typeof target.org !== "string" ||
+		typeof target.project !== "string" ||
+		typeof target.stack !== "string"
+	) {
+		throw new PermanentGitHubPublicationError("Invalid GitHub publication target in PostgreSQL");
+	}
+	return target as unknown as GitHubPublicationTarget;
+}
+
+function resourceChangesFromSummary(
+	summary: Record<string, unknown> | null,
+): Record<string, number> | undefined {
+	const changes = summary?.resourceChanges;
+	if (!changes || typeof changes !== "object" || Array.isArray(changes)) return undefined;
+	return Object.fromEntries(
+		Object.entries(changes).filter(
+			(entry): entry is [string, number] =>
+				typeof entry[1] === "number" && Number.isFinite(entry[1]),
+		),
+	);
+}
+
+function parseGitHubCommentId(value: string | null): number | null {
+	if (!value || !/^\d+$/.test(value)) return null;
+	const parsed = Number(value);
+	return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+export function githubRetryDelaySeconds(attempts: number): number {
+	return Math.min(900, 5 * 2 ** Math.min(Math.max(attempts - 1, 0), 8));
+}
+
+export function sanitizeDeliveryError(error: unknown): string {
+	const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+	return message
+		.replace(/authorization["']?\s*[:=]\s*[^\r\n,}]+/gi, "authorization=[redacted]")
+		.replace(/(token|secret|private[-_ ]?key)["']?\s*[:=]\s*["']?[^"',\s}]+/gi, "$1=[redacted]")
+		.replace(/(https?:\/\/)[^@\s/]+@/gi, "$1[redacted]@")
+		.slice(0, 500);
+}
+
+function readExecuteRows<T>(result: unknown): T[] {
+	if (Array.isArray(result)) return result as T[];
+	if (typeof result === "object" && result !== null && "rows" in result) {
+		const rows = result.rows;
+		if (Array.isArray(rows)) return rows as T[];
+	}
+	throw new Error("Unexpected database execute result shape");
 }
 
 function mapInstallationRow(row: typeof githubInstallations.$inferSelect): GitHubInstallationInfo {
