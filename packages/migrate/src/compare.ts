@@ -57,8 +57,13 @@ const DEPLOYMENT_OMITTABLE_FIELDS: Readonly<Record<string, true>> = {
 	extensions: true,
 };
 
-/** ResourceV3 fields tagged `omitempty` in the pinned Pulumi apitype. */
+/**
+ * ResourceV3 fields whose absent and JSON-zero forms are equivalent after the pinned
+ * Pulumi Go decoder/encoder round trip. `custom` is required on output, but an absent
+ * input decodes to `false` and is re-emitted as such.
+ */
 const RESOURCE_OMITTABLE_FIELDS: Readonly<Record<string, true>> = {
+	custom: true,
 	delete: true,
 	id: true,
 	inputs: true,

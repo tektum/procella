@@ -301,6 +301,15 @@ describe("compareDeploymentState — legitimate target-provider rebinding", () =
 		expect(result.unverifiable).toBe(false);
 	});
 
+	test("missing custom matches false added by the Pulumi round trip", async () => {
+		const source = baseDeployment();
+		const target = cloneDeployment(source);
+		firstResource(target).custom = false;
+
+		const result = await compareDeploymentState(source, target);
+		expect(result.match).toBe(true);
+	});
+
 	test("manifest.time difference alone is normalized away", async () => {
 		const source = baseDeployment();
 		const target = cloneDeployment(source);
