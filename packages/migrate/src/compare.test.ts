@@ -224,6 +224,43 @@ describe("compareDeploymentState — material corruption with unchanged count/UR
 		expect(result.match).toBe(false);
 		expect(result.mismatches.some((m) => m.path.startsWith("future_field"))).toBe(true);
 	});
+
+	test("missing empty unrecognised deployment field is rejected", async () => {
+		const source = baseDeployment({ future_field: false });
+		const target = baseDeployment();
+
+		const result = await compareDeploymentState(source, target);
+		expect(result.match).toBe(false);
+		expect(result.mismatches.some((m) => m.path === "future_field")).toBe(true);
+	});
+
+	test("missing empty unrecognised resource field is rejected", async () => {
+		const source = baseDeployment();
+		firstResource(source).future_field = false;
+		const target = cloneDeployment(source);
+		delete firstResource(target).future_field;
+
+		const result = await compareDeploymentState(source, target);
+		expect(result.match).toBe(false);
+		expect(result.mismatches.some((m) => m.path === "future_field")).toBe(true);
+	});
+
+	test("unrecognised snapshot metadata is preserved and compared", async () => {
+		const source = baseDeployment({ metadata: { future_field: "keep-me" } });
+		const target = baseDeployment({ metadata: {} });
+
+		const result = await compareDeploymentState(source, target);
+		expect(result.match).toBe(false);
+		expect(result.mismatches.some((m) => m.path === "metadata.future_field")).toBe(true);
+	});
+
+	test("absent and empty snapshot metadata are equivalent", async () => {
+		const source = baseDeployment();
+		const target = baseDeployment({ metadata: {} });
+
+		const result = await compareDeploymentState(source, target);
+		expect(result.match).toBe(true);
+	});
 });
 
 describe("compareDeploymentState — legitimate target-provider rebinding", () => {
@@ -546,19 +583,18 @@ describe("compareDeploymentState — hardening against adversarial/coincidental 
 		const source = baseDeployment({
 			resources: [
 				...(base.deployment.resources ?? []),
-				{ urn: dupUrn, type: "pkg:type", id: "same-id", marker: false },
-				{ urn: dupUrn, type: "pkg:type", id: "same-id", marker: null },
+				{ urn: dupUrn, type: "pkg:type", id: "same-id", dependencies: [] },
+				{ urn: dupUrn, type: "pkg:type", id: "same-id", dependencies: null },
 			],
 		});
 		const target = baseDeployment({
 			resources: [
 				...(base.deployment.resources ?? []),
-				// Declared in the opposite order from source. `marker: false` and
-				// `marker: null` both normalize away as empty, so a naive stable sort
-				// on the normalized signature alone would preserve this reversed order
-				// and cross-pair the two logically distinct entries.
-				{ urn: dupUrn, type: "pkg:type", id: "same-id", marker: null },
-				{ urn: dupUrn, type: "pkg:type", id: "same-id", marker: false },
+				// Declared in the opposite order from source. Empty and null dependency
+				// slices both normalize away under Go's `omitempty`, so the raw signature
+				// must disambiguate the normalized tie before comparison.
+				{ urn: dupUrn, type: "pkg:type", id: "same-id", dependencies: null },
+				{ urn: dupUrn, type: "pkg:type", id: "same-id", dependencies: [] },
 			],
 		});
 

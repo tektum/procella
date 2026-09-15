@@ -18,11 +18,10 @@
  *   2. `deployment.manifest.time` — a "last write" provenance timestamp, not migrated
  *      resource content. `manifest.magic`/`manifest.version`/`manifest.plugins` remain
  *      in scope (magic is a checksum of version; both are real tooling provenance).
- *   3. `deployment.metadata`, except `metadata.integrity_error` — `apitype.DeploymentV3`'s
- *      `Metadata` field is a non-pointer Go struct, so `encoding/json`'s `omitempty` never
- *      elides it: every deployment the real `pulumi stack import`/export pipeline
- *      re-serializes carries `metadata: {}` even when the source predates this field
- *      entirely. `integrity_error` (real corruption bookkeeping) remains in scope.
+ *   3. Empty `deployment.metadata` versus an omitted field — `apitype.DeploymentV3`'s
+ *      `Metadata` field is a non-pointer Go struct, so `encoding/json` emits `{}` even
+ *      when the source predates metadata. Metadata content, including unknown/future
+ *      fields, remains in scope.
  *
  * Everything else — every resource field, `pending_operations`, and any unrecognised
  * deployment-level key — is compared verbatim so unknown/future fields are never
@@ -49,6 +48,51 @@ export const SECRET_SIGNATURE = "1b47061264138c4ac30d75fd1eb44270";
 
 /** Highest Pulumi deployment schema version this comparator can safely interpret. */
 const MAX_COMPARABLE_DEPLOYMENT_SCHEMA_VERSION = 3;
+
+/** DeploymentV3 fields tagged `omitempty` in the pinned Pulumi apitype. */
+const DEPLOYMENT_OMITTABLE_FIELDS: Readonly<Record<string, true>> = {
+	pending_operations: true,
+	metadata: true,
+	snippets: true,
+	extensions: true,
+};
+
+/** ResourceV3 fields tagged `omitempty` in the pinned Pulumi apitype. */
+const RESOURCE_OMITTABLE_FIELDS: Readonly<Record<string, true>> = {
+	delete: true,
+	id: true,
+	inputs: true,
+	outputs: true,
+	parent: true,
+	protect: true,
+	taint: true,
+	external: true,
+	dependencies: true,
+	initErrors: true,
+	provider: true,
+	propertyDependencies: true,
+	pendingReplacement: true,
+	additionalSecretOutputs: true,
+	aliases: true,
+	customTimeouts: true,
+	importID: true,
+	retainOnDelete: true,
+	deletedWith: true,
+	replaceWith: true,
+	created: true,
+	modified: true,
+	sourcePosition: true,
+	stackTrace: true,
+	ignoreChanges: true,
+	hideDiff: true,
+	replaceOnChanges: true,
+	replacementTrigger: true,
+	refreshBeforeUpdate: true,
+	viewOf: true,
+	resourceHooks: true,
+	extensionRef: true,
+	snippetID: true,
+};
 
 export type DeploymentMismatchKind =
 	| "unsupported-schema"
@@ -263,11 +307,10 @@ function isEmptyJsonValue(value: unknown): boolean {
  * `sensitiveRootPath` is captured once, on entry into a resolved secret, and held fixed
  * for every deeper recursive call — it never reflects the descendant path being compared.
  *
- * `normalizeEmptyOnce` applies the `omitempty`-vs-explicit-empty equivalence (see
- * `isEmptyJsonValue`) for exactly the direct keys of `a`/`b` at this call — it is never
- * propagated to recursive calls, so it only ever reaches the fixed schema fields of a
- * resource or deployment object, never the opaque, user-controlled content nested inside
- * `inputs`/`outputs`/`pending_operations`, where an absent key is genuinely different data.
+ * `omittableFields` applies the `omitempty`-vs-explicit-empty equivalence (see
+ * `isEmptyJsonValue`) only to direct keys proven to carry that tag in the pinned Pulumi
+ * wire type. It is never propagated to recursive calls, so unknown/future fields and
+ * opaque user content remain material.
  */
 function diffValues(
 	path: string,
@@ -276,7 +319,7 @@ function diffValues(
 	sensitiveRootPath: string | undefined,
 	urn: string | undefined,
 	out: DeploymentMismatch[],
-	normalizeEmptyOnce = false,
+	omittableFields?: Readonly<Record<string, true>>,
 ): void {
 	const reportPath = sensitiveRootPath ?? path;
 
@@ -343,9 +386,12 @@ function diffValues(
 			const hasB = Object.hasOwn(b, key);
 			if (hasA && hasB) {
 				diffValues(childPath, a[key], b[key], sensitiveRootPath, urn, out);
-			} else if (normalizeEmptyOnce && isEmptyJsonValue(hasA ? a[key] : b[key])) {
-				// One side omits a wire-format `,omitempty` field the other spells out as
-				// its zero value — not a material difference.
+			} else if (
+				omittableFields !== undefined &&
+				Object.hasOwn(omittableFields, key) &&
+				isEmptyJsonValue(hasA ? a[key] : b[key])
+			) {
+				// The pinned wire type omits this field when it contains a JSON zero value.
 			} else {
 				out.push({
 					urn,
@@ -406,17 +452,14 @@ function canonicalSignature(value: unknown): string {
 }
 
 /**
- * Strip resource-level fields whose value is a JSON zero value before computing a
- * duplicate-URN pairing signature, mirroring the `,omitempty` equivalence `diffValues`
- * itself applies via `normalizeEmptyOnce`. Without this, `{id:"x", delete:false}` and
- * `{id:"x"}` (the `,omitempty`-elided equivalent) sort into different positions, pairing
- * unrelated entries within a duplicate-URN group and reporting spurious drift.
+ * Strip known `ResourceV3` `omitempty` fields whose value is a JSON zero value before
+ * computing a duplicate-URN pairing signature. Unknown fields remain material.
  */
 function normalizeResourceForSignature(value: unknown): unknown {
 	if (!isPlainObject(value)) return value;
 	const out: Record<string, unknown> = Object.create(null);
 	for (const key of Object.keys(value)) {
-		if (isEmptyJsonValue(value[key])) continue;
+		if (Object.hasOwn(RESOURCE_OMITTABLE_FIELDS, key) && isEmptyJsonValue(value[key])) continue;
 		out[key] = value[key];
 	}
 	return out;
@@ -490,7 +533,15 @@ function compareResources(
 			pairingKey(a).localeCompare(pairingKey(b)),
 		);
 		for (let i = 0; i < sortedSource.length; i++) {
-			diffValues("", sortedSource[i], sortedTarget[i], undefined, urn, out, true);
+			diffValues(
+				"",
+				sortedSource[i],
+				sortedTarget[i],
+				undefined,
+				urn,
+				out,
+				RESOURCE_OMITTABLE_FIELDS,
+			);
 		}
 	}
 }
@@ -574,19 +625,19 @@ export async function compareDeploymentState(
 	if (isPlainObject(targetFields.manifest)) {
 		targetFields.manifest = { ...targetFields.manifest, time: undefined };
 	}
-	// Pulumi's `apitype.DeploymentV3.Metadata` (sdk/go/common/apitype/core.go) is a
-	// non-pointer struct, so Go's `omitempty` never elides it: every deployment the real
-	// `pulumi stack import`/export pipeline re-serializes carries `metadata: {}` even when
-	// the source predates this field entirely. Only `integrity_error` (real corruption
-	// bookkeeping) is material; bare presence/absence of `metadata` itself is not.
-	sourceFields.metadata = isPlainObject(sourceFields.metadata)
-		? sourceFields.metadata.integrity_error
-		: undefined;
-	targetFields.metadata = isPlainObject(targetFields.metadata)
-		? targetFields.metadata.integrity_error
-		: undefined;
+	// Metadata content is material. The deployment-level omitempty rule below only treats
+	// an absent metadata field and `metadata: {}` as equivalent; unknown nested fields are
+	// compared recursively and can no longer disappear unnoticed.
 
-	diffValues("", sourceFields, targetFields, undefined, undefined, mismatches, true);
+	diffValues(
+		"",
+		sourceFields,
+		targetFields,
+		undefined,
+		undefined,
+		mismatches,
+		DEPLOYMENT_OMITTABLE_FIELDS,
+	);
 
 	compareResources(sourceDeployment.resources, targetDeployment.resources, mismatches);
 
