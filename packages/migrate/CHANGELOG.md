@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/tektum/procella/compare/migrate-v0.1.2...migrate-v0.1.3) (2026-09-16)
+
+
+### Bug Fixes
+
+* **migrate:** detect unknown state loss during verification ([#322](https://github.com/tektum/procella/issues/322)) ([49405b9](https://github.com/tektum/procella/commit/49405b9425e3ce39b85d5fea7e844b93a1c0532e))
+
 ## [0.1.2](https://github.com/tektum/procella/compare/migrate-v0.1.1...migrate-v0.1.2) (2026-09-09)
 
 
