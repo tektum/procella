@@ -1194,17 +1194,31 @@ describe("@procella/updates helpers", () => {
 			pending_operations: [],
 		});
 
-		test("empty entries returns base state unchanged", () => {
-			const base = makeBase([makeResource("urn:a")]);
-			const result = applyJournalEntries(base, []);
-			expect((result.resources as unknown[]).length).toBe(1);
-		});
+		test("preserves opaque state while applying pending-operation rules", () => {
+			const resource = {
+				...makeResource("urn:a"),
+				aliases: ["urn:a-old"],
+				additionalSecretOutputs: ["password"],
+				outputs: {
+					password: {
+						"4dabf18193072939515e22adb298388d": "1b47061264138c4ac30d75fd1eb44270",
+						ciphertext: "opaque-test-ciphertext",
+					},
+				},
+				future_resource_field: false,
+			};
+			const creating = { resource: makeResource("urn:create"), type: "creating" };
+			const deleting = { resource: makeResource("urn:delete"), type: "deleting" };
+			const base = {
+				...makeBase([resource]),
+				metadata: { future_field: { preserve: true } },
+				future_deployment_field: false,
+				pending_operations: [creating, deleting],
+			};
 
-		test("preserves manifest and secrets_providers", () => {
-			const base = makeBase([makeResource("urn:a")]);
 			const result = applyJournalEntries(base, []);
-			expect(result.manifest).toEqual(base.manifest);
-			expect(result.secrets_providers).toEqual(base.secrets_providers);
+
+			expect(result).toEqual({ ...base, resources: [resource], pending_operations: [creating] });
 		});
 
 		test("Write entry replaces base deployment entirely", () => {

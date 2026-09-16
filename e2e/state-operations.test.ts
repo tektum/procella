@@ -73,7 +73,6 @@ describe("state operations", () => {
 	test("export + import roundtrip", async () => {
 		const exportRes = await apiRequest("/stacks/dev-org/state-proj/with-resources/export");
 		const deployment = await exportRes.json();
-		const resourceCount = deployment.deployment.resources.length;
 
 		const importRes = await apiRequest("/stacks/dev-org/state-proj/with-resources/import", {
 			method: "POST",
@@ -83,10 +82,71 @@ describe("state operations", () => {
 		const result = await importRes.json();
 		expect(result).toHaveProperty("updateId");
 
-		// Re-export and verify resources are intact
+		// Direct API import/export is an opaque JSON-value round trip.
 		const reExportRes = await apiRequest("/stacks/dev-org/state-proj/with-resources/export");
-		const reBody = await reExportRes.json();
-		expect(reBody.deployment.resources.length).toBe(resourceCount);
+		expect(reExportRes.status).toBe(200);
+		expect(await reExportRes.json()).toEqual(deployment);
+	});
+
+	test("import/export preserves uncommon, duplicate, secret, and future state", async () => {
+		await apiRequest("/stacks/dev-org/state-proj/opaque-roundtrip", { method: "POST" });
+		const duplicateUrn = "urn:pulumi:dev::state-proj::test:index:Resource::duplicate";
+		const deployment = {
+			version: 3,
+			deployment: {
+				manifest: { time: "2026-09-15T00:00:00.000Z", magic: "opaque", version: "3.260.0" },
+				secrets_providers: { type: "passphrase", state: { salt: "v1:test-salt" } },
+				resources: [
+					{
+						urn: duplicateUrn,
+						custom: true,
+						type: "test:index:Resource",
+						id: "old",
+						delete: true,
+						aliases: [`${duplicateUrn}-old`],
+						additionalSecretOutputs: ["password"],
+						outputs: {
+							password: {
+								"4dabf18193072939515e22adb298388d": "1b47061264138c4ac30d75fd1eb44270",
+								ciphertext: "opaque-test-ciphertext",
+							},
+						},
+						future_resource_field: false,
+					},
+					{
+						urn: duplicateUrn,
+						custom: true,
+						type: "test:index:Resource",
+						id: "new",
+						pendingReplacement: true,
+						retainOnDelete: true,
+					},
+				],
+				pending_operations: [
+					{
+						resource: {
+							urn: "urn:pulumi:dev::state-proj::test:index:Resource::pending",
+							custom: true,
+							type: "test:index:Resource",
+							inputs: { preserve: [] },
+						},
+						type: "creating",
+					},
+				],
+				metadata: { future_field: { preserve: true } },
+				future_deployment_field: false,
+			},
+		};
+
+		const importRes = await apiRequest("/stacks/dev-org/state-proj/opaque-roundtrip/import", {
+			method: "POST",
+			body: deployment,
+		});
+		expect(importRes.status).toBe(200);
+
+		const exportRes = await apiRequest("/stacks/dev-org/state-proj/opaque-roundtrip/export");
+		expect(exportRes.status).toBe(200);
+		expect(await exportRes.json()).toEqual(deployment);
 	});
 
 	test("import to fresh stack", async () => {
