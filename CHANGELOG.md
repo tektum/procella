@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.1](https://github.com/tektum/procella/compare/procella-v0.7.0...procella-v0.7.1) (2026-09-16)
+
+
+### Bug Fixes
+
+* **actions:** correct backend URL and add ESC action ([#320](https://github.com/tektum/procella/issues/320)) ([a6e192f](https://github.com/tektum/procella/commit/a6e192f03c933aa2d9ac4fac0c809bb7ab5ac5f4))
+* **migrate:** detect unknown state loss during verification ([#322](https://github.com/tektum/procella/issues/322)) ([49405b9](https://github.com/tektum/procella/commit/49405b9425e3ce39b85d5fea7e844b93a1c0532e))
+
 ## [0.7.0](https://github.com/tektum/procella/compare/procella-v0.6.0...procella-v0.7.0) (2026-09-10)
 
 
