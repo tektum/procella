@@ -1,5 +1,5 @@
 // Auto-generated from pulumi/pulumi pkg/backend/httpstate/client/api_endpoints.go
-// Pulumi SDK v3.260.0 — do not edit manually.
+// Pulumi SDK v3.265.0 — do not edit manually.
 // Regenerate: bun run packages/types/tygo/generate-routes.ts
 
 type Method = "GET" | "POST" | "PATCH" | "DELETE";
@@ -40,6 +40,7 @@ export const PulumiRoutes = {
   createDestroy: { method: "POST" as Method, path: "/api/stacks/:org/:project/:stack/destroy" },
   createPreview: { method: "POST" as Method, path: "/api/stacks/:org/:project/:stack/preview" },
   createUpdate: { method: "POST" as Method, path: "/api/stacks/:org/:project/:stack/update" },
+  beginUpdate: { method: "POST" as Method, path: "/api/stacks/:org/:project/:stack/begin-update" },
   getUpdateStatus: { method: "GET" as Method, path: "/api/stacks/:org/:project/:stack/:kind/:updateId" },
   startUpdate: { method: "POST" as Method, path: "/api/stacks/:org/:project/:stack/:kind/:updateId" },
   patchCheckpoint: { method: "PATCH" as Method, path: "/api/stacks/:org/:project/:stack/:kind/:updateId/checkpoint" },
