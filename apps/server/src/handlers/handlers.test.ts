@@ -73,7 +73,7 @@ function injectCaller(caller: Caller) {
 // Upstream-equivalent CapabilitiesResponse parser (test-only contract)
 //
 // Mirrors apitype.CapabilitiesResponse.Parse() semantics from the Pulumi Go
-// SDK (v3.260): iterate capability entries, decode each known capability's
+// SDK (v3.265): iterate capability entries, decode each known capability's
 // configuration into its typed field, and ignore unknown capabilities
 // (forward-compatible). A malformed configuration for a *known* capability
 // is treated as a hard parse failure — upstream discards the whole parsed
@@ -83,13 +83,18 @@ function injectCaller(caller: Caller) {
 interface ParsedCapabilities {
 	BatchEncryption: boolean;
 	DeploymentSchemaVersion: number;
+	StackOutputs: boolean;
 	DeltaCheckpointUpdates?: { checkpointCutoffSizeBytes: number };
 }
 
 function parseCapabilitiesResponseUpstreamEquivalent(
 	response: CapabilitiesResponse,
 ): ParsedCapabilities {
-	const result: ParsedCapabilities = { BatchEncryption: false, DeploymentSchemaVersion: 0 };
+	const result: ParsedCapabilities = {
+		BatchEncryption: false,
+		DeploymentSchemaVersion: 0,
+		StackOutputs: false,
+	};
 	for (const entry of response.capabilities) {
 		switch (entry.capability) {
 			case "batch-encrypt":
@@ -103,6 +108,9 @@ function parseCapabilitiesResponseUpstreamEquivalent(
 				result.DeploymentSchemaVersion = cfg.version;
 				break;
 			}
+			case "stack-outputs":
+				result.StackOutputs = entry.version === 1;
+				break;
 			case "delta-checkpoint-uploads-v2": {
 				const cfg = entry.configuration as { checkpointCutoffSizeBytes?: number } | undefined;
 				if (typeof cfg?.checkpointCutoffSizeBytes !== "number") {
@@ -263,6 +271,7 @@ describe("@procella/server handlers", () => {
 				capabilities: [
 					{ capability: "batch-encrypt" },
 					{ capability: "deployment-schema-version", version: 1, configuration: { version: 3 } },
+					{ capability: "stack-outputs", version: 1 },
 					{ capability: "journaling-v1", version: 1 },
 				],
 			});
@@ -279,6 +288,7 @@ describe("@procella/server handlers", () => {
 				capabilities: [
 					{ capability: "batch-encrypt" },
 					{ capability: "deployment-schema-version", version: 1, configuration: { version: 3 } },
+					{ capability: "stack-outputs", version: 1 },
 					{ capability: "journaling-v1", version: 1 },
 				],
 			});
@@ -296,6 +306,7 @@ describe("@procella/server handlers", () => {
 				capabilities: [
 					{ capability: "batch-encrypt" },
 					{ capability: "deployment-schema-version", version: 1, configuration: { version: 3 } },
+					{ capability: "stack-outputs", version: 1 },
 					{ capability: "journaling-v1", version: 1 },
 					{
 						capability: "delta-checkpoint-uploads-v2",
@@ -305,10 +316,10 @@ describe("@procella/server handlers", () => {
 				],
 			});
 			// Cutoff must be derived from BLOB_THRESHOLD, not a duplicated magic number.
-			expect(body.capabilities[3].configuration.checkpointCutoffSizeBytes).toBe(BLOB_THRESHOLD);
+			expect(body.capabilities[4].configuration.checkpointCutoffSizeBytes).toBe(BLOB_THRESHOLD);
 		});
 
-		test("upstream-equivalent parser: default-off response parses to BatchEncryption true, DeploymentSchemaVersion 3, no delta config", async () => {
+		test("upstream-equivalent parser recognizes stack outputs in the default response", async () => {
 			const app = new Hono<Env>();
 			const health = healthHandlers({ db: mockDb, deltaCheckpointsEnabled: false });
 			app.get("/capabilities", health.capabilities);
@@ -317,6 +328,7 @@ describe("@procella/server handlers", () => {
 			const parsed = parseCapabilitiesResponseUpstreamEquivalent(body);
 			expect(parsed.BatchEncryption).toBe(true);
 			expect(parsed.DeploymentSchemaVersion).toBe(3);
+			expect(parsed.StackOutputs).toBe(true);
 			expect(parsed.DeltaCheckpointUpdates).toBeUndefined();
 		});
 
@@ -329,6 +341,7 @@ describe("@procella/server handlers", () => {
 			const parsed = parseCapabilitiesResponseUpstreamEquivalent(body);
 			expect(parsed.BatchEncryption).toBe(true);
 			expect(parsed.DeploymentSchemaVersion).toBe(3);
+			expect(parsed.StackOutputs).toBe(true);
 			expect(parsed.DeltaCheckpointUpdates).toEqual({ checkpointCutoffSizeBytes: BLOB_THRESHOLD });
 		});
 
