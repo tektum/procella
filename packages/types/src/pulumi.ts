@@ -88,6 +88,7 @@ export type {
 	Stack,
 	StackConfig,
 	StackLinks,
+	StackOutputsResponse,
 	StackRenameRequest,
 	StackSummary,
 	StackTagName,

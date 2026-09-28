@@ -208,6 +208,7 @@ export function createCliApp(deps: CliAppDeps): Hono<Env> {
 	// State operations (API token)
 	api.get("/stacks/:org/:project/:stack/export", stateH.exportStack);
 	api.get("/stacks/:org/:project/:stack/export/:version", stateH.exportStack);
+	api.get("/stacks/:org/:project/:stack/outputs", stateH.stackOutputs);
 	api.post("/stacks/:org/:project/:stack/import", stateH.importStack);
 
 	// Crypto (API token)

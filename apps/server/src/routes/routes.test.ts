@@ -347,6 +347,7 @@ describe("@procella/server routes", () => {
 				capabilities: [
 					{ capability: "batch-encrypt" },
 					{ capability: "deployment-schema-version", version: 1, configuration: { version: 3 } },
+					{ capability: "stack-outputs", version: 1 },
 					{ capability: "journaling-v1", version: 1 },
 				],
 			});
@@ -360,6 +361,7 @@ describe("@procella/server routes", () => {
 				capabilities: [
 					{ capability: "batch-encrypt" },
 					{ capability: "deployment-schema-version", version: 1, configuration: { version: 3 } },
+					{ capability: "stack-outputs", version: 1 },
 					{ capability: "journaling-v1", version: 1 },
 					{
 						capability: "delta-checkpoint-uploads-v2",

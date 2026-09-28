@@ -105,6 +105,65 @@ describe("stateHandlers", () => {
 		expect(updates.exportStack).toHaveBeenCalledWith("stack-uuid-1", undefined);
 	});
 
+	test("stackOutputs returns root outputs and secret-provider metadata", async () => {
+		const updates = mockUpdatesService({
+			exportStack: mock(
+				async () =>
+					({
+						version: 3,
+						deployment: {
+							manifest: { time: "2025-01-01", magic: "" },
+							secrets_providers: { type: "passphrase", state: { salt: "salt" } },
+							resources: [
+								{ urn: "urn:provider", type: "pulumi:providers:test", custom: true },
+								{
+									urn: "urn:parented-stack",
+									type: "pulumi:pulumi:Stack",
+									custom: false,
+									parent: "urn:parent",
+									outputs: { endpoint: "https://wrong.example.test" },
+								},
+								{
+									urn: "urn:pulumi:dev::myproj::pulumi:pulumi:Stack::myproj-dev",
+									type: "pulumi:pulumi:Stack",
+									custom: false,
+									outputs: { endpoint: "https://example.test", password: { ciphertext: "secret" } },
+								},
+							],
+						},
+					}) as never,
+			),
+		});
+		const stacks = mockStacksService();
+		const app = new Hono<Env>();
+		app.use("*", injectCaller(validCaller));
+		app.get("/stacks/:org/:project/:stack/outputs", stateHandlers(updates, stacks).stackOutputs);
+
+		const res = await app.request("/stacks/myorg/myproj/dev/outputs");
+
+		expect(res.status).toBe(200);
+		expect(await res.json()).toEqual({
+			outputs: { endpoint: "https://example.test", password: { ciphertext: "secret" } },
+			secretsProviders: { type: "passphrase", state: { salt: "salt" } },
+		});
+		expect(stacks.getStack).toHaveBeenCalledWith("t-1", "myorg", "myproj", "dev");
+		expect(updates.exportStack).toHaveBeenCalledWith("stack-uuid-1");
+	});
+
+	test("stackOutputs omits fields when the stack has no state", async () => {
+		const app = new Hono<Env>();
+		app.use("*", injectCaller(validCaller));
+		app.get(
+			"/stacks/:org/:project/:stack/outputs",
+			stateHandlers(mockUpdatesService(), mockStacksService()).stackOutputs,
+		);
+
+		const res = await app.request("/stacks/myorg/myproj/dev/outputs");
+
+		expect(res.status).toBe(200);
+		expect(await res.json()).toEqual({});
+	});
+
 	test("exportStack with version passes parsed int to service", async () => {
 		const updates = mockUpdatesService();
 		const stacks = mockStacksService();

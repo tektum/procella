@@ -27,7 +27,7 @@ The tested contract covers the CLI workflows most self-hosted backends need:
 - login and identity discovery
 - stack creation, selection, listing, rename, tags, and removal
 - preview, update, refresh, destroy, cancellation, leases, and event batches
-- state import, export, and versioned export
+- state import, export, versioned export, and capability-gated direct stack-output reads
 - config secret encryption/decryption, including batch crypto on supported clients
 - full, verbatim, and optionally delta checkpoint uploads
 - update history used by the supported CLI workflow
@@ -84,5 +84,6 @@ The structured `pulumi-compatibility-policy` startup log and these operator-loca
 
 - `api-version` is watched but not advertised. Its min/max/default semantics are not part of the supported contract, and legacy routes do not globally require a versioned `Accept` header.
 - `begin-update` is watched but not advertised. Procella retains the tested create-then-start update flow.
+- `stack-outputs` is advertised. Compatible clients read root stack outputs directly; older clients continue using full deployment export.
 - Journaling is negotiated through `StartUpdateRequest.journalVersion` and `StartUpdateResponse.journalVersion`. The Procella-local `journaling-v1` capability remains advertised for compatibility; it is not an upstream Pulumi capability.
 - Procella advertises deployment schema capability envelope version `1` with `configuration.version: 3`. Schema v4 and non-empty deployment feature markers are rejected until Procella can round-trip them without loss through import, checkpointing, export, rename, history, and migration workflows.

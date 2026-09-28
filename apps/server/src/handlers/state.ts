@@ -1,6 +1,7 @@
 // @procella/server — Export/import state handlers.
 
 import type { StacksService } from "@procella/stacks";
+import type { StackOutputsResponse } from "@procella/types";
 import type { UpdatesService } from "@procella/updates";
 import type { Context } from "hono";
 import type { Env } from "../types.js";
@@ -34,6 +35,34 @@ export function stateHandlers(updates: UpdatesService, stacks: StacksService) {
 			const stackInfo = await stacks.getStack(caller.tenantId, org, project, stack);
 			const result = await updates.exportStack(stackInfo.id, version);
 			return c.json(result);
+		},
+
+		stackOutputs: async (c: Context<Env>) => {
+			const caller = c.get("caller");
+			const stackInfo = await stacks.getStack(
+				caller.tenantId,
+				param(c, "org"),
+				param(c, "project"),
+				param(c, "stack"),
+			);
+			const { deployment } = await updates.exportStack(stackInfo.id);
+			const state = deployment as {
+				resources?: Array<{
+					type?: string;
+					parent?: string;
+					outputs?: Record<string, unknown>;
+				}>;
+				secrets_providers?: StackOutputsResponse["secretsProviders"];
+			};
+			const root = state.resources?.find(
+				(resource) => resource.type === "pulumi:pulumi:Stack" && !resource.parent,
+			);
+			if (!root) return c.json({} satisfies StackOutputsResponse);
+
+			return c.json({
+				outputs: root.outputs,
+				secretsProviders: state.secrets_providers,
+			} satisfies StackOutputsResponse);
 		},
 
 		importStack: async (c: Context<Env>) => {

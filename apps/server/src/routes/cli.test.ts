@@ -309,6 +309,16 @@ describe("@procella/server createCliApp", () => {
 		expect(res.status).toBe(204);
 		expect(completeUpdate).toHaveBeenCalledWith("upd-1", { status: "succeeded" });
 	});
+
+	test("both app assemblers expose capability-gated stack outputs", async () => {
+		for (const app of [makeCliApp(), makeWebApp()]) {
+			const res = await app.request("/api/stacks/myorg/myproj/dev/outputs", {
+				headers: { Authorization: "token valid-token" },
+			});
+			expect(res.status).toBe(200);
+			expect(await res.json()).toEqual({});
+		}
+	});
 	describe("delta-checkpoint capability advertisement", () => {
 		test("createApp and createCliApp return identical capability bodies when disabled (default)", async () => {
 			const cliBody = await (await makeCliApp().request("/api/capabilities")).json();
@@ -318,6 +328,7 @@ describe("@procella/server createCliApp", () => {
 				capabilities: [
 					{ capability: "batch-encrypt" },
 					{ capability: "deployment-schema-version", version: 1, configuration: { version: 3 } },
+					{ capability: "stack-outputs", version: 1 },
 					{ capability: "journaling-v1", version: 1 },
 				],
 			});
@@ -331,6 +342,7 @@ describe("@procella/server createCliApp", () => {
 				capabilities: [
 					{ capability: "batch-encrypt" },
 					{ capability: "deployment-schema-version", version: 1, configuration: { version: 3 } },
+					{ capability: "stack-outputs", version: 1 },
 					{ capability: "journaling-v1", version: 1 },
 					{
 						capability: "delta-checkpoint-uploads-v2",

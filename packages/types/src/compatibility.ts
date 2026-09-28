@@ -143,8 +143,8 @@ export const PULUMI_CAPABILITY_POLICY: readonly CompatibilityClassification[] = 
 	},
 	{
 		id: "stack-outputs",
-		status: S.Watching,
-		note: "The released CLI reads this endpoint only when advertised; Procella keeps export-based output reads until the dedicated endpoint is implemented and verified.",
+		status: S.CoreImplemented,
+		note: "Dedicated stack-output reads are implemented and advertised; responses preserve checkpoint secret envelopes for client-side decryption.",
 	},
 ];
 
