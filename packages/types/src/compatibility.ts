@@ -85,7 +85,7 @@ export interface CompatibilityClassification {
 
 // ============================================================================
 // Capability policy — exhaustive over pulumi.gen.ts's generated
-// `export const X: APICapability = "..."` values (currently 10).
+// `export const X: APICapability = "...";` values (currently 11).
 // ============================================================================
 
 const S = CompatibilityStatus;
@@ -139,13 +139,18 @@ export const PULUMI_CAPABILITY_POLICY: readonly CompatibilityClassification[] = 
 	{
 		id: "begin-update",
 		status: S.Watching,
-		note: "Upstream pkg/backend/httpstate does not yet invoke the combined begin-update endpoint; implement only when a released CLI selects it, keeping create/start as the legacy fallback (Phase 5).",
+		note: "Released CLIs use the combined endpoint when advertised; Procella keeps it unadvertised until the endpoint is implemented and verified, preserving the create/start fallback.",
+	},
+	{
+		id: "stack-outputs",
+		status: S.Watching,
+		note: "The released CLI reads this endpoint only when advertised; Procella keeps export-based output reads until the dedicated endpoint is implemented and verified.",
 	},
 ];
 
 // ============================================================================
 // Route policy — exhaustive over routes.gen.ts's generated PulumiRoutes keys
-// (currently 59).
+// (currently 60).
 // ============================================================================
 
 export const PULUMI_ROUTE_POLICY: readonly CompatibilityClassification[] = [
@@ -233,6 +238,11 @@ export const PULUMI_ROUTE_POLICY: readonly CompatibilityClassification[] = [
 	{ id: "createDestroy", status: S.CoreImplemented, note: "`pulumi destroy`." },
 	{ id: "createPreview", status: S.CoreImplemented, note: "`pulumi preview`." },
 	{ id: "createUpdate", status: S.CoreImplemented, note: "`pulumi up` / `pulumi refresh`." },
+	{
+		id: "beginUpdate",
+		status: S.Watching,
+		note: "Combined begin-update route is not registered; the unadvertised begin-update capability keeps released CLIs on the implemented create/start lifecycle.",
+	},
 	{
 		id: "getUpdateStatus",
 		status: S.CoreImplemented,
