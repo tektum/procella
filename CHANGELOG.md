@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.8.0](https://github.com/tektum/procella/compare/procella-v0.7.0...procella-v0.8.0) (2026-09-28)
+
+
+### Features
+
+* **api:** support direct stack outputs ([#330](https://github.com/tektum/procella/issues/330)) ([c9962dd](https://github.com/tektum/procella/commit/c9962dde2f8de22c45e3a835f8937d5b59517ce4))
+
+
+### Bug Fixes
+
+* **actions:** correct backend URL and add ESC action ([#320](https://github.com/tektum/procella/issues/320)) ([a6e192f](https://github.com/tektum/procella/commit/a6e192f03c933aa2d9ac4fac0c809bb7ab5ac5f4))
+* **deps:** update aws-sdk-go-v2 monorepo ([#329](https://github.com/tektum/procella/issues/329)) ([4ca7d17](https://github.com/tektum/procella/commit/4ca7d17a6afe2f1be0df265f8be51ff2df7f41f6))
+* **deps:** update dependency @astrojs/starlight to ^0.42.0 ([#251](https://github.com/tektum/procella/issues/251)) ([68df7aa](https://github.com/tektum/procella/commit/68df7aa51ecbde8065d82e1f83ed68685d6c8c3c))
+* **migrate:** detect unknown state loss during verification ([#322](https://github.com/tektum/procella/issues/322)) ([49405b9](https://github.com/tektum/procella/commit/49405b9425e3ce39b85d5fea7e844b93a1c0532e))
+
 ## [0.7.0](https://github.com/tektum/procella/compare/procella-v0.6.0...procella-v0.7.0) (2026-09-10)
 
 
