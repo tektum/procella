@@ -41,7 +41,7 @@ permissions:
 jobs:
   deploy:
     name: Deploy to AWS (${{ inputs.stage }})
-    runs-on: namespace-profile-amd64-4cpu-8ram
+    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-deploy/runner=4cpu-linux-x64
     timeout-minutes: 20
     environment: ${{ inputs.stage }}
     # Opt in only after a dedicated Procella GitHub App is configured. An unset

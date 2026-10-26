@@ -19,7 +19,7 @@ concurrency:
 jobs:
   check:
     name: Lint, Typecheck & Unit Tests
-    runs-on: namespace-profile-amd64-4cpu-8ram
+    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-check/runner=4cpu-linux-x64
     env:
       PROCELLA_DATABASE_URL: postgres://procella:procella@localhost:5432/procella?sslmode=disable
     services:
@@ -70,7 +70,7 @@ jobs:
 
   workflow-policy:
     name: Workflow Policy
-    runs-on: namespace-profile-amd64-4cpu-8ram
+    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-workflow-policy/runner=4cpu-linux-x64
     timeout-minutes: 10
     permissions:
       contents: read
@@ -84,11 +84,10 @@ jobs:
           cache: false
       - name: Run actionlint
         run: |
-          # actionlint v1.7.12 predates GitHub's $/ syntax and rejects Namespace labels.
+          # actionlint v1.7.12 predates GitHub's $/ self-repository syntax.
           go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 \
             -ignore 'specifying action "\$/.*" in invalid format' \
-            -ignore 'reusable workflow call "\$/.*"' \
-            -ignore 'label "namespace-profile-amd64-4cpu-8ram" is unknown'
+            -ignore 'reusable workflow call "\$/.*"'
       - name: Run zizmor
         uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
         with:
@@ -98,7 +97,7 @@ jobs:
 
   deployment-package:
     name: Deployment Package
-    runs-on: namespace-profile-amd64-4cpu-8ram
+    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-deployment-package/runner=4cpu-linux-x64
     timeout-minutes: 10
     needs: [check]
     steps:
@@ -115,7 +114,7 @@ jobs:
 
   dependency-hygiene:
     name: Dependency Hygiene
-    runs-on: namespace-profile-amd64-4cpu-8ram
+    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-dependency-hygiene/runner=4cpu-linux-x64
     timeout-minutes: 10
     permissions:
       contents: read
@@ -148,7 +147,7 @@ jobs:
 
   bundle-analysis:
     name: Bundle Analysis
-    runs-on: namespace-profile-amd64-4cpu-8ram
+    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-bundle-analysis/runner=4cpu-linux-x64
     permissions:
       id-token: write
     needs: [check]
@@ -164,7 +163,7 @@ jobs:
 
   integration:
     name: Integration Tests
-    runs-on: namespace-profile-amd64-4cpu-8ram
+    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-integration/runner=4cpu-linux-x64
     permissions:
       id-token: write
     needs: [check, esc-eval-go]
@@ -218,7 +217,7 @@ jobs:
           use_oidc: true
   esc-cli-e2e:
     name: ESC CLI E2E
-    runs-on: namespace-profile-amd64-4cpu-8ram
+    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-esc-cli-e2e/runner=4cpu-linux-x64
     needs: [check]
     services:
       postgres:
@@ -298,7 +297,7 @@ jobs:
 
   types-freshness:
     name: Verify Pulumi Types Freshness
-    runs-on: namespace-profile-amd64-4cpu-8ram
+    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-types-freshness/runner=4cpu-linux-x64
     # Always runs — the strict ci-required gate fails on any skipped job.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -328,7 +327,7 @@ jobs:
 
   e2e:
     name: E2E Acceptance Tests (shard ${{ matrix.shard }}/3)
-    runs-on: namespace-profile-amd64-4cpu-8ram
+    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-e2e-${{ strategy.job-index }}/runner=4cpu-linux-x64
     permissions:
       id-token: write
     needs: [check, pulumi-versions]
@@ -399,7 +398,7 @@ jobs:
         run: bun run bench/analyze-traces.ts
   pulumi-compatibility:
     name: Pulumi Compatibility (${{ matrix.name }})
-    runs-on: namespace-profile-amd64-4cpu-8ram
+    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-pulumi-compatibility-${{ strategy.job-index }}/runner=4cpu-linux-x64
     timeout-minutes: 15
     permissions:
       contents: read
@@ -449,7 +448,7 @@ jobs:
 
   security-e2e:
     name: Security E2E Tests
-    runs-on: namespace-profile-amd64-4cpu-8ram
+    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-security-e2e/runner=4cpu-linux-x64
     permissions:
       id-token: write
     needs: [check, pulumi-versions]
@@ -497,7 +496,7 @@ jobs:
 
   e2e-ui:
     name: E2E UI Tests (Playwright)
-    runs-on: namespace-profile-amd64-4cpu-8ram
+    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-e2e-ui/runner=4cpu-linux-x64
     needs: [check, pulumi-versions]
     services:
       postgres:
@@ -545,7 +544,7 @@ jobs:
 
   bench:
     name: Performance Benchmark
-    runs-on: namespace-profile-amd64-4cpu-8ram
+    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-bench/runner=4cpu-linux-x64
     needs: [check, pulumi-versions]
     services:
       postgres:
@@ -614,7 +613,7 @@ jobs:
   # =========================================================================
   esc-eval-go:
     name: Go vet, test & build ESC eval
-    runs-on: namespace-profile-amd64-4cpu-8ram
+    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-esc-eval-go/runner=4cpu-linux-x64
     permissions:
       id-token: write
     steps:
@@ -666,7 +665,7 @@ jobs:
     name: Deploy Preview
     if: github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'deploy-preview')
     needs: [check, esc-eval-go]
-    runs-on: namespace-profile-amd64-4cpu-8ram
+    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-preview-deploy/runner=4cpu-linux-x64
     timeout-minutes: 20
     environment: preview
     # Opt in only after a dedicated Procella GitHub App is configured. An unset
@@ -867,7 +866,7 @@ jobs:
   preview-integration:
     name: Integration Tests (Deployed Preview)
     if: github.event_name == 'pull_request' && needs.preview-deploy.result == 'success' && needs.preview-deploy.outputs.descope_project_id != ''
-    runs-on: namespace-profile-amd64-4cpu-8ram
+    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-preview-integration/runner=4cpu-linux-x64
     needs: [preview-deploy, pulumi-versions]
     permissions:
       id-token: write
@@ -907,7 +906,7 @@ jobs:
   preview-oidc-e2e:
     name: OIDC Pulumi Deploy (real end-to-end)
     if: github.event_name == 'pull_request' && needs.preview-deploy.result == 'success' && needs.preview-integration.result == 'success'
-    runs-on: namespace-profile-amd64-4cpu-8ram
+    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-preview-oidc-e2e/runner=4cpu-linux-x64
     needs: [preview-deploy, preview-integration, pulumi-versions]
     permissions:
       id-token: write

@@ -61,7 +61,7 @@ jobs:
     if: github.event_name == 'pull_request'
     permissions:
       contents: read
-    runs-on: namespace-profile-amd64-4cpu-8ram
+    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-validate-config/runner=4cpu-linux-x64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -74,7 +74,7 @@ jobs:
 
   renovate:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: namespace-profile-amd64-4cpu-8ram
+    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-renovate/runner=4cpu-linux-x64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

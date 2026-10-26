@@ -63,7 +63,7 @@ jobs:
 
   publish-migrate:
     name: Publish @procella/migrate
-    runs-on: namespace-profile-amd64-4cpu-8ram
+    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-publish-migrate/runner=4cpu-linux-x64
     needs: [release-please]
     if: needs.release-please.outputs.migrate_released == 'true'
     permissions:
