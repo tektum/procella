@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1](https://github.com/tektum/procella/compare/procella-v0.8.0...procella-v0.8.1) (2026-10-26)
+
+
+### Bug Fixes
+
+* **infra:** restrict NAT instance security group ingress to the VPC CIDR ([#337](https://github.com/tektum/procella/issues/337)) ([3b45553](https://github.com/tektum/procella/commit/3b45553b30720a4a9c222d8001bb969034ddae7e))
+
 ## [0.8.0](https://github.com/tektum/procella/compare/procella-v0.7.0...procella-v0.8.0) (2026-09-28)
 
 
