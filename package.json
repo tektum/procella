@@ -49,7 +49,7 @@
 	"devDependencies": {
 		"@biomejs/biome": "^2.4.12",
 		"@descope/node-sdk": "^2.2.1",
-		"@descope/pulumi-descope": "^0.3.4",
+		"@descope/pulumi-descope": "^1.0.1",
 		"@playwright/test": "^1.58.2",
 		"@pulumi/command": "^1.2.1",
 		"@pulumi/pulumi": "^3.228.0",

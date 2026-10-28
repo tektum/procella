@@ -68,7 +68,7 @@ Tab state is stored in the URL hash (`#users`, `#roles`, `#audit`, `#tenant`) so
 
 The Descope management widgets call Descope's management API using the user's session token. This requires the **`Tenant Admin`** built-in Descope role at the tenant level — the app-level `admin` role alone is not sufficient.
 
-Procella's sign-up-or-in flow automatically assigns `Tenant Admin` to every user who creates a new tenant (via the `createTenant` flow action). No manual configuration is needed. The role is declared in `infra/descope.ts` and managed by Pulumi, so it survives redeploys.
+Procella's sign-up-or-in flow automatically assigns `Tenant Admin` to every user who creates a new tenant (via the `createTenant` flow action). No manual configuration is needed. The role is built into every Descope project, so no infra declaration is needed.
 
 ## CLI Login Flow (`/cli-login`)
 
