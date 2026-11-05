@@ -48,9 +48,11 @@ const opts = { provider };
 // Provider v0.3.x managed roles, permissions and JWT templates inline on the
 // Project. They already exist in the long-lived stages and Descope rejects
 // duplicate names, so v1.0 must import them instead of creating them. Import
-// IDs are `<projectId>/<entityId>`. PR previews get a fresh project and need
-// nothing here. REMOVE this block and the adopt() calls after each stage has
-// deployed once: Pulumi requires `import` to be dropped after the import.
+// IDs are `<projectId>/<entityId>`. The live JWT templates still carry the
+// reserved `roles`/`tenants` keys; Pulumi (>= 3.175) imports them and then
+// updates them to the trimmed templates below. PR previews get a fresh project
+// and need nothing here. REMOVE this block and the adopt() calls after each
+// stage has deployed once.
 const adoption: Record<string, Record<string, string> | undefined> = {
 	production: {
 		userJwt: "P3BeqCifPCP0NNCQH8pKuUjcW4xM/JT3BeqCfStya8W4H7wI675GQW2Pox",
@@ -79,23 +81,12 @@ const adopt = (key: string) => {
 };
 
 // ── JWT Templates ───────────────────────────────────────────────────────
-// Descope template placeholders use {{...}} syntax. The Pulumi/Terraform
-// provider requires the template to be valid JSON, so placeholders must be
-// quoted as string values. Descope's backend interprets them at runtime and
-// emits the actual arrays/objects in the JWT claims.
-// packages/auth expects tenants as Record<string, { roles: string[] }> and
-// roles as string[]. `tenant_name` carries the human-friendly tenant name.
-const userJwtTemplate = JSON.stringify({
-	roles: "{{user.roles}}",
-	tenant_name: "{{tenant.name}}",
-	tenants: "{{user.tenants}}",
-});
-
-const accessKeyJwtTemplate = JSON.stringify({
-	roles: "{{accesskey.roles}}",
-	tenant_name: "{{tenant.name}}",
-	tenants: "{{accesskey.tenants}}",
-});
+// Descope template placeholders use {{...}} syntax and must be quoted JSON
+// strings. `roles` and `tenants` are reserved claims that Descope emits itself
+// with authSchema "default" (tenants as Record<string, { roles: string[] }>,
+// which packages/auth reads), so templates only add `tenant_name`.
+const userJwtTemplate = JSON.stringify({ tenant_name: "{{tenant.name}}" });
+const accessKeyJwtTemplate = userJwtTemplate;
 
 // ── Project ─────────────────────────────────────────────────────────────────
 // Since provider v1.0 the Project only carries name/environment/tags; every
@@ -125,7 +116,7 @@ new descope.ProjectSettings(
 // ── JWT templates ───────────────────────────────────────────────────────────
 // The Procella auth service (packages/auth) requires:
 //   - `dct` claim (auto-set by autoTenantClaim) for tenant detection
-//   - `roles` claim for RBAC (viewer / member / admin)
+//   - `tenants.<id>.roles` claim for RBAC (viewer / member / admin)
 //   - `tenant_name` claim for human-friendly org name (slugified at runtime)
 const userJwt = new descope.JwtTemplate(
 	"ProcellaUserJwt",
