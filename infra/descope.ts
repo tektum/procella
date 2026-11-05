@@ -245,12 +245,18 @@ new descope.OauthSettings("ProcellaOauthSettings", { projectId }, opts);
 // ── Flows and styles ────────────────────────────────────────────────────────
 // Custom sign-up-or-in flow with auto tenant provisioning.
 // The UI uses flowId="sign-up-or-in" (hardcoded in Login.tsx).
-new descope.Flow(
+const signUpOrIn = new descope.Flow(
 	"ProcellaSignUpOrInFlow",
 	{ projectId, flowId: "sign-up-or-in", data: signUpOrInFlow },
 	opts,
 );
-new descope.Styles("ProcellaStyles", { projectId, data: stylesData }, opts);
+// Fresh projects start on components 2.0.0 and the theme import rejects newer
+// exports; importing the flow (exported on 3.0.1) upgrades the project first.
+new descope.Styles(
+	"ProcellaStyles",
+	{ projectId, data: stylesData },
+	{ ...opts, dependsOn: [signUpOrIn] },
+);
 
 // ── GitHub Outbound Application ─────────────────────────────────────────────
 // The provisioner predates descope.OutboundApp (provider v1.0), so SST still drives
