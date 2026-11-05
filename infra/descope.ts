@@ -250,8 +250,10 @@ const signUpOrIn = new descope.Flow(
 	{ projectId, flowId: "sign-up-or-in", data: signUpOrInFlow },
 	opts,
 );
-// Fresh projects start on components 2.0.0 and the theme import rejects newer
-// exports; importing the flow (exported on 3.0.1) upgrades the project first.
+// The theme import only accepts styles exported on the project's exact
+// components version. Importing the flow upgrades the project to the version it
+// was exported on, so both files must be re-exported together (from a project
+// on the latest version) whenever Descope ships new components.
 new descope.Styles(
 	"ProcellaStyles",
 	{ projectId, data: stylesData },
