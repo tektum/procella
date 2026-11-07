@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.9.0](https://github.com/tektum/procella/compare/procella-v0.8.1...procella-v0.9.0) (2026-11-07)
+
+
+### ⚠ BREAKING CHANGES
+
+* **infra:** upgrade @descope/pulumi-descope to v1.0 standalone resources ([#342](https://github.com/tektum/procella/issues/342))
+
+### Features
+
+* **infra:** upgrade @descope/pulumi-descope to v1.0 standalone resources ([#342](https://github.com/tektum/procella/issues/342)) ([c2aecff](https://github.com/tektum/procella/commit/c2aecff522b1e19142d4d958997a671fab48afb9))
+
+
+### Bug Fixes
+
+* **infra:** drop dev Descope import IDs after adoption ([#345](https://github.com/tektum/procella/issues/345)) ([fc28dce](https://github.com/tektum/procella/commit/fc28dce2d4026509984073462f099b6135dca8a2))
+
 ## [0.8.1](https://github.com/tektum/procella/compare/procella-v0.8.0...procella-v0.8.1) (2026-10-26)
 
 
