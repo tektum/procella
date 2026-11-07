@@ -727,7 +727,8 @@ describe_descope("Descope auth (deployed preview)", () => {
 					repository_owner_id: repositoryOwnerId,
 					repository_id: repositoryId,
 				},
-				grantedRole: "member",
+				// admin so the OIDC e2e job can `pulumi stack rm` (DELETE is admin-only)
+				grantedRole: "admin",
 			};
 			await reconcileOidcPolicy(
 				{
