@@ -44,34 +44,6 @@ const provider = new descope.Provider("DescopeProvider", {
 });
 const opts = { provider };
 
-// ── One-time adoption of pre-1.0 resources ──────────────────────────────────
-// Provider v0.3.x managed roles, permissions and JWT templates inline on the
-// Project. They already exist in the long-lived stages and Descope rejects
-// duplicate names, so v1.0 must import them instead of creating them. Import
-// IDs are `<projectId>/<entityId>`. The live JWT templates still carry the
-// reserved `roles`/`tenants` keys; Pulumi (>= 3.175) imports them and then
-// updates them to the trimmed templates below. PR previews get a fresh project
-// and need nothing here. Keep `import` only until a stage has deployed once:
-// re-importing a managed JWT template plans a replace, which collides on name.
-// `dev` was adopted in #342; REMOVE this block and the adopt() calls once
-// production has deployed.
-const adoption: Record<string, Record<string, string> | undefined> = {
-	production: {
-		userJwt: "P3BeqCifPCP0NNCQH8pKuUjcW4xM/JT3BeqCfStya8W4H7wI675GQW2Pox",
-		accessKeyJwt: "P3BeqCifPCP0NNCQH8pKuUjcW4xM/JT3BeqCkmZJCHteXE4gXU8RfU4LZv",
-		stacksWrite: "P3BeqCifPCP0NNCQH8pKuUjcW4xM/PERM3BeqDTRA9L8EWXPL9xNsda8Spjr",
-		stacksDelete: "P3BeqCifPCP0NNCQH8pKuUjcW4xM/PERM3BeqDUVFEZR875yWRwq9FkOBZG0",
-		membersManage: "P3BeqCifPCP0NNCQH8pKuUjcW4xM/PERM3BeqDQGweMCKw4Ok4rmSLUEwH7x",
-		admin: "P3BeqCifPCP0NNCQH8pKuUjcW4xM/ROL3BeqDWFzmVHEaLnpl8iXrR9DNst",
-		member: "P3BeqCifPCP0NNCQH8pKuUjcW4xM/ROL3BeqDPbvFrCxswdVzML9GW6zaLS",
-		viewer: "P3BeqCifPCP0NNCQH8pKuUjcW4xM/ROL3BeqDSKv2jHc1Qb6xEmQuZOD4WQ",
-	},
-};
-const adopt = (key: string) => {
-	const id = adoption[$app.stage]?.[key];
-	return id ? { ...opts, import: id } : opts;
-};
-
 // ── JWT Templates ───────────────────────────────────────────────────────
 // Descope template placeholders use {{...}} syntax and must be quoted JSON
 // strings. `roles` and `tenants` are reserved claims that Descope emits itself
@@ -121,7 +93,7 @@ const userJwt = new descope.JwtTemplate(
 		authSchema: "default",
 		autoTenantClaim: true,
 	},
-	adopt("userJwt"),
+	opts,
 );
 const accessKeyJwt = new descope.JwtTemplate(
 	"ProcellaAccessKeyJwt",
@@ -134,7 +106,7 @@ const accessKeyJwt = new descope.JwtTemplate(
 		authSchema: "default",
 		autoTenantClaim: true,
 	},
-	adopt("accessKeyJwt"),
+	opts,
 );
 
 // ── Session settings ────────────────────────────────────────────────────────
@@ -166,17 +138,17 @@ new descope.SessionSettings(
 const stacksWrite = new descope.Permission(
 	"ProcellaPermissionStacksWrite",
 	{ projectId, name: "stacks:write", description: "Create and update stacks" },
-	adopt("stacksWrite"),
+	opts,
 );
 const stacksDelete = new descope.Permission(
 	"ProcellaPermissionStacksDelete",
 	{ projectId, name: "stacks:delete", description: "Delete stacks" },
-	adopt("stacksDelete"),
+	opts,
 );
 const membersManage = new descope.Permission(
 	"ProcellaPermissionMembersManage",
 	{ projectId, name: "members:manage", description: "Manage org members and roles" },
-	adopt("membersManage"),
+	opts,
 );
 
 new descope.Role(
@@ -187,7 +159,7 @@ new descope.Role(
 		description: "Full access — can create stacks, run updates, and manage org members",
 		permissions: [stacksWrite.name, stacksDelete.name, membersManage.name],
 	},
-	adopt("admin"),
+	opts,
 );
 new descope.Role(
 	"ProcellaRoleMember",
@@ -197,7 +169,7 @@ new descope.Role(
 		description: "Can create and run stack updates",
 		permissions: [stacksWrite.name],
 	},
-	adopt("member"),
+	opts,
 );
 new descope.Role(
 	"ProcellaRoleViewer",
@@ -207,7 +179,7 @@ new descope.Role(
 		description: "Read-only access to stacks and update history",
 		permissions: [],
 	},
-	adopt("viewer"),
+	opts,
 );
 
 // ── Authentication methods ──────────────────────────────────────────────────
