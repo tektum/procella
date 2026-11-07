@@ -966,7 +966,9 @@ jobs:
 
           pulumi up --yes --non-interactive
           pulumi destroy --yes --non-interactive
-          pulumi stack rm --yes --non-interactive --force
+          # No `pulumi stack rm`: DELETE is admin-only and this policy grants
+          # member on purpose (every CI job with id-token can mint a matching
+          # token). The stack name is per-run and the preview DB is dropped.
 
   # =========================================================================
   # ci-required — single status check for branch protection.

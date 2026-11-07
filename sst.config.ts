@@ -9,7 +9,7 @@ export default $config({
 			home: "aws",
 			providers: {
 				aws: { region: "us-east-1", version: "7.20.0" },
-				"@descope/pulumi-descope": "0.3.4",
+				"@descope/pulumi-descope": "1.0.1",
 				"@pulumi/command": "1.2.1",
 			},
 		};

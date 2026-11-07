@@ -23,9 +23,9 @@ See [Authentication Architecture](../architecture/authentication/) for how the a
 
 The `infra/` directory contains a Pulumi program that provisions all required Descope configuration:
 
-- **Roles**: `viewer`, `member`, `admin`, `Tenant Admin`
+- **Roles**: `viewer`, `member`, `admin` (`Tenant Admin` is built into every Descope project)
 - **Permissions**: `stacks:write`, `stacks:delete`, `members:manage`
-- **JWT templates**: both user and access key JWTs include `roles` and `tenants` claims, with `autoTenantClaim` enabled so the `dct` claim is set automatically
+- **JWT templates**: both user and access key templates add a `tenant_name` claim on top of Descope's native `roles` and `tenants` claims (`authSchema: default`), with `autoTenantClaim` enabled so the `dct` claim is set automatically
 - **Sign-up-or-in flow**: auto-provisions a new tenant for first-time users and assigns them `Tenant Admin`
 - **Password policy**: minimum 12 characters, upper + lower + number + special required, account lock after 10 failures, temporary lock after 5 failures within a window
 

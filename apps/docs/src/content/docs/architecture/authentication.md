@@ -56,7 +56,7 @@ When `PROCELLA_AUTH_MODE=descope`, the server uses [Descope access keys](https:/
 
 The web dashboard embeds Descope's management UI components on the Settings and Tokens pages. These widgets (`UserManagement`, `RoleManagement`, `AuditManagement`, `TenantProfile`, `AccessKeyManagement`, `UserProfile`) call Descope's management API using the user's session token — which requires the **`Tenant Admin`** built-in Descope role at the tenant level. The standard app-level `admin` role is not sufficient.
 
-Procella's sign-up-or-in flow automatically assigns `Tenant Admin` to every user who creates a new tenant, so the Settings page works for all users without manual intervention. The `Tenant Admin` role is declared in `infra/descope.ts` and managed by Pulumi, so it persists across redeploys.
+Procella's sign-up-or-in flow automatically assigns `Tenant Admin` to every user who creates a new tenant, so the Settings page works for all users without manual intervention. `Tenant Admin` is a built-in Descope role (User Admin, SSO Admin, Impersonate), so it exists in every project without being declared in `infra/descope.ts`.
 
 ### JWT Claims Mapping
 
