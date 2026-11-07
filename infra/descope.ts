@@ -51,8 +51,10 @@ const opts = { provider };
 // IDs are `<projectId>/<entityId>`. The live JWT templates still carry the
 // reserved `roles`/`tenants` keys; Pulumi (>= 3.175) imports them and then
 // updates them to the trimmed templates below. PR previews get a fresh project
-// and need nothing here. REMOVE this block and the adopt() calls after each
-// stage has deployed once.
+// and need nothing here. Keep `import` only until a stage has deployed once:
+// re-importing a managed JWT template plans a replace, which collides on name.
+// `dev` was adopted in #342; REMOVE this block and the adopt() calls once
+// production has deployed.
 const adoption: Record<string, Record<string, string> | undefined> = {
 	production: {
 		userJwt: "P3BeqCifPCP0NNCQH8pKuUjcW4xM/JT3BeqCfStya8W4H7wI675GQW2Pox",
@@ -63,16 +65,6 @@ const adoption: Record<string, Record<string, string> | undefined> = {
 		admin: "P3BeqCifPCP0NNCQH8pKuUjcW4xM/ROL3BeqDWFzmVHEaLnpl8iXrR9DNst",
 		member: "P3BeqCifPCP0NNCQH8pKuUjcW4xM/ROL3BeqDPbvFrCxswdVzML9GW6zaLS",
 		viewer: "P3BeqCifPCP0NNCQH8pKuUjcW4xM/ROL3BeqDSKv2jHc1Qb6xEmQuZOD4WQ",
-	},
-	dev: {
-		userJwt: "P3CMRiPdFBrRBSeVIydUSBacruTi/JT3CMRiPqUKT6xM4eJeV2erMOAWM8",
-		accessKeyJwt: "P3CMRiPdFBrRBSeVIydUSBacruTi/JT3CMRiRrFXzXoHO4AVkwW7apDD3f",
-		stacksWrite: "P3CMRiPdFBrRBSeVIydUSBacruTi/PERM3CMRjBBKTj8kQbAKgJiD2nH8w3H",
-		stacksDelete: "P3CMRiPdFBrRBSeVIydUSBacruTi/PERM3CMRj65gqQI8hGyoYnE9SkUabOu",
-		membersManage: "P3CMRiPdFBrRBSeVIydUSBacruTi/PERM3CMRj9MjccItHCzgtrDqLUxEYwG",
-		admin: "P3CMRiPdFBrRBSeVIydUSBacruTi/ROL3CMRjBXiCPmVw4PzOJB8Gg7Jjwt",
-		member: "P3CMRiPdFBrRBSeVIydUSBacruTi/ROL3CMRj5XyVyfOuG2TCusa5j530z4",
-		viewer: "P3CMRiPdFBrRBSeVIydUSBacruTi/ROL3CMRj9I9wTc4Pn5qQbNTD0Qceqr",
 	},
 };
 const adopt = (key: string) => {
