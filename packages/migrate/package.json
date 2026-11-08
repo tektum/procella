@@ -1,6 +1,6 @@
 {
 	"name": "@procella/migrate",
-	"version": "0.1.2",
+	"version": "0.1.3",
 	"description": "Migrate Pulumi stacks from any backend to Procella with bulk automation, validation, and audit trails",
 	"type": "module",
 	"license": "MIT",
