@@ -13,6 +13,7 @@ import { BadRequestError, ConflictError, NotFoundError, ProcellaError } from "@p
 import { and, desc, eq, gt, inArray, isNull, lt, sql } from "drizzle-orm";
 import { parseDocument } from "yaml";
 import type { EvaluateDiagnostic, EvaluatorClient } from "./evaluator-client.js";
+import { encryptEscSecret } from "./secrets.js";
 import type {
 	CloneEnvironmentInput,
 	CreateEnvironmentInput,
@@ -25,6 +26,7 @@ import type {
 	EscRevisionTag,
 	ListAllEnvironmentsOptions,
 	ListAllEnvironmentsResult,
+	OpenSessionOptions,
 	OpenSessionResult,
 	OrgEnvironmentSummary,
 	UpdateEnvironmentInput,
@@ -77,7 +79,12 @@ export interface EscService {
 		revisionNumber: number,
 	): Promise<EscEnvironmentRevision | null>;
 
-	openSession(tenantId: string, projectName: string, envName: string): Promise<OpenSessionResult>;
+	openSession(
+		tenantId: string,
+		projectName: string,
+		envName: string,
+		options?: OpenSessionOptions,
+	): Promise<OpenSessionResult>;
 	getSession(
 		tenantId: string,
 		projectName: string,
@@ -169,6 +176,14 @@ export interface EscService {
 	): Promise<void>;
 
 	validateYaml(yamlBody: string): Promise<ValidateYamlResult>;
+
+	/** Encrypts plaintexts into `fn::secret` ciphertexts for an existing environment. */
+	encryptSecrets(
+		tenantId: string,
+		projectName: string,
+		envName: string,
+		plaintexts: Uint8Array[],
+	): Promise<string[]>;
 
 	gcSweep(): Promise<{ closedCount: number }>;
 }
@@ -305,6 +320,8 @@ function pgErrorCode(err: unknown): string | undefined {
 	}
 	return undefined;
 }
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function validateName(kind: "project" | "environment", value: string): void {
 	if (!value || value.length > 128) {
@@ -772,6 +789,7 @@ export class PostgresEscService implements EscService {
 		tenantId: string,
 		projectName: string,
 		envName: string,
+		options?: OpenSessionOptions,
 	): Promise<OpenSessionResult> {
 		return withSpan(
 			"procella.esc",
@@ -783,37 +801,57 @@ export class PostgresEscService implements EscService {
 					throw new NotFoundError("Environment", `${projectName}/${envName}`);
 				}
 
+				// A draft session is recorded against the revision the draft is based on (current).
+				const revisionNumber = options?.draftId
+					? envRow.currentRevisionNumber
+					: (options?.revision ?? envRow.currentRevisionNumber);
 				const [revisionRow] = await this.db
 					.select()
 					.from(escEnvironmentRevisions)
 					.where(
 						and(
 							eq(escEnvironmentRevisions.environmentId, envRow.id),
-							eq(escEnvironmentRevisions.revisionNumber, envRow.currentRevisionNumber),
+							eq(escEnvironmentRevisions.revisionNumber, revisionNumber),
 						),
 					)
 					.limit(1);
 				if (!revisionRow) {
 					throw new NotFoundError(
 						"EnvironmentRevision",
-						`${projectName}/${envName}#${envRow.currentRevisionNumber}`,
+						`${projectName}/${envName}#${revisionNumber}`,
 					);
 				}
 
-				const importRefs = extractImports(envRow.yamlBody);
+				let definition =
+					revisionNumber === envRow.currentRevisionNumber ? envRow.yamlBody : revisionRow.yamlBody;
+				if (options?.draftId !== undefined) {
+					if (!UUID_PATTERN.test(options.draftId)) {
+						throw new NotFoundError("Draft", options.draftId);
+					}
+					const [draftRow] = await this.db
+						.select({ yamlBody: escDrafts.yamlBody })
+						.from(escDrafts)
+						.where(
+							and(
+								eq(escDrafts.id, options.draftId),
+								eq(escDrafts.environmentId, envRow.id),
+								eq(escDrafts.status, "open"),
+							),
+						)
+						.limit(1);
+					if (!draftRow) {
+						throw new NotFoundError("Draft", options.draftId);
+					}
+					definition = draftRow.yamlBody;
+				}
+
+				const importRefs = extractImports(definition);
 				const resolvedImports = await withSpan(
 					"procella.esc",
 					"esc.resolveImports",
 					{ "imports.count": importRefs.length, "imports.depth": 0 },
 					async () =>
-						this.resolveImports(
-							this.db,
-							tenantId,
-							projectName,
-							envRow.yamlBody,
-							new Set<string>(),
-							0,
-						),
+						this.resolveImports(this.db, tenantId, projectName, definition, new Set<string>(), 0),
 				);
 
 				const result = await withSpan(
@@ -825,9 +863,10 @@ export class PostgresEscService implements EscService {
 					},
 					async () =>
 						this.evaluator.evaluate({
-							definition: envRow.yamlBody,
+							definition,
 							imports: resolvedImports,
 							encryptionKeyHex: this.encryptionKeyHex,
+							tenantId,
 						}),
 				);
 
@@ -1212,6 +1251,21 @@ export class PostgresEscService implements EscService {
 					}
 					return toDraftInfo(updated);
 				}),
+		);
+	}
+
+	async encryptSecrets(
+		tenantId: string,
+		projectName: string,
+		envName: string,
+		plaintexts: Uint8Array[],
+	): Promise<string[]> {
+		const env = await findEnvRow(this.db, tenantId, projectName, envName);
+		if (!env) {
+			throw new NotFoundError("Environment", `${projectName}/${envName}`);
+		}
+		return plaintexts.map((plaintext) =>
+			encryptEscSecret(this.encryptionKeyHex, tenantId, plaintext),
 		);
 	}
 

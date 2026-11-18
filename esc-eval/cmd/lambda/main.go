@@ -23,6 +23,9 @@ type EvaluateRequest struct {
 	Definition       string            `json:"definition"`
 	Imports          map[string]string `json:"imports"`
 	EncryptionKeyHex string            `json:"encryptionKeyHex"`
+	// TenantID selects the ESC secret key for fn::secret ciphertexts. Without it ciphertexts are
+	// passed through undecrypted.
+	TenantID string `json:"tenantId,omitempty"`
 }
 
 type EvaluateDiagnostic struct {
@@ -49,7 +52,8 @@ func handle(ctx context.Context, req EvaluateRequest) (EvaluateResponse, error) 
 			"encryptionKeyHex must be exactly %d hex characters", encryptionKeyHexLen,
 		)
 	}
-	if _, err := hex.DecodeString(req.EncryptionKeyHex); err != nil {
+	masterKey, err := hex.DecodeString(req.EncryptionKeyHex)
+	if err != nil {
 		return EvaluateResponse{}, fmt.Errorf("encryptionKeyHex: %w", err)
 	}
 
@@ -65,7 +69,14 @@ func handle(ctx context.Context, req EvaluateRequest) (EvaluateResponse, error) 
 		}, nil
 	}
 
-	dec := noopDecrypter{}
+	var dec eval.Decrypter = noopDecrypter{}
+	if req.TenantID != "" {
+		tenantDec, err := newTenantSecretDecrypter(masterKey, req.TenantID)
+		if err != nil {
+			return EvaluateResponse{}, err
+		}
+		dec = tenantDec
+	}
 	loader := &payloadEnvironmentLoader{imports: req.Imports, decrypter: dec}
 	execCtx, err := esc.NewExecContext(map[string]esc.Value{})
 	if err != nil {

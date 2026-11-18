@@ -15,5 +15,7 @@ export {
 	StdioEvaluatorClient,
 	UnimplementedEvaluatorClient,
 } from "./evaluator-client.js";
+export * from "./managed.js";
+export * from "./secrets.js";
 export * from "./service.js";
 export * from "./types.js";

@@ -72,6 +72,7 @@ import {
 } from "./helpers.js";
 import { type RepairMutation, repairCheckpoint } from "./repair.js";
 import type {
+	CreateUpdateOptions,
 	DeltaCheckpointSave,
 	UpdatesService,
 	UpdateWebhookContext,
@@ -187,6 +188,7 @@ export class PostgresUpdatesService implements UpdatesService {
 		program?: unknown,
 		caller?: Caller,
 		environment?: Record<string, string>,
+		options?: CreateUpdateOptions,
 	): Promise<UpdateProgramResponse> {
 		return withDbSpan("createUpdate", { "update.kind": kind, "stack.id": stackId }, async () => {
 			try {
@@ -223,6 +225,7 @@ export class PostgresUpdatesService implements UpdatesService {
 							config: config ?? null,
 							program: program ?? null,
 							environment: environment ?? {},
+							managedEnvironment: options?.managedEnvironment ?? null,
 							initiatedBy: caller?.userId || null, // use || so empty string becomes null
 							initiatedByType: caller?.principalType ?? null,
 							initiatedByDisplay: caller?.login ?? null,

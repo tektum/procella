@@ -8,14 +8,30 @@ import {
 	type StartUpdateRequest,
 	type UpdateProgramRequest,
 } from "@procella/types";
-import type { UpdatesService } from "@procella/updates";
+import type { ManagedEnvironmentPin, UpdatesService } from "@procella/updates";
 import type { Context } from "hono";
+import { z } from "zod/v4";
 import type { Env } from "../types.js";
 import { param, updateContext } from "./params.js";
 
 // ============================================================================
 // Update Handlers
 // ============================================================================
+
+/** apitype.UpdateProgramEnvironment — the managed ESC environment content an update evaluated. */
+const ManagedEnvironmentPinSchema = z
+	.object({
+		baseRevision: z.number().int().nonnegative(),
+		changeRequestID: z.string().min(1).max(256).optional(),
+		draftRevision: z.number().int().nonnegative(),
+	})
+	.strict();
+
+function parseManagedEnvironmentPin(value: unknown): ManagedEnvironmentPin | undefined | null {
+	if (value === undefined || value === null) return undefined;
+	const parsed = ManagedEnvironmentPinSchema.safeParse(value);
+	return parsed.success ? parsed.data : null;
+}
 
 export function updateHandlers(updates: UpdatesService, stacks: StacksService) {
 	return {
@@ -31,6 +47,15 @@ export function updateHandlers(updates: UpdatesService, stacks: StacksService) {
 			const stackInfo = await stacks.getStack(caller.tenantId, org, project, stack);
 			const body = await c.req.json().catch(() => ({}));
 			const typedBody = body as Partial<UpdateProgramRequest> & { program?: unknown };
+			const managedEnvironment = parseManagedEnvironmentPin(
+				(typedBody as { environment?: unknown }).environment,
+			);
+			if (managedEnvironment === null) {
+				return c.json(
+					{ code: "invalid_environment", message: "Invalid managed environment revision" },
+					400,
+				);
+			}
 			const result = await updates.createUpdate(
 				stackInfo.id,
 				kind,
@@ -38,6 +63,7 @@ export function updateHandlers(updates: UpdatesService, stacks: StacksService) {
 				typedBody.program,
 				caller,
 				typedBody.metadata?.environment,
+				managedEnvironment ? { managedEnvironment } : undefined,
 			);
 			return c.json(result);
 		},

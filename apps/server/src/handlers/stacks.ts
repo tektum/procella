@@ -1,9 +1,15 @@
 // @procella/server — Stack CRUD handlers.
 
+import {
+	deleteManagedEnvironment,
+	type EscService,
+	MANAGED_ENVIRONMENT_PLACEHOLDER,
+} from "@procella/esc";
 import type { StackInfo, StacksService } from "@procella/stacks";
 import type { Stack, StackRenameRequest, StackSummary } from "@procella/types";
 import { BadRequestError } from "@procella/types";
 import type { Context } from "hono";
+import { logger } from "../logger.js";
 import type { Env } from "../types.js";
 import { param } from "./params.js";
 
@@ -11,7 +17,7 @@ import { param } from "./params.js";
 // Stack Handlers
 // ============================================================================
 
-export function stackHandlers(stacks: StacksService) {
+export function stackHandlers(stacks: StacksService, esc?: EscService) {
 	return {
 		/** POST /api/stacks/:org/:project/:stack OR POST /api/stacks/:org/:project (stack in body) */
 		createStack: async (c: Context<Env>) => {
@@ -19,14 +25,61 @@ export function stackHandlers(stacks: StacksService) {
 			const org = param(c, "org");
 			const project = param(c, "project");
 			const body = await c.req.json().catch(() => ({}));
-			const typedBody = body as { stackName?: string; tags?: Record<string, string> };
+			const typedBody = body as {
+				stackName?: string;
+				tags?: Record<string, string>;
+				createManagedEnvironment?: boolean;
+			};
 			// Stack name can come from URL param or request body
 			const stack = c.req.param("stack") ?? typedBody.stackName ?? "";
 			if (!stack) {
 				throw new BadRequestError("Missing stack name in URL or body");
 			}
-			const result = await stacks.createStack(caller.tenantId, org, project, stack, typedBody.tags);
+			if (typedBody.createManagedEnvironment !== true) {
+				const result = await stacks.createStack(
+					caller.tenantId,
+					org,
+					project,
+					stack,
+					typedBody.tags,
+				);
+				return c.json(mapToStack(result, caller.orgSlug));
+			}
 
+			if (!esc) {
+				throw new BadRequestError("ESC-managed environments are not supported by this server");
+			}
+			// The stack manages ESC environment <project>/<stack>. Create the stack first so an
+			// existing stack fails before touching ESC, then roll it back if the environment
+			// cannot be created (for example, because it already exists).
+			const managedEnvironment = `${project}/${stack}`;
+			const result = await stacks.createStack(
+				caller.tenantId,
+				org,
+				project,
+				stack,
+				typedBody.tags,
+				{
+					managedEnvironment,
+				},
+			);
+			try {
+				await esc.createEnvironment(
+					caller.tenantId,
+					{ projectName: project, name: stack, yamlBody: MANAGED_ENVIRONMENT_PLACEHOLDER },
+					caller.userId,
+				);
+			} catch (err) {
+				await stacks
+					.deleteStack(caller.tenantId, org, project, stack, true)
+					.catch((rollbackErr) => {
+						logger.error(
+							{ err: rollbackErr, project, stack },
+							"failed to roll back stack after managed environment creation failed",
+						);
+					});
+				throw err;
+			}
 			return c.json(mapToStack(result, caller.orgSlug));
 		},
 
@@ -45,7 +98,18 @@ export function stackHandlers(stacks: StacksService) {
 			const project = param(c, "project");
 			const stack = param(c, "stack");
 			const force = c.req.query("force") === "true";
+			const managedEnvironment = esc
+				? (await stacks.getStack(caller.tenantId, org, project, stack)).managedEnvironment
+				: null;
 			await stacks.deleteStack(caller.tenantId, org, project, stack, force);
+			if (esc && managedEnvironment) {
+				await deleteManagedEnvironment(esc, caller.tenantId, managedEnvironment).catch((err) =>
+					logger.error(
+						{ err, managedEnvironment },
+						"failed to delete managed environment of removed stack",
+					),
+				);
+			}
 			return c.body(null, 204);
 		},
 
@@ -129,6 +193,7 @@ function mapToStack(info: StackInfo, orgSlug?: string): Stack {
 		stackName: info.stackName,
 		tags: info.tags,
 		activeUpdate: info.activeUpdateId ?? "",
+		...(info.managedEnvironment ? { managedEnvironment: info.managedEnvironment } : {}),
 		version: 0,
 	} as Stack;
 }

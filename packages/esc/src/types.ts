@@ -118,6 +118,14 @@ export interface EscDraft {
  * plaintext for everything (including secrets); the `secrets` array lists
  * the JSON paths flagged sensitive so clients can mask them at render time.
  */
+/** Selects what `openSession` evaluates. Defaults to the environment's current revision. */
+export interface OpenSessionOptions {
+	/** Published revision number to evaluate. */
+	revision?: number;
+	/** Open draft (change request) to evaluate instead of a published revision. */
+	draftId?: string;
+}
+
 export interface OpenSessionResult {
 	sessionId: string;
 	values: Record<string, unknown>;

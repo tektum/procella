@@ -57,6 +57,21 @@ describe("PostgresStacksService — integration", () => {
 			expect(info2.stackName).toBe("staging");
 		});
 
+		test("persists a managed environment name and returns it from reads", async () => {
+			const created = await stacks.createStack("tenant-1", "org-1", "app", "dev", undefined, {
+				managedEnvironment: "app/dev",
+			});
+			expect(created.managedEnvironment).toBe("app/dev");
+			expect((await stacks.getStack("tenant-1", "org-1", "app", "dev")).managedEnvironment).toBe(
+				"app/dev",
+			);
+			const [listed] = await stacks.listStacks("tenant-1", undefined, "app");
+			expect(listed?.managedEnvironment).toBe("app/dev");
+
+			await stacks.createStack("tenant-1", "org-1", "app", "plain");
+			expect((await stacks.getStack("tenant-1", "org-1", "app", "plain")).managedEnvironment).toBeNull();
+		});
+
 		test("throws StackAlreadyExistsError on duplicate", async () => {
 			await stacks.createStack("tenant-1", "org-1", "proj-1", "dev");
 			await expect(

@@ -5,9 +5,14 @@ import type {
 	DraftStatus,
 	EscCliDiagnostic,
 	EscService,
+	OpenSessionOptions,
 	UpdateEnvironmentInput,
 } from "@procella/esc";
-import { EscEvaluationError, EscPreconditionFailedError } from "@procella/esc";
+import {
+	EscEvaluationError,
+	EscPreconditionFailedError,
+	MAX_ESC_SECRET_PLAINTEXT_BYTES,
+} from "@procella/esc";
 import { BadRequestError, NotFoundError } from "@procella/types";
 import type { Context } from "hono";
 import { z } from "zod/v4";
@@ -15,6 +20,13 @@ import type { Env } from "../types.js";
 import { param } from "./params.js";
 
 const yamlBodySchema = z.object({ yamlBody: z.string() });
+/** Base64 can be at most 4/3 the size of the bytes it encodes, plus padding. */
+const MAX_ESC_SECRET_BASE64_LENGTH = Math.ceil(MAX_ESC_SECRET_PLAINTEXT_BYTES / 3) * 4;
+const encryptSecretsSchema = z
+	.object({
+		plaintexts: z.array(z.base64().max(MAX_ESC_SECRET_BASE64_LENGTH)).min(1).max(1000),
+	})
+	.strict();
 const envTagsSchema = z.record(z.string(), z.string());
 const envTagsPatchSchema = z.record(z.string(), z.string().nullable());
 const draftCreateSchema = z.object({
@@ -182,6 +194,32 @@ export function escHandlers(deps: {
 			throw new BadRequestError("Organization does not match caller organization");
 		}
 		return caller.tenantId;
+	};
+
+	const openSessionResponse = async (
+		c: Context<Env>,
+		tenantId: string,
+		projectName: string,
+		envName: string,
+		options?: OpenSessionOptions,
+	) => {
+		try {
+			const result = await deps.esc.openSession(tenantId, projectName, envName, options);
+			return c.json({ id: result.sessionId });
+		} catch (error) {
+			const mapped = mapPublicEscError(error);
+			if ("diagnostics" in mapped) {
+				return c.json(
+					{
+						code: 400,
+						message: "Invalid environment definition",
+						diagnostics: mapped.diagnostics,
+					},
+					400,
+				);
+			}
+			throw error;
+		}
 	};
 
 	const resolveEnvironmentRevision = async (
@@ -507,29 +545,50 @@ export function escHandlers(deps: {
 			return c.json(toEscEnvironment(validation.values));
 		},
 
+		/** POST .../open and POST .../versions/:version/open (revision number or tag). */
 		openSession: async (c: Context<Env>) => {
 			const tenantId = requireOrgMatch(c);
-			try {
-				const result = await deps.esc.openSession(
-					tenantId,
-					param(c, "project"),
-					param(c, "envName"),
-				);
-				return c.json({ id: result.sessionId });
-			} catch (error) {
-				const mapped = mapPublicEscError(error);
-				if ("diagnostics" in mapped) {
-					return c.json(
-						{
-							code: 400,
-							message: "Invalid environment definition",
-							diagnostics: mapped.diagnostics,
-						},
-						400,
-					);
-				}
-				throw error;
+			const projectName = param(c, "project");
+			const envName = param(c, "envName");
+			const version = c.req.param("version");
+			const options = version
+				? {
+						revision: (await resolveEnvironmentRevision(tenantId, projectName, envName, version))
+							.revisionNumber,
+					}
+				: undefined;
+			return openSessionResponse(c, tenantId, projectName, envName, options);
+		},
+
+		/**
+		 * POST .../drafts/:draftId/open?revision=N. Drafts are not versioned here, so only the
+		 * draft's initial revision (0), which is what the Pulumi CLI opens, is accepted.
+		 */
+		openDraftSession: async (c: Context<Env>) => {
+			const tenantId = requireOrgMatch(c);
+			const revision = c.req.query("revision");
+			if (revision !== undefined && revision !== "0") {
+				throw new BadRequestError("only draft revision 0 can be opened");
 			}
+			return openSessionResponse(c, tenantId, param(c, "project"), param(c, "envName"), {
+				draftId: param(c, "draftId"),
+			});
+		},
+
+		/** POST .../encrypt-secrets — `fn::secret` ciphertexts for a managed stack's config. */
+		encryptSecrets: async (c: Context<Env>) => {
+			const tenantId = requireOrgMatch(c);
+			const parsed = encryptSecretsSchema.safeParse(await c.req.json().catch(() => null));
+			if (!parsed.success) {
+				throw new BadRequestError("plaintexts must be a non-empty array of base64 strings");
+			}
+			const ciphertexts = await deps.esc.encryptSecrets(
+				tenantId,
+				param(c, "project"),
+				param(c, "envName"),
+				parsed.data.plaintexts.map((p) => Buffer.from(p, "base64")),
+			);
+			return c.json({ ciphertexts });
 		},
 
 		getSession: async (c: Context<Env>) => {

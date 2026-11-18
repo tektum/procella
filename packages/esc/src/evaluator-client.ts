@@ -17,6 +17,11 @@ export interface EvaluatePayload {
 	imports: Record<string, string>;
 	/** 32-byte HKDF-derived key (hex) for decrypting envelope-wrapped values. */
 	encryptionKeyHex: string;
+	/**
+	 * Tenant whose ESC secret key decrypts `fn::secret: {ciphertext}` values (see secrets.ts).
+	 * Without it the evaluator leaves ciphertexts undecrypted.
+	 */
+	tenantId?: string;
 }
 
 export interface EvaluateDiagnostic {

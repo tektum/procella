@@ -198,6 +198,9 @@ function dependenciesFor(role: Role): { deps: CliAppDeps; tracker: ServiceTracke
 			return { values: {}, diagnostics: [] };
 		}),
 		gcSweep: mock(async () => ({ closedCount: 0 })),
+		encryptSecrets: mock(async (_t: string, _p: string, _e: string, plaintexts: Uint8Array[]) =>
+			plaintexts.map(() => "ciphertext"),
+		),
 	} as unknown as EscService;
 	const audit = {
 		log: mock(() => {}),

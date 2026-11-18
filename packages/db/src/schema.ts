@@ -51,6 +51,8 @@ export const stacks = pgTable(
 		tags: jsonb().notNull().default({}),
 		searchVector: text("search_vector"),
 		activeUpdateId: uuid("active_update_id"),
+		// "<escProject>/<envName>" of the ESC environment this stack manages; kept after the env is deleted.
+		managedEnvironment: text("managed_environment"),
 		createdAt: timestamp("created_at").notNull().defaultNow(),
 		updatedAt: timestamp("updated_at").notNull().defaultNow(),
 	},
@@ -91,6 +93,12 @@ export const updates = pgTable(
 			org: string;
 			project: string;
 			stack: string;
+		}>(),
+		// Managed ESC environment revision/draft the update was evaluated against (apitype.UpdateProgramEnvironment).
+		managedEnvironment: jsonb("managed_environment").$type<{
+			baseRevision: number;
+			changeRequestID?: string;
+			draftRevision: number;
 		}>(),
 	},
 	(table) => [

@@ -78,7 +78,7 @@ export function createCliApp(deps: CliAppDeps): Hono<Env> {
 		deltaCheckpointsEnabled: deps.deltaCheckpointsEnabled,
 	});
 	const user = userHandlers(deps.stacks);
-	const stackH = stackHandlers(deps.stacks);
+	const stackH = stackHandlers(deps.stacks, deps.esc);
 	const auditH = auditHandlers({ audit: deps.audit });
 	const updateH = updateHandlers(deps.updates, deps.stacks);
 	const webhookH = webhookHandlers({ webhooks: deps.webhooks });
@@ -258,8 +258,11 @@ export function createCliApp(deps: CliAppDeps): Hono<Env> {
 	);
 	api.post("/esc/environments/:org/yaml/check", escH.validateYaml);
 	api.post("/esc/environments/:org/:project/:envName/open", escH.openSession);
+	api.post("/esc/environments/:org/:project/:envName/versions/:version/open", escH.openSession);
+	api.post("/esc/environments/:org/:project/:envName/encrypt-secrets", escH.encryptSecrets);
 	api.get("/esc/environments/:org/:project/:envName/open/:sessionId", escH.getSession);
 	api.post("/esc/environments/:org/:project/:envName/drafts", escH.createDraft);
+	api.post("/esc/environments/:org/:project/:envName/drafts/:draftId/open", escH.openDraftSession);
 	api.get("/esc/environments/:org/:project/:envName/drafts/:draftId", escH.getDraft);
 	api.patch("/esc/environments/:org/:project/:envName/drafts/:draftId", escH.updateDraft);
 
