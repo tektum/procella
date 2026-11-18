@@ -30,6 +30,12 @@
     {
       "matchPackageNames": ["@trpc/server", "@trpc/client", "@trpc/react-query"],
       "groupName": "trpc"
+    },
+    {
+      "description": "OpenTelemetry JS packages share core/sdk majors; partial bumps duplicate sdk-metrics and break MeterProvider types",
+      "matchPackageNames": ["@opentelemetry/**"],
+      "groupName": "opentelemetry",
+      "separateMajorMinor": false
     }
   ]
 }
