@@ -9,7 +9,6 @@ import type { StackInfo, StacksService } from "@procella/stacks";
 import type { Stack, StackRenameRequest, StackSummary } from "@procella/types";
 import { BadRequestError } from "@procella/types";
 import type { Context } from "hono";
-import { logger } from "../logger.js";
 import type { Env } from "../types.js";
 import { param } from "./params.js";
 
@@ -49,10 +48,9 @@ export function stackHandlers(stacks: StacksService, esc?: EscService) {
 			if (!esc) {
 				throw new BadRequestError("ESC-managed environments are not supported by this server");
 			}
-			// The stack manages ESC environment <project>/<stack>. Create the stack first so an
-			// existing stack fails before touching ESC, then roll it back if the environment
-			// cannot be created (for example, because it already exists).
-			const managedEnvironment = `${project}/${stack}`;
+			// The stack manages ESC environment <project>/<stack>. Both are created in one
+			// transaction: if the environment cannot be created (e.g. it already exists, 409),
+			// no stack row is committed.
 			const result = await stacks.createStack(
 				caller.tenantId,
 				org,
@@ -60,26 +58,17 @@ export function stackHandlers(stacks: StacksService, esc?: EscService) {
 				stack,
 				typedBody.tags,
 				{
-					managedEnvironment,
+					managedEnvironment: `${project}/${stack}`,
+					withinTransaction: async (tx) => {
+						await esc.createEnvironment(
+							caller.tenantId,
+							{ projectName: project, name: stack, yamlBody: MANAGED_ENVIRONMENT_PLACEHOLDER },
+							caller.userId,
+							{ tx },
+						);
+					},
 				},
 			);
-			try {
-				await esc.createEnvironment(
-					caller.tenantId,
-					{ projectName: project, name: stack, yamlBody: MANAGED_ENVIRONMENT_PLACEHOLDER },
-					caller.userId,
-				);
-			} catch (err) {
-				await stacks
-					.deleteStack(caller.tenantId, org, project, stack, true)
-					.catch((rollbackErr) => {
-						logger.error(
-							{ err: rollbackErr, project, stack },
-							"failed to roll back stack after managed environment creation failed",
-						);
-					});
-				throw err;
-			}
 			return c.json(mapToStack(result, caller.orgSlug));
 		},
 
@@ -98,18 +87,15 @@ export function stackHandlers(stacks: StacksService, esc?: EscService) {
 			const project = param(c, "project");
 			const stack = param(c, "stack");
 			const force = c.req.query("force") === "true";
-			const managedEnvironment = esc
-				? (await stacks.getStack(caller.tenantId, org, project, stack)).managedEnvironment
-				: null;
-			await stacks.deleteStack(caller.tenantId, org, project, stack, force);
-			if (esc && managedEnvironment) {
-				await deleteManagedEnvironment(esc, caller.tenantId, managedEnvironment).catch((err) =>
-					logger.error(
-						{ err, managedEnvironment },
-						"failed to delete managed environment of removed stack",
-					),
-				);
-			}
+			// A managed stack's environment is deleted in the stack's deletion transaction, using
+			// the locked row's metadata, so only the environment this stack owns is removed.
+			await stacks.deleteStack(caller.tenantId, org, project, stack, force, {
+				withinTransaction: async (tx, { managedEnvironment }) => {
+					if (esc && managedEnvironment) {
+						await deleteManagedEnvironment(esc, caller.tenantId, managedEnvironment, { tx });
+					}
+				},
+			});
 			return c.body(null, 204);
 		},
 

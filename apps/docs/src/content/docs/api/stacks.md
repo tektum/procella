@@ -45,7 +45,7 @@ Creates a new stack. Auto-creates the organization and project if they don't exi
 `managedEnvironment` is present only for managed stacks.
 
 **Errors**:
-- `409 Conflict` — stack already exists, or (for a managed stack) the ESC environment `{project}/{stack}` already exists. In that case the stack is not created.
+- `409 Conflict` — stack already exists, or (for a managed stack) the ESC environment `{project}/{stack}` already exists. The stack and environment are created in one transaction, so in that case nothing is created.
 
 ## Check Project Exists
 
@@ -87,7 +87,7 @@ Managed stacks also include `managedEnvironment` (`"{project}/{stack}"`). The na
 DELETE /api/stacks/{org}/{project}/{stack}
 ```
 
-Deletes a stack and all associated data (updates, events, checkpoints) via cascade. For a managed stack, Procella then deletes its ESC environment; an environment that is already gone is ignored.
+Deletes a stack and all associated data (updates, events, checkpoints) via cascade. For a managed stack, its ESC environment is deleted in the same transaction. An environment that was already deleted separately is ignored; any other failure aborts the stack deletion.
 
 **Required role**: `admin`
 

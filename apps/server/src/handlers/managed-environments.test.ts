@@ -2,6 +2,7 @@
 // update environment pins, and the ESC routes the CLI uses to evaluate managed environments.
 
 import { describe, expect, type Mock, mock, test } from "bun:test";
+import type { Database } from "@procella/db";
 import {
 	type EscService,
 	MANAGED_ENVIRONMENT_PLACEHOLDER,
@@ -43,17 +44,36 @@ const baseStack: StackInfo = {
 	updatedAt: new Date("2026-01-01"),
 };
 
-function stacksMock(overrides: Partial<StacksService> = {}): StacksService {
-	return {
-		createStack: mock(async (_t, _o, project, stack, _tags, options) => ({
-			...baseStack,
-			projectName: project,
-			stackName: stack,
-			managedEnvironment: options?.managedEnvironment ?? null,
-		})),
+/** Stand-in for the transaction object passed to `withinTransaction` hooks. */
+const TX = { tx: true } as unknown as Database;
+
+/**
+ * Stacks service fake with transaction semantics: a stack is committed only if its
+ * `withinTransaction` hook succeeds, and deletion runs the hook before removing the row.
+ */
+function stacksMock(overrides: Partial<StacksService> = {}) {
+	const committed = new Map<string, StackInfo>();
+	const service = {
+		createStack: mock(async (_t, _o, project, stack, _tags, options) => {
+			const info = {
+				...baseStack,
+				projectName: project,
+				stackName: stack,
+				managedEnvironment: options?.managedEnvironment ?? null,
+			};
+			await options?.withinTransaction?.(TX);
+			committed.set(`${project}/${stack}`, info);
+			return info;
+		}),
 		getStack: mock(async () => baseStack),
 		listStacks: async () => [],
-		deleteStack: mock(async () => {}),
+		deleteStack: mock(async (_t, _o, project, stack, _force, options) => {
+			const info = committed.get(`${project}/${stack}`) ?? baseStack;
+			await options?.withinTransaction?.(TX, {
+				managedEnvironment: info.managedEnvironment ?? null,
+			});
+			committed.delete(`${project}/${stack}`);
+		}),
 		renameStack: async () => {},
 		updateStackTags: async () => {},
 		replaceStackTags: async () => {},
@@ -62,6 +82,7 @@ function stacksMock(overrides: Partial<StacksService> = {}): StacksService {
 		getStackById_systemOnly: async () => baseStack,
 		...overrides,
 	} as StacksService;
+	return { service, committed };
 }
 
 function escMock(overrides: Partial<EscService> = {}): EscService {
@@ -105,27 +126,26 @@ function post(app: Hono<Env>, path: string, body?: unknown) {
 }
 
 describe("managed stack creation", () => {
-	test("creates <project>/<stack> with the CLI placeholder and returns its name", async () => {
-		const stacks = stacksMock();
-		const esc = escMock();
-		const app = appWith((a) =>
-			a.post("/stacks/:org/:project", stackHandlers(stacks, esc).createStack),
-		);
+	const createApp = (stacks: StacksService, esc?: EscService) =>
+		appWith((a) => a.post("/stacks/:org/:project", stackHandlers(stacks, esc).createStack));
 
-		const res = await post(app, "/stacks/my-org/app", {
+	test("creates <project>/<stack> in the stack's transaction and returns its name", async () => {
+		const { service, committed } = stacksMock();
+		const esc = escMock();
+
+		const res = await post(createApp(service, esc), "/stacks/my-org/app", {
 			stackName: "dev",
 			createManagedEnvironment: true,
 		});
 
 		expect(res.status).toBe(200);
 		expect((await res.json()).managedEnvironment).toBe("app/dev");
-		expect(stacks.createStack).toHaveBeenCalledWith("t-1", "my-org", "app", "dev", undefined, {
-			managedEnvironment: "app/dev",
-		});
+		expect(committed.get("app/dev")?.managedEnvironment).toBe("app/dev");
 		expect(esc.createEnvironment).toHaveBeenCalledWith(
 			"t-1",
 			{ projectName: "app", name: "dev", yamlBody: MANAGED_ENVIRONMENT_PLACEHOLDER },
 			"u-1",
+			{ tx: TX },
 		);
 	});
 
@@ -135,60 +155,64 @@ describe("managed stack creation", () => {
 	});
 
 	test("unmanaged creation does not touch ESC or include managedEnvironment", async () => {
-		const stacks = stacksMock();
+		const { service } = stacksMock();
 		const esc = escMock();
-		const app = appWith((a) =>
-			a.post("/stacks/:org/:project", stackHandlers(stacks, esc).createStack),
-		);
 
-		const res = await post(app, "/stacks/my-org/app", { stackName: "dev" });
+		const res = await post(createApp(service, esc), "/stacks/my-org/app", { stackName: "dev" });
 
 		expect(res.status).toBe(200);
 		expect(await res.json()).not.toHaveProperty("managedEnvironment");
 		expect(esc.createEnvironment).not.toHaveBeenCalled();
 	});
 
-	test("rolls the stack back and returns 409 when the environment already exists", async () => {
-		const stacks = stacksMock();
+	test("an existing environment fails the request with 409 and commits no stack", async () => {
+		const { service, committed } = stacksMock();
 		const esc = escMock({
 			createEnvironment: mock(async () => {
 				throw new ConflictError("Environment app/dev already exists");
 			}),
 		});
-		const app = appWith((a) =>
-			a.post("/stacks/:org/:project", stackHandlers(stacks, esc).createStack),
-		);
 
-		const res = await post(app, "/stacks/my-org/app", {
+		const res = await post(createApp(service, esc), "/stacks/my-org/app", {
 			stackName: "dev",
 			createManagedEnvironment: true,
 		});
 
 		expect(res.status).toBe(409);
-		expect(stacks.deleteStack).toHaveBeenCalledWith("t-1", "my-org", "app", "dev", true);
+		expect(committed.size).toBe(0);
+		expect(service.deleteStack).not.toHaveBeenCalled();
 	});
 
 	test("rejects managed creation when the server has no ESC service", async () => {
-		const stacks = stacksMock();
-		const app = appWith((a) => a.post("/stacks/:org/:project", stackHandlers(stacks).createStack));
+		const { service } = stacksMock();
 
-		const res = await post(app, "/stacks/my-org/app", {
+		const res = await post(createApp(service), "/stacks/my-org/app", {
 			stackName: "dev",
 			createManagedEnvironment: true,
 		});
 
 		expect(res.status).toBe(400);
-		expect(stacks.createStack).not.toHaveBeenCalled();
+		expect(service.createStack).not.toHaveBeenCalled();
 	});
 });
 
 describe("managed stack reads and deletion", () => {
+	const deleteApp = (stacks: StacksService, esc?: EscService) =>
+		appWith((a) =>
+			a.delete("/stacks/:org/:project/:stack", stackHandlers(stacks, esc).deleteStack),
+		);
+	const managed = () => {
+		const mocks = stacksMock();
+		mocks.committed.set("app/dev", { ...baseStack, managedEnvironment: "app/dev" });
+		return mocks;
+	};
+
 	test("getStack returns managedEnvironment", async () => {
-		const stacks = stacksMock({
+		const { service } = stacksMock({
 			getStack: mock(async () => ({ ...baseStack, managedEnvironment: "app/dev" })),
 		});
 		const app = appWith((a) =>
-			a.get("/stacks/:org/:project/:stack", stackHandlers(stacks).getStack),
+			a.get("/stacks/:org/:project/:stack", stackHandlers(service).getStack),
 		);
 
 		const res = await app.request("/stacks/my-org/app/dev");
@@ -196,54 +220,59 @@ describe("managed stack reads and deletion", () => {
 		expect((await res.json()).managedEnvironment).toBe("app/dev");
 	});
 
-	test("deleting a managed stack deletes its environment after the stack", async () => {
-		const order: string[] = [];
-		const stacks = stacksMock({
-			getStack: mock(async () => ({ ...baseStack, managedEnvironment: "app/dev" })),
-			deleteStack: mock(async () => {
-				order.push("stack");
-			}),
-		});
-		const esc = escMock({
-			deleteEnvironment: mock(async () => {
-				order.push("env");
-			}),
-		});
-		const app = appWith((a) =>
-			a.delete("/stacks/:org/:project/:stack", stackHandlers(stacks, esc).deleteStack),
-		);
+	test("deletes the environment in the stack's deletion transaction", async () => {
+		const { service, committed } = managed();
+		const esc = escMock();
 
-		const res = await app.request("/stacks/my-org/app/dev", { method: "DELETE" });
+		const res = await deleteApp(service, esc).request("/stacks/my-org/app/dev", {
+			method: "DELETE",
+		});
 
 		expect(res.status).toBe(204);
-		expect(order).toEqual(["stack", "env"]);
-		expect(esc.deleteEnvironment).toHaveBeenCalledWith("t-1", "app", "dev");
+		expect(committed.has("app/dev")).toBe(false);
+		expect(esc.deleteEnvironment).toHaveBeenCalledWith("t-1", "app", "dev", { tx: TX });
 	});
 
 	test("an already-deleted environment does not fail stack deletion", async () => {
-		const stacks = stacksMock({
-			getStack: mock(async () => ({ ...baseStack, managedEnvironment: "app/dev" })),
-		});
+		const { service, committed } = managed();
 		const esc = escMock({
 			deleteEnvironment: mock(async () => {
 				throw new NotFoundError("Environment", "app/dev");
 			}),
 		});
-		const app = appWith((a) =>
-			a.delete("/stacks/:org/:project/:stack", stackHandlers(stacks, esc).deleteStack),
-		);
 
-		expect((await app.request("/stacks/my-org/app/dev", { method: "DELETE" })).status).toBe(204);
+		const res = await deleteApp(service, esc).request("/stacks/my-org/app/dev", {
+			method: "DELETE",
+		});
+
+		expect(res.status).toBe(204);
+		expect(committed.has("app/dev")).toBe(false);
+	});
+
+	test("a failed environment deletion aborts the stack deletion", async () => {
+		const { service, committed } = managed();
+		const esc = escMock({
+			deleteEnvironment: mock(async () => {
+				throw new Error("db down");
+			}),
+		});
+
+		const res = await deleteApp(service, esc).request("/stacks/my-org/app/dev", {
+			method: "DELETE",
+		});
+
+		expect(res.status).toBe(500);
+		expect(committed.has("app/dev")).toBe(true);
 	});
 
 	test("deleting an unmanaged stack leaves ESC alone", async () => {
-		const stacks = stacksMock();
+		const { service } = stacksMock();
 		const esc = escMock();
-		const app = appWith((a) =>
-			a.delete("/stacks/:org/:project/:stack", stackHandlers(stacks, esc).deleteStack),
-		);
 
-		expect((await app.request("/stacks/my-org/app/dev", { method: "DELETE" })).status).toBe(204);
+		expect(
+			(await deleteApp(service, esc).request("/stacks/my-org/app/dev", { method: "DELETE" }))
+				.status,
+		).toBe(204);
 		expect(esc.deleteEnvironment).not.toHaveBeenCalled();
 	});
 });
@@ -258,7 +287,9 @@ describe("update environment pin", () => {
 
 	test("forwards a valid pin to createUpdate", async () => {
 		const updates = updatesMock();
-		const app = appWith((a) => a.post(path, updateHandlers(updates, stacksMock()).createUpdate));
+		const app = appWith((a) =>
+			a.post(path, updateHandlers(updates, stacksMock().service).createUpdate),
+		);
 		const environment = { baseRevision: 3, changeRequestID: "cr-1", draftRevision: 0 };
 
 		const res = await post(app, "/stacks/my-org/app/dev/update", { environment });
@@ -277,7 +308,9 @@ describe("update environment pin", () => {
 
 	test("omits options when the request has no pin", async () => {
 		const updates = updatesMock();
-		const app = appWith((a) => a.post(path, updateHandlers(updates, stacksMock()).createUpdate));
+		const app = appWith((a) =>
+			a.post(path, updateHandlers(updates, stacksMock().service).createUpdate),
+		);
 
 		await post(app, "/stacks/my-org/app/dev/update", {});
 
@@ -294,7 +327,9 @@ describe("update environment pin", () => {
 		["r1"],
 	])("rejects malformed pin %p", async (environment) => {
 		const updates = updatesMock();
-		const app = appWith((a) => a.post(path, updateHandlers(updates, stacksMock()).createUpdate));
+		const app = appWith((a) =>
+			a.post(path, updateHandlers(updates, stacksMock().service).createUpdate),
+		);
 
 		const res = await post(app, "/stacks/my-org/app/dev/update", { environment });
 

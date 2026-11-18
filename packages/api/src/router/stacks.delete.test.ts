@@ -1,13 +1,13 @@
 import { describe, expect, mock, test } from "bun:test";
+import type { DeleteStackOptions } from "@procella/stacks";
 import type { TRPCContext } from "../trpc.js";
 import { stacksRouter } from "./stacks.js";
 
+const TX = { tx: true } as never;
+
 function mockContext(
 	deleteStack: TRPCContext["stacks"]["deleteStack"],
-	options: {
-		managedEnvironment?: string;
-		deleteEnvironment?: (...args: unknown[]) => Promise<void>;
-	} = {},
+	deleteEnvironment?: (...args: unknown[]) => Promise<void>,
 ): TRPCContext {
 	return {
 		caller: {
@@ -21,16 +21,30 @@ function mockContext(
 		resolveUserDisplayName: async () => null,
 		db: {} as never,
 		notifications: {} as never,
-		stacks: {
-			deleteStack,
-			getStack: async () => ({ managedEnvironment: options.managedEnvironment ?? null }),
-		} as never,
+		stacks: { deleteStack } as never,
 		audit: {} as never,
 		updates: {} as never,
 		webhooks: {} as never,
-		esc: { deleteEnvironment: options.deleteEnvironment } as never,
+		esc: { deleteEnvironment } as never,
 		github: null,
 	};
+}
+
+/** deleteStack fake that runs the in-transaction hook for a stack managing `managedEnvironment`. */
+function deleteStackRunningHook(managedEnvironment: string | null, deleted: string[]) {
+	return mock(
+		async (
+			_t: string,
+			_o: string,
+			_p: string,
+			stack: string,
+			_force?: boolean,
+			options?: DeleteStackOptions,
+		) => {
+			await options?.withinTransaction?.(TX, { managedEnvironment });
+			deleted.push(stack);
+		},
+	);
 }
 
 describe("stacks.delete", () => {
@@ -40,7 +54,14 @@ describe("stacks.delete", () => {
 
 		await caller.delete({ org: "org-1", project: "project-1", stack: "dev", force: true });
 
-		expect(deleteStack).toHaveBeenCalledWith("tenant-1", "org-1", "project-1", "dev", true);
+		expect(deleteStack).toHaveBeenCalledWith(
+			"tenant-1",
+			"org-1",
+			"project-1",
+			"dev",
+			true,
+			expect.any(Object),
+		);
 	});
 
 	test("keeps deletion guarded when force is omitted", async () => {
@@ -49,40 +70,54 @@ describe("stacks.delete", () => {
 
 		await caller.delete({ org: "org-1", project: "project-1", stack: "dev" });
 
-		expect(deleteStack).toHaveBeenCalledWith("tenant-1", "org-1", "project-1", "dev", undefined);
+		expect(deleteStack).toHaveBeenCalledWith(
+			"tenant-1",
+			"org-1",
+			"project-1",
+			"dev",
+			undefined,
+			expect.any(Object),
+		);
 	});
 
-	test("deletes the managed ESC environment after the stack", async () => {
-		const order: string[] = [];
-		const deleteStack = mock(async () => {
-			order.push("stack");
-		});
-		const deleteEnvironment = mock(async () => {
-			order.push("env");
-		});
+	test("deletes the managed ESC environment in the stack's deletion transaction", async () => {
+		const deleted: string[] = [];
+		const deleteEnvironment = mock(async () => {});
 		const caller = stacksRouter.createCaller(
-			mockContext(deleteStack, { managedEnvironment: "project-1/dev", deleteEnvironment }),
+			mockContext(deleteStackRunningHook("project-1/dev", deleted), deleteEnvironment),
 		);
 
 		await caller.delete({ org: "org-1", project: "project-1", stack: "dev" });
 
-		expect(order).toEqual(["stack", "env"]);
-		expect(deleteEnvironment).toHaveBeenCalledWith("tenant-1", "project-1", "dev");
+		expect(deleted).toEqual(["dev"]);
+		expect(deleteEnvironment).toHaveBeenCalledWith("tenant-1", "project-1", "dev", { tx: TX });
 	});
 
-	test("does not fail when the managed environment cannot be deleted", async () => {
+	test("a failed environment deletion aborts the stack deletion", async () => {
+		const deleted: string[] = [];
 		const deleteEnvironment = mock(async () => {
 			throw new Error("db down");
 		});
 		const caller = stacksRouter.createCaller(
-			mockContext(
-				mock(async () => {}),
-				{ managedEnvironment: "project-1/dev", deleteEnvironment },
-			),
+			mockContext(deleteStackRunningHook("project-1/dev", deleted), deleteEnvironment),
 		);
 
 		await expect(
 			caller.delete({ org: "org-1", project: "project-1", stack: "dev" }),
-		).resolves.toBeUndefined();
+		).rejects.toThrow();
+		expect(deleted).toEqual([]);
+	});
+
+	test("unmanaged stacks do not touch ESC", async () => {
+		const deleted: string[] = [];
+		const deleteEnvironment = mock(async () => {});
+		const caller = stacksRouter.createCaller(
+			mockContext(deleteStackRunningHook(null, deleted), deleteEnvironment),
+		);
+
+		await caller.delete({ org: "org-1", project: "project-1", stack: "dev" });
+
+		expect(deleted).toEqual(["dev"]);
+		expect(deleteEnvironment).not.toHaveBeenCalled();
 	});
 });

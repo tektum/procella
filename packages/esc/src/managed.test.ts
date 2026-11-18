@@ -16,7 +16,14 @@ describe("deleteManagedEnvironment", () => {
 	test("deletes the named environment", async () => {
 		const deleteEnvironment = mock(async () => {});
 		await deleteManagedEnvironment({ deleteEnvironment }, "t-1", "app/dev");
-		expect(deleteEnvironment).toHaveBeenCalledWith("t-1", "app", "dev");
+		expect(deleteEnvironment).toHaveBeenCalledWith("t-1", "app", "dev", undefined);
+	});
+
+	test("passes the caller's transaction through", async () => {
+		const deleteEnvironment = mock(async () => {});
+		const tx = { tx: true } as never;
+		await deleteManagedEnvironment({ deleteEnvironment }, "t-1", "app/dev", { tx });
+		expect(deleteEnvironment).toHaveBeenCalledWith("t-1", "app", "dev", { tx });
 	});
 
 	test("treats a missing environment as already deleted", async () => {

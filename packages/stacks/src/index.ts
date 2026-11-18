@@ -80,6 +80,22 @@ export interface StackInfo {
 export interface CreateStackOptions {
 	/** "<escProject>/<envName>" of the ESC environment the new stack manages. */
 	managedEnvironment?: string;
+	/**
+	 * Runs inside the stack-creation transaction after the stack row is inserted. A throw rolls
+	 * the stack back, so related rows (e.g. the managed ESC environment) commit atomically with it.
+	 */
+	withinTransaction?: (tx: Database) => Promise<void>;
+}
+
+export interface DeleteStackOptions {
+	/**
+	 * Runs inside the stack-deletion transaction, with the row locked, before the stack is deleted.
+	 * A throw aborts the deletion.
+	 */
+	withinTransaction?: (
+		tx: Database,
+		deleted: { managedEnvironment: string | null },
+	) => Promise<void>;
 }
 
 export interface SearchStacksParams {
@@ -130,6 +146,7 @@ export interface StacksService {
 		project: string,
 		stack: string,
 		force?: boolean,
+		options?: DeleteStackOptions,
 	): Promise<void>;
 
 	renameStack(
@@ -365,6 +382,8 @@ export class PostgresStacksService implements StacksService {
 							})
 							.returning();
 
+						await options?.withinTransaction?.(tx);
+
 						await this.enqueueWebhook(tx, {
 							tenantId,
 							event: "stack.created",
@@ -579,6 +598,7 @@ export class PostgresStacksService implements StacksService {
 		project: string,
 		stack: string,
 		force = false,
+		options?: DeleteStackOptions,
 	): Promise<void> {
 		return withDbSpan(
 			"deleteStack",
@@ -592,7 +612,11 @@ export class PostgresStacksService implements StacksService {
 			async () => {
 				await this.db.transaction(async (tx) => {
 					const [locked] = await tx
-						.select({ stackId: stacks.id, activeUpdateId: stacks.activeUpdateId })
+						.select({
+							stackId: stacks.id,
+							activeUpdateId: stacks.activeUpdateId,
+							managedEnvironment: stacks.managedEnvironment,
+						})
 						.from(stacks)
 						.innerJoin(projects, eq(stacks.projectId, projects.id))
 						.where(
@@ -669,6 +693,10 @@ export class PostgresStacksService implements StacksService {
 					// Child tables cascade from updates. The explicit delete defines domain
 					// ownership; the updates→stacks FK also blocks out-of-band orphan inserts.
 					await tx.delete(updates).where(eq(updates.stackId, locked.stackId));
+
+					await options?.withinTransaction?.(tx, {
+						managedEnvironment: locked.managedEnvironment,
+					});
 
 					await this.enqueueWebhook(tx, {
 						tenantId,

@@ -1,5 +1,7 @@
 // @procella/esc — Domain types for environments, revisions, and sessions.
 
+import type { Database } from "@procella/db";
+
 export interface EscProject {
 	id: string;
 	tenantId: string;
@@ -41,6 +43,12 @@ export interface EscSession {
 	openedAt: Date;
 	expiresAt: Date;
 	closedAt: Date | null;
+}
+
+/** Options for ESC writes that must commit atomically with a caller's transaction. */
+export interface EscWriteOptions {
+	/** Outer transaction; the write runs in a savepoint inside it. */
+	tx?: Database;
 }
 
 export interface CreateEnvironmentInput {

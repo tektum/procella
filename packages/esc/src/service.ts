@@ -24,6 +24,7 @@ import type {
 	EscEnvironmentRevision,
 	EscProject,
 	EscRevisionTag,
+	EscWriteOptions,
 	ListAllEnvironmentsOptions,
 	ListAllEnvironmentsResult,
 	OpenSessionOptions,
@@ -44,6 +45,7 @@ export interface EscService {
 		tenantId: string,
 		input: CreateEnvironmentInput,
 		createdBy: string,
+		options?: EscWriteOptions,
 	): Promise<EscEnvironment>;
 	cloneEnvironment(
 		tenantId: string,
@@ -65,7 +67,12 @@ export interface EscService {
 		input: UpdateEnvironmentInput,
 		updatedBy: string,
 	): Promise<EscEnvironment>;
-	deleteEnvironment(tenantId: string, projectName: string, envName: string): Promise<void>;
+	deleteEnvironment(
+		tenantId: string,
+		projectName: string,
+		envName: string,
+		options?: EscWriteOptions,
+	): Promise<void>;
 
 	listRevisions(
 		tenantId: string,
@@ -533,6 +540,7 @@ export class PostgresEscService implements EscService {
 		tenantId: string,
 		input: CreateEnvironmentInput,
 		createdBy: string,
+		options?: EscWriteOptions,
 	): Promise<EscEnvironment> {
 		validateName("project", input.projectName);
 		validateName("environment", input.name);
@@ -548,7 +556,7 @@ export class PostgresEscService implements EscService {
 			{ "tenant.id": tenantId, "project.name": input.projectName, "env.name": input.name },
 			async () => {
 				try {
-					return await this.db.transaction(async (tx) => {
+					return await (options?.tx ?? this.db).transaction(async (tx) => {
 						await tx
 							.insert(escProjects)
 							.values({ tenantId, name: input.projectName })
@@ -723,13 +731,18 @@ export class PostgresEscService implements EscService {
 		);
 	}
 
-	async deleteEnvironment(tenantId: string, projectName: string, envName: string): Promise<void> {
+	async deleteEnvironment(
+		tenantId: string,
+		projectName: string,
+		envName: string,
+		options?: EscWriteOptions,
+	): Promise<void> {
 		return withSpan(
 			"procella.esc",
 			"esc.deleteEnvironment",
 			{ "tenant.id": tenantId, "project.name": projectName, "env.name": envName },
 			() =>
-				this.db.transaction(async (tx) => {
+				(options?.tx ?? this.db).transaction(async (tx) => {
 					const row = await findEnvRow(tx, tenantId, projectName, envName);
 					if (!row) {
 						throw new NotFoundError("Environment", `${projectName}/${envName}`);

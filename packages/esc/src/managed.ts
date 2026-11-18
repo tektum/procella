@@ -5,6 +5,7 @@
 
 import { NotFoundError } from "@procella/types";
 import type { EscService } from "./service.js";
+import type { EscWriteOptions } from "./types.js";
 
 /**
  * Initial definition of a stack-managed environment. It matches the placeholder the Pulumi CLI
@@ -24,18 +25,20 @@ export function parseManagedEnvironmentName(
 }
 
 /**
- * Deletes a removed stack's managed environment. A missing or malformed environment is already
- * gone as far as the stack is concerned; other errors propagate to the caller.
+ * Deletes a removed stack's managed environment. Pass the stack-deletion transaction so the
+ * environment is deleted only together with the stack that owns it. A missing or malformed
+ * environment is already gone as far as the stack is concerned; other errors propagate.
  */
 export async function deleteManagedEnvironment(
 	esc: Pick<EscService, "deleteEnvironment">,
 	tenantId: string,
 	managedEnvironment: string,
+	options?: EscWriteOptions,
 ): Promise<void> {
 	const parsed = parseManagedEnvironmentName(managedEnvironment);
 	if (!parsed) return;
 	try {
-		await esc.deleteEnvironment(tenantId, parsed.projectName, parsed.envName);
+		await esc.deleteEnvironment(tenantId, parsed.projectName, parsed.envName, options);
 	} catch (err) {
 		if (err instanceof NotFoundError) return;
 		throw err;

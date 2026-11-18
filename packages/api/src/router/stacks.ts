@@ -269,25 +269,23 @@ export const stacksRouter = router({
 	delete: adminProcedure
 		.input(stackInput.extend({ force: z.boolean().optional() }))
 		.mutation(async ({ ctx, input }) => {
-			const { managedEnvironment } = await ctx.stacks.getStack(
-				ctx.caller.tenantId,
-				input.org,
-				input.project,
-				input.stack,
-			);
+			// The managed environment is deleted in the stack's deletion transaction.
 			await ctx.stacks.deleteStack(
 				ctx.caller.tenantId,
 				input.org,
 				input.project,
 				input.stack,
 				input.force,
+				{
+					withinTransaction: async (tx, { managedEnvironment }) => {
+						if (managedEnvironment) {
+							await deleteManagedEnvironment(ctx.esc, ctx.caller.tenantId, managedEnvironment, {
+								tx,
+							});
+						}
+					},
+				},
 			);
-			if (managedEnvironment) {
-				// Best effort: the stack is already gone, so report but do not fail the request.
-				await deleteManagedEnvironment(ctx.esc, ctx.caller.tenantId, managedEnvironment).catch(
-					(err) => console.error("failed to delete managed environment of removed stack", err),
-				);
-			}
 		}),
 
 	export: protectedProcedure.input(stackInput).query(async ({ ctx, input }) => {
