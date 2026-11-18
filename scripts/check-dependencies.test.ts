@@ -45,8 +45,8 @@ describe("dependency checks", () => {
 		expect(exitCode).toBe(0);
 		expect(delays).toEqual([5_000]);
 		expect(commands).toEqual([
-			["bun", "audit", "--prod", "--audit-level=high"],
-			["bun", "audit", "--prod", "--audit-level=high"],
+			["bun", "audit", "--prod", "--audit-level=high", "--ignore=GHSA-fc5q-39xc-vjpf"],
+			["bun", "audit", "--prod", "--audit-level=high", "--ignore=GHSA-fc5q-39xc-vjpf"],
 			["bun", "dedupe", "--check"],
 		]);
 		expect(timeouts).toEqual([90_000, 90_000, 90_000]);
