@@ -3528,22 +3528,6 @@ export type ListPolicyIssuesResponse = any /* cloudapitype.ListPolicyIssuesRespo
  * PolicyIssueSortModel is the Cloud SDK's AngularGridSortModelItem.
  */
 export type PolicyIssueSortModel = any /* cloudapitype.AngularGridSortModelItem */;
-export const Object = any /* cloudapitype.AppJSONSchemaTypeObject */;
-export const Advisory = any /* cloudapitype.AppEnforcementLevelAdvisory */;
-export const Mandatory = any /* cloudapitype.AppEnforcementLevelMandatory */;
-export const Remediate = any /* cloudapitype.AppEnforcementLevelRemediate */;
-export const Disabled = any /* cloudapitype.AppEnforcementLevelDisabled */;
-export const PolicySeverityUnspecified = any /* cloudapitype.AppPolicySeverityUnspecified */;
-export const PolicySeverityLow = any /* cloudapitype.AppPolicySeverityLow */;
-export const PolicySeverityMedium = any /* cloudapitype.AppPolicySeverityMedium */;
-export const PolicySeverityHigh = any /* cloudapitype.AppPolicySeverityHigh */;
-export const PolicySeverityCritical = any /* cloudapitype.AppPolicySeverityCritical */;
-export const PolicyGroupModeAudit = any /* cloudapitype.PolicyGroupModeAudit */;
-export const PolicyGroupModePreventative = any /* cloudapitype.PolicyGroupModePreventative */;
-export const Stacks = any /* cloudapitype.AppEntityTypeStacks */;
-export const Accounts = any /* cloudapitype.AppEntityTypeAccounts */;
-export const PolicyGroupEntityTypeStacks = any /* cloudapitype.PolicyGroupEntityTypeStacks */;
-export const PolicyGroupEntityTypeAccounts = any /* cloudapitype.PolicyGroupEntityTypeAccounts */;
 /**
  * GetPolicyPackResponse is the response to get a specific Policy Pack's
  * metadata and policies.
