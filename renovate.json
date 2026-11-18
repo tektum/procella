@@ -34,7 +34,8 @@
     {
       "description": "OpenTelemetry JS packages share core/sdk majors; partial bumps duplicate sdk-metrics and break MeterProvider types",
       "matchPackageNames": ["@opentelemetry/**"],
-      "groupName": "opentelemetry"
+      "groupName": "opentelemetry",
+      "separateMajorMinor": false
     }
   ]
 }

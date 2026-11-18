@@ -1,8 +1,13 @@
 #!/usr/bin/env bun
 
 // Temporary: GHSA-fc5q-39xc-vjpf (picomatch <=4.0.7 extglob ReDoS) has no
-// patched release yet. Prod path is hono-rate-limiter > unstorage > anymatch >
-// picomatch with no user-controlled globs. Remove once picomatch >=4.0.8 ships.
+// patched release yet. The 4.0.7 copy is reached only through build/dev
+// tooling (astro, vite > tinyglobby, lint-staged, @pulumi/pulumi > node-gyp);
+// the server's anymatch path resolves to picomatch 2.3.2. Neither handles
+// user-controlled globs. Remove this ignore only after every resolved
+// picomatch copy in bun.lock is outside the affected range and
+// `bun audit --prod --audit-level=high` passes without it; a release being
+// published is not sufficient on its own.
 const AUDIT_IGNORED_ADVISORIES = ["GHSA-fc5q-39xc-vjpf"];
 const AUDIT_COMMAND = [
 	"bun",
