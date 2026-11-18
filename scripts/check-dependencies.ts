@@ -1,6 +1,16 @@
 #!/usr/bin/env bun
 
-const AUDIT_COMMAND = ["bun", "audit", "--prod", "--audit-level=high"];
+// Temporary: GHSA-fc5q-39xc-vjpf (picomatch <=4.0.7 extglob ReDoS) has no
+// patched release yet. Prod path is hono-rate-limiter > unstorage > anymatch >
+// picomatch with no user-controlled globs. Remove once picomatch >=4.0.8 ships.
+const AUDIT_IGNORED_ADVISORIES = ["GHSA-fc5q-39xc-vjpf"];
+const AUDIT_COMMAND = [
+	"bun",
+	"audit",
+	"--prod",
+	"--audit-level=high",
+	...AUDIT_IGNORED_ADVISORIES.map((id) => `--ignore=${id}`),
+];
 const DEDUPE_COMMAND = ["bun", "dedupe", "--check"];
 
 export interface CommandResult {
