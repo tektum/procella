@@ -87,7 +87,7 @@ Managed stacks also include `managedEnvironment` (`"{project}/{stack}"`). The na
 DELETE /api/stacks/{org}/{project}/{stack}
 ```
 
-Deletes a stack and all associated data (updates, events, checkpoints) via cascade. For a managed stack, its ESC environment is deleted in the same transaction. An environment that was already deleted separately is ignored; any other failure aborts the stack deletion.
+Deletes a stack and all associated data (updates, events, checkpoints) via cascade. For a managed stack, the ESC environment it created is deleted in the same transaction. The stack records that environment's ID, so an environment that was deleted separately, or a new environment later created under the same name, is left alone. Any other failure aborts the stack deletion.
 
 **Required role**: `admin`
 
@@ -187,7 +187,7 @@ Procella serves the routes this flow uses:
 | `POST /api/esc/environments/{org}/{project}/{env}/versions/{version}/open` | Open a specific published revision (number or tag) |
 | `POST /api/esc/environments/{org}/{project}/{env}/drafts` | Create a draft from the local definition |
 | `POST /api/esc/environments/{org}/{project}/{env}/drafts/{id}/open?revision=0` | Open a draft. Drafts are not versioned, so only revision `0` is accepted |
-| `POST /api/esc/environments/{org}/{project}/{env}/encrypt-secrets` | Encrypt `pulumi config set --secret` values into `fn::secret: {ciphertext: ...}` |
+| `POST /api/esc/environments/{org}/{project}/{env}/encrypt-secrets` | Encrypt `pulumi config set --secret` values into `fn::secret: {ciphertext: ...}` (at most 100 values, 64 KiB each, 1 MiB per request) |
 
 The update request's `environment` field (`baseRevision`, `changeRequestID`, `draftRevision`) records which revision or draft the update evaluated. Procella stores it on the update.
 

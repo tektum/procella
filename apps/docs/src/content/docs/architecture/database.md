@@ -44,6 +44,7 @@ The core entity. Each stack belongs to a project and tracks its current active u
 | `tags` | `JSONB` | `NOT NULL DEFAULT '{}'` |
 | `activeUpdateId` | `UUID` | Nullable — set when an update is running |
 | `managedEnvironment` | `TEXT` | Nullable — `{project}/{stack}` ESC environment the stack manages |
+| `managedEnvironmentId` | `UUID` | Nullable — ID of that environment; deletion only removes this one |
 | `createdAt` | `TIMESTAMP` | `NOT NULL DEFAULT now()` |
 | `updatedAt` | `TIMESTAMP` | `NOT NULL DEFAULT now()` |
 | | | `UNIQUE (projectId, name)` |

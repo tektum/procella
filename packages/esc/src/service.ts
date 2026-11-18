@@ -744,7 +744,7 @@ export class PostgresEscService implements EscService {
 			() =>
 				(options?.tx ?? this.db).transaction(async (tx) => {
 					const row = await findEnvRow(tx, tenantId, projectName, envName);
-					if (!row) {
+					if (!row || (options?.expectedId !== undefined && row.id !== options.expectedId)) {
 						throw new NotFoundError("Environment", `${projectName}/${envName}`);
 					}
 					const result = await tx

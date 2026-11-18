@@ -53,6 +53,8 @@ export const stacks = pgTable(
 		activeUpdateId: uuid("active_update_id"),
 		// "<escProject>/<envName>" of the ESC environment this stack manages; kept after the env is deleted.
 		managedEnvironment: text("managed_environment"),
+		// ID of the ESC environment created for this stack; deletion only removes that environment.
+		managedEnvironmentId: uuid("managed_environment_id"),
 		createdAt: timestamp("created_at").notNull().defaultNow(),
 		updatedAt: timestamp("updated_at").notNull().defaultNow(),
 	},

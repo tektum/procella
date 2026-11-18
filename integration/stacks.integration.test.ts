@@ -11,6 +11,7 @@ import {
 	webhookOutbox,
 } from "@procella/db";
 import {
+	deleteManagedEnvironment,
 	MANAGED_ENVIRONMENT_PLACEHOLDER,
 	PostgresEscService,
 	UnimplementedEvaluatorClient,
@@ -64,7 +65,7 @@ describe("PostgresStacksService — integration", () => {
 
 		test("persists a managed environment name and returns it from reads", async () => {
 			const created = await stacks.createStack("tenant-1", "org-1", "app", "dev", undefined, {
-				managedEnvironment: "app/dev",
+				managedEnvironment: { name: "app/dev", create: async () => ({ id: crypto.randomUUID() }) },
 			});
 			expect(created.managedEnvironment).toBe("app/dev");
 			expect((await stacks.getStack("tenant-1", "org-1", "app", "dev")).managedEnvironment).toBe(
@@ -815,23 +816,35 @@ describe("managed ESC environments — atomic with the stack (integration)", () 
 
 	const createManaged = (stack: string) =>
 		stacks.createStack("tenant-1", "org-1", "app", stack, undefined, {
-			managedEnvironment: `app/${stack}`,
-			withinTransaction: async (tx) => {
-				await esc.createEnvironment(
-					"tenant-1",
-					{ projectName: "app", name: stack, yamlBody: MANAGED_ENVIRONMENT_PLACEHOLDER },
-					"u",
-					{ tx },
-				);
+			managedEnvironment: {
+				name: `app/${stack}`,
+				create: (tx) =>
+					esc.createEnvironment(
+						"tenant-1",
+						{ projectName: "app", name: stack, yamlBody: MANAGED_ENVIRONMENT_PLACEHOLDER },
+						"u",
+						{ tx },
+					),
 			},
 		});
+	const deleteManaged = (stack: string) =>
+		stacks.deleteStack("tenant-1", "org-1", "app", stack, false, {
+			withinTransaction: (tx, owned) => deleteManagedEnvironment(esc, "tenant-1", owned, { tx }),
+		});
+	const ownedId = async (stack: string) => {
+		const [row] = await db
+			.select({ id: stackRows.managedEnvironmentId })
+			.from(stackRows)
+			.where(eq(stackRows.name, stack));
+		return row?.id ?? null;
+	};
 
-	test("creates the stack and its environment together", async () => {
+	test("creates the stack and its environment together, recording the environment ID", async () => {
 		await createManaged("dev");
+		const env = await esc.getEnvironment("tenant-1", "app", "dev");
 		expect((await stacks.getStack("tenant-1", "org-1", "app", "dev")).managedEnvironment).toBe("app/dev");
-		expect((await esc.getEnvironment("tenant-1", "app", "dev"))?.yamlBody).toBe(
-			MANAGED_ENVIRONMENT_PLACEHOLDER,
-		);
+		expect(env?.yamlBody).toBe(MANAGED_ENVIRONMENT_PLACEHOLDER);
+		expect(await ownedId("dev")).toBe(env?.id ?? "missing");
 	});
 
 	test("an existing environment rolls back the stack", async () => {
@@ -845,15 +858,10 @@ describe("managed ESC environments — atomic with the stack (integration)", () 
 		expect((await esc.getEnvironment("tenant-1", "app", "dev"))?.yamlBody).toBe("values: {}\n");
 	});
 
-	test("deletes the environment in the stack's deletion transaction", async () => {
+	test("deletes the owned environment in the stack's deletion transaction", async () => {
 		await createManaged("dev");
 
-		await stacks.deleteStack("tenant-1", "org-1", "app", "dev", false, {
-			withinTransaction: async (tx, { managedEnvironment }) => {
-				expect(managedEnvironment).toBe("app/dev");
-				await esc.deleteEnvironment("tenant-1", "app", "dev", { tx });
-			},
-		});
+		await deleteManaged("dev");
 
 		await expect(stacks.getStack("tenant-1", "org-1", "app", "dev")).rejects.toBeInstanceOf(
 			StackNotFoundError,
@@ -861,13 +869,26 @@ describe("managed ESC environments — atomic with the stack (integration)", () 
 		expect(await esc.getEnvironment("tenant-1", "app", "dev")).toBeNull();
 	});
 
+	test("does not delete a same-named environment re-created after the owned one was deleted", async () => {
+		await createManaged("dev");
+		await esc.deleteEnvironment("tenant-1", "app", "dev");
+		await esc.createEnvironment("tenant-1", { projectName: "app", name: "dev", yamlBody: "values: {x: 1}\n" }, "u");
+
+		await deleteManaged("dev");
+
+		await expect(stacks.getStack("tenant-1", "org-1", "app", "dev")).rejects.toBeInstanceOf(
+			StackNotFoundError,
+		);
+		expect((await esc.getEnvironment("tenant-1", "app", "dev"))?.yamlBody).toBe("values: {x: 1}\n");
+	});
+
 	test("a failing hook aborts deletion and keeps both rows", async () => {
 		await createManaged("dev");
 
 		await expect(
 			stacks.deleteStack("tenant-1", "org-1", "app", "dev", false, {
-				withinTransaction: async (tx) => {
-					await esc.deleteEnvironment("tenant-1", "app", "dev", { tx });
+				withinTransaction: async (tx, owned) => {
+					await deleteManagedEnvironment(esc, "tenant-1", owned, { tx });
 					throw new Error("abort");
 				},
 			}),

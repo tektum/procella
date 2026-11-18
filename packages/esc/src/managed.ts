@@ -25,20 +25,26 @@ export function parseManagedEnvironmentName(
 }
 
 /**
- * Deletes a removed stack's managed environment. Pass the stack-deletion transaction so the
- * environment is deleted only together with the stack that owns it. A missing or malformed
- * environment is already gone as far as the stack is concerned; other errors propagate.
+ * Deletes the environment a removed stack owns, identified by the ID recorded when the stack
+ * created it. Pass the stack-deletion transaction so it is deleted together with the stack.
+ * Nothing is deleted when the stack has no recorded ID, when the environment is already gone,
+ * or when another environment now has the same name (it was re-created after a delete).
+ * Other errors propagate.
  */
 export async function deleteManagedEnvironment(
 	esc: Pick<EscService, "deleteEnvironment">,
 	tenantId: string,
-	managedEnvironment: string,
-	options?: EscWriteOptions,
+	owned: { managedEnvironment: string | null; managedEnvironmentId: string | null },
+	options?: Pick<EscWriteOptions, "tx">,
 ): Promise<void> {
-	const parsed = parseManagedEnvironmentName(managedEnvironment);
+	if (!owned.managedEnvironment || !owned.managedEnvironmentId) return;
+	const parsed = parseManagedEnvironmentName(owned.managedEnvironment);
 	if (!parsed) return;
 	try {
-		await esc.deleteEnvironment(tenantId, parsed.projectName, parsed.envName, options);
+		await esc.deleteEnvironment(tenantId, parsed.projectName, parsed.envName, {
+			...options,
+			expectedId: owned.managedEnvironmentId,
+		});
 	} catch (err) {
 		if (err instanceof NotFoundError) return;
 		throw err;

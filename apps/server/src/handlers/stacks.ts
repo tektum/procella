@@ -58,14 +58,15 @@ export function stackHandlers(stacks: StacksService, esc?: EscService) {
 				stack,
 				typedBody.tags,
 				{
-					managedEnvironment: `${project}/${stack}`,
-					withinTransaction: async (tx) => {
-						await esc.createEnvironment(
-							caller.tenantId,
-							{ projectName: project, name: stack, yamlBody: MANAGED_ENVIRONMENT_PLACEHOLDER },
-							caller.userId,
-							{ tx },
-						);
+					managedEnvironment: {
+						name: `${project}/${stack}`,
+						create: (tx) =>
+							esc.createEnvironment(
+								caller.tenantId,
+								{ projectName: project, name: stack, yamlBody: MANAGED_ENVIRONMENT_PLACEHOLDER },
+								caller.userId,
+								{ tx },
+							),
 					},
 				},
 			);
@@ -90,9 +91,9 @@ export function stackHandlers(stacks: StacksService, esc?: EscService) {
 			// A managed stack's environment is deleted in the stack's deletion transaction, using
 			// the locked row's metadata, so only the environment this stack owns is removed.
 			await stacks.deleteStack(caller.tenantId, org, project, stack, force, {
-				withinTransaction: async (tx, { managedEnvironment }) => {
-					if (esc && managedEnvironment) {
-						await deleteManagedEnvironment(esc, caller.tenantId, managedEnvironment, { tx });
+				withinTransaction: async (tx, owned) => {
+					if (esc) {
+						await deleteManagedEnvironment(esc, caller.tenantId, owned, { tx });
 					}
 				},
 			});

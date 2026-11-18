@@ -21,10 +21,26 @@ import { param } from "./params.js";
 
 const yamlBodySchema = z.object({ yamlBody: z.string() });
 /** Base64 can be at most 4/3 the size of the bytes it encodes, plus padding. */
-const MAX_ESC_SECRET_BASE64_LENGTH = Math.ceil(MAX_ESC_SECRET_PLAINTEXT_BYTES / 3) * 4;
+const base64Length = (bytes: number) => Math.ceil(bytes / 3) * 4;
+/**
+ * One request may carry at most 1 MiB of plaintext across at most 100 secrets. The CLI sends a
+ * handful of config values; the cap keeps request and response (base64 envelopes) well inside
+ * the 6 MB Lambda Function URL payload limit and bounds per-request memory.
+ */
+const MAX_ESC_SECRETS_PER_REQUEST = 100;
+const MAX_ESC_SECRETS_TOTAL_BYTES = 1024 * 1024;
 const encryptSecretsSchema = z
 	.object({
-		plaintexts: z.array(z.base64().max(MAX_ESC_SECRET_BASE64_LENGTH)).min(1).max(1000),
+		plaintexts: z
+			.array(z.base64().max(base64Length(MAX_ESC_SECRET_PLAINTEXT_BYTES)))
+			.min(1)
+			.max(MAX_ESC_SECRETS_PER_REQUEST)
+			.refine(
+				(items) =>
+					items.reduce((total, item) => total + Buffer.byteLength(item, "base64"), 0) <=
+					MAX_ESC_SECRETS_TOTAL_BYTES,
+				{ message: "plaintexts exceed the 1 MiB total limit" },
+			),
 	})
 	.strict();
 const envTagsSchema = z.record(z.string(), z.string());
@@ -580,7 +596,9 @@ export function escHandlers(deps: {
 			const tenantId = requireOrgMatch(c);
 			const parsed = encryptSecretsSchema.safeParse(await c.req.json().catch(() => null));
 			if (!parsed.success) {
-				throw new BadRequestError("plaintexts must be a non-empty array of base64 strings");
+				throw new BadRequestError(
+					"plaintexts must be 1-100 base64 strings of at most 64 KiB each and 1 MiB in total",
+				);
 			}
 			const ciphertexts = await deps.esc.encryptSecrets(
 				tenantId,

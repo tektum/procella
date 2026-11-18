@@ -49,6 +49,11 @@ export interface EscSession {
 export interface EscWriteOptions {
 	/** Outer transaction; the write runs in a savepoint inside it. */
 	tx?: Database;
+	/**
+	 * deleteEnvironment only: delete only if the live environment has this ID. A different
+	 * environment with the same name (e.g. re-created after a soft delete) counts as not found.
+	 */
+	expectedId?: string;
 }
 
 export interface CreateEnvironmentInput {

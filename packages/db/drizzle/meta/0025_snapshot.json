@@ -1523,6 +1523,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "managed_environment_id": {
+          "name": "managed_environment_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp",

@@ -277,13 +277,8 @@ export const stacksRouter = router({
 				input.stack,
 				input.force,
 				{
-					withinTransaction: async (tx, { managedEnvironment }) => {
-						if (managedEnvironment) {
-							await deleteManagedEnvironment(ctx.esc, ctx.caller.tenantId, managedEnvironment, {
-								tx,
-							});
-						}
-					},
+					withinTransaction: (tx, owned) =>
+						deleteManagedEnvironment(ctx.esc, ctx.caller.tenantId, owned, { tx }),
 				},
 			);
 		}),

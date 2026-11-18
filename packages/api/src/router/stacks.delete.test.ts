@@ -32,6 +32,7 @@ function mockContext(
 
 /** deleteStack fake that runs the in-transaction hook for a stack managing `managedEnvironment`. */
 function deleteStackRunningHook(managedEnvironment: string | null, deleted: string[]) {
+	const managedEnvironmentId = managedEnvironment ? "env-1" : null;
 	return mock(
 		async (
 			_t: string,
@@ -41,7 +42,7 @@ function deleteStackRunningHook(managedEnvironment: string | null, deleted: stri
 			_force?: boolean,
 			options?: DeleteStackOptions,
 		) => {
-			await options?.withinTransaction?.(TX, { managedEnvironment });
+			await options?.withinTransaction?.(TX, { managedEnvironment, managedEnvironmentId });
 			deleted.push(stack);
 		},
 	);
@@ -90,7 +91,10 @@ describe("stacks.delete", () => {
 		await caller.delete({ org: "org-1", project: "project-1", stack: "dev" });
 
 		expect(deleted).toEqual(["dev"]);
-		expect(deleteEnvironment).toHaveBeenCalledWith("tenant-1", "project-1", "dev", { tx: TX });
+		expect(deleteEnvironment).toHaveBeenCalledWith("tenant-1", "project-1", "dev", {
+			tx: TX,
+			expectedId: "env-1",
+		});
 	});
 
 	test("a failed environment deletion aborts the stack deletion", async () => {

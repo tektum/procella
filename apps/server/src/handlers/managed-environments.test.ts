@@ -53,16 +53,19 @@ const TX = { tx: true } as unknown as Database;
  */
 function stacksMock(overrides: Partial<StacksService> = {}) {
 	const committed = new Map<string, StackInfo>();
+	/** Environment ID each committed stack recorded as its ownership token. */
+	const ownedIds = new Map<string, string | null>();
 	const service = {
 		createStack: mock(async (_t, _o, project, stack, _tags, options) => {
 			const info = {
 				...baseStack,
 				projectName: project,
 				stackName: stack,
-				managedEnvironment: options?.managedEnvironment ?? null,
+				managedEnvironment: options?.managedEnvironment?.name ?? null,
 			};
-			await options?.withinTransaction?.(TX);
+			const env = await options?.managedEnvironment?.create(TX);
 			committed.set(`${project}/${stack}`, info);
+			ownedIds.set(`${project}/${stack}`, env?.id ?? null);
 			return info;
 		}),
 		getStack: mock(async () => baseStack),
@@ -71,6 +74,7 @@ function stacksMock(overrides: Partial<StacksService> = {}) {
 			const info = committed.get(`${project}/${stack}`) ?? baseStack;
 			await options?.withinTransaction?.(TX, {
 				managedEnvironment: info.managedEnvironment ?? null,
+				managedEnvironmentId: ownedIds.get(`${project}/${stack}`) ?? null,
 			});
 			committed.delete(`${project}/${stack}`);
 		}),
@@ -82,12 +86,12 @@ function stacksMock(overrides: Partial<StacksService> = {}) {
 		getStackById_systemOnly: async () => baseStack,
 		...overrides,
 	} as StacksService;
-	return { service, committed };
+	return { service, committed, ownedIds };
 }
 
 function escMock(overrides: Partial<EscService> = {}): EscService {
 	return {
-		createEnvironment: mock(async () => ({})),
+		createEnvironment: mock(async () => ({ id: "env-1" })),
 		deleteEnvironment: mock(async () => {}),
 		openSession: mock(async () => ({
 			sessionId: "session-1",
@@ -130,7 +134,7 @@ describe("managed stack creation", () => {
 		appWith((a) => a.post("/stacks/:org/:project", stackHandlers(stacks, esc).createStack));
 
 	test("creates <project>/<stack> in the stack's transaction and returns its name", async () => {
-		const { service, committed } = stacksMock();
+		const { service, committed, ownedIds } = stacksMock();
 		const esc = escMock();
 
 		const res = await post(createApp(service, esc), "/stacks/my-org/app", {
@@ -141,6 +145,7 @@ describe("managed stack creation", () => {
 		expect(res.status).toBe(200);
 		expect((await res.json()).managedEnvironment).toBe("app/dev");
 		expect(committed.get("app/dev")?.managedEnvironment).toBe("app/dev");
+		expect(ownedIds.get("app/dev")).toBe("env-1");
 		expect(esc.createEnvironment).toHaveBeenCalledWith(
 			"t-1",
 			{ projectName: "app", name: "dev", yamlBody: MANAGED_ENVIRONMENT_PLACEHOLDER },
@@ -204,6 +209,7 @@ describe("managed stack reads and deletion", () => {
 	const managed = () => {
 		const mocks = stacksMock();
 		mocks.committed.set("app/dev", { ...baseStack, managedEnvironment: "app/dev" });
+		mocks.ownedIds.set("app/dev", "env-1");
 		return mocks;
 	};
 
@@ -230,7 +236,10 @@ describe("managed stack reads and deletion", () => {
 
 		expect(res.status).toBe(204);
 		expect(committed.has("app/dev")).toBe(false);
-		expect(esc.deleteEnvironment).toHaveBeenCalledWith("t-1", "app", "dev", { tx: TX });
+		expect(esc.deleteEnvironment).toHaveBeenCalledWith("t-1", "app", "dev", {
+			tx: TX,
+			expectedId: "env-1",
+		});
 	});
 
 	test("an already-deleted environment does not fail stack deletion", async () => {
@@ -417,6 +426,28 @@ describe("ESC routes used by managed stacks", () => {
 
 		expect(res.status).toBe(400);
 		expect(esc.encryptSecrets).not.toHaveBeenCalled();
+	});
+
+	test("encrypt-secrets accepts up to 1 MiB in total and rejects larger or longer batches", async () => {
+		const chunk = Buffer.alloc(64 * 1024, 1).toString("base64");
+		const url = "/esc/environments/my-org/app/dev/encrypt-secrets";
+
+		const atLimit = escMock();
+		expect((await post(escApp(atLimit), url, { plaintexts: Array(16).fill(chunk) })).status).toBe(
+			200,
+		);
+
+		const overTotal = escMock();
+		expect((await post(escApp(overTotal), url, { plaintexts: Array(17).fill(chunk) })).status).toBe(
+			400,
+		);
+		expect(overTotal.encryptSecrets).not.toHaveBeenCalled();
+
+		const tooMany = escMock();
+		expect((await post(escApp(tooMany), url, { plaintexts: Array(101).fill("YQ==") })).status).toBe(
+			400,
+		);
+		expect(tooMany.encryptSecrets).not.toHaveBeenCalled();
 	});
 
 	test("encrypt-secrets rejects another organization", async () => {

@@ -78,13 +78,22 @@ export interface StackInfo {
 }
 
 export interface CreateStackOptions {
-	/** "<escProject>/<envName>" of the ESC environment the new stack manages. */
-	managedEnvironment?: string;
 	/**
-	 * Runs inside the stack-creation transaction after the stack row is inserted. A throw rolls
-	 * the stack back, so related rows (e.g. the managed ESC environment) commit atomically with it.
+	 * Makes the new stack manage an ESC environment. `create` runs inside the stack-creation
+	 * transaction after the stack row is inserted and returns the environment's ID, which the
+	 * stack records as its ownership token. A throw rolls the stack back.
 	 */
-	withinTransaction?: (tx: Database) => Promise<void>;
+	managedEnvironment?: {
+		/** "<escProject>/<envName>" */
+		name: string;
+		create: (tx: Database) => Promise<{ id: string }>;
+	};
+}
+
+/** The managed environment a stack being deleted owns, if any. */
+export interface DeletedStackManagedEnvironment {
+	managedEnvironment: string | null;
+	managedEnvironmentId: string | null;
 }
 
 export interface DeleteStackOptions {
@@ -92,10 +101,7 @@ export interface DeleteStackOptions {
 	 * Runs inside the stack-deletion transaction, with the row locked, before the stack is deleted.
 	 * A throw aborts the deletion.
 	 */
-	withinTransaction?: (
-		tx: Database,
-		deleted: { managedEnvironment: string | null },
-	) => Promise<void>;
+	withinTransaction?: (tx: Database, deleted: DeletedStackManagedEnvironment) => Promise<void>;
 }
 
 export interface SearchStacksParams {
@@ -378,11 +384,17 @@ export class PostgresStacksService implements StacksService {
 								projectId: proj.id,
 								name: stack,
 								tags,
-								managedEnvironment: options?.managedEnvironment ?? null,
+								managedEnvironment: options?.managedEnvironment?.name ?? null,
 							})
 							.returning();
 
-						await options?.withinTransaction?.(tx);
+						if (options?.managedEnvironment) {
+							const env = await options.managedEnvironment.create(tx);
+							await tx
+								.update(stacks)
+								.set({ managedEnvironmentId: env.id })
+								.where(eq(stacks.id, row.id));
+						}
 
 						await this.enqueueWebhook(tx, {
 							tenantId,
@@ -616,6 +628,7 @@ export class PostgresStacksService implements StacksService {
 							stackId: stacks.id,
 							activeUpdateId: stacks.activeUpdateId,
 							managedEnvironment: stacks.managedEnvironment,
+							managedEnvironmentId: stacks.managedEnvironmentId,
 						})
 						.from(stacks)
 						.innerJoin(projects, eq(stacks.projectId, projects.id))
@@ -696,6 +709,7 @@ export class PostgresStacksService implements StacksService {
 
 					await options?.withinTransaction?.(tx, {
 						managedEnvironment: locked.managedEnvironment,
+						managedEnvironmentId: locked.managedEnvironmentId,
 					});
 
 					await this.enqueueWebhook(tx, {
