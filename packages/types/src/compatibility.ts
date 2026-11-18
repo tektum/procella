@@ -85,7 +85,7 @@ export interface CompatibilityClassification {
 
 // ============================================================================
 // Capability policy — exhaustive over pulumi.gen.ts's generated
-// `export const X: APICapability = "...";` values (currently 11).
+// `export const X: APICapability = "...";` values (currently 12).
 // ============================================================================
 
 const S = CompatibilityStatus;
@@ -145,6 +145,11 @@ export const PULUMI_CAPABILITY_POLICY: readonly CompatibilityClassification[] = 
 		id: "stack-outputs",
 		status: S.CoreImplemented,
 		note: "Dedicated stack-output reads are implemented and advertised; responses preserve checkpoint secret envelopes for client-side decryption.",
+	},
+	{
+		id: "coherence-windows",
+		status: S.Watching,
+		note: "Added upstream in sdk v3.276.0 (stack update coherence windows, CoherenceWindowsVersion). Not implemented; Procella keeps it unadvertised (version 0) until semantics are verified against a released CLI.",
 	},
 ];
 

@@ -26,6 +26,10 @@ SDK_VERSION=$(cd "$TYGO_DIR" && go list -m -f '{{.Version}}' github.com/pulumi/p
 # Inject SDK version into the generated header
 sed -i.bak "s|// Pulumi SDK version is read from packages/types/tygo/go.mod|// Pulumi SDK ${SDK_VERSION}|" "$GEN_FILE"
 
+# Drop const re-exports of pulumi-cloud-sdk values (sdk >= v3.276.0 aliases policy
+# enums to cloudapitype); tygo emits `export const X = any`, which is invalid TS.
+sed -i.bak '/^export const [A-Za-z]* = any \/\* cloudapitype\./d' "$GEN_FILE"
+
 # Fix UpdateStatus type — tygo generates a narrow union but the protocol uses arbitrary strings
 sed -i.bak 's/export type UpdateStatus = typeof UpdateStatusSucceeded | typeof UpdateStatusFailed | typeof UpdateStatusCancelled;/export type UpdateStatus = string;/' "$GEN_FILE"
 
