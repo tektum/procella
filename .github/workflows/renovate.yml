@@ -67,7 +67,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
+      - uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
 
       - name: Validate Renovate config
         run: bunx --package "renovate@$RENOVATE_VERSION" renovate-config-validator .github/renovate-global.js
@@ -94,7 +94,7 @@ jobs:
       # Bun + Go are needed on PATH for postUpgradeTasks.
       # Running Renovate directly on the runner (not Docker) means
       # mise-installed tools are available without volume-mount gymnastics.
-      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
+      - uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: packages/types/tygo/go.mod
