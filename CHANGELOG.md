@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.10.0](https://github.com/tektum/procella/compare/procella-v0.9.0...procella-v0.10.0) (2026-11-19)
+
+
+### Features
+
+* **esc:** support stack-managed ESC environments ([#355](https://github.com/tektum/procella/issues/355)) ([175124a](https://github.com/tektum/procella/commit/175124a5b5016e41b69e010d89a0365b3d740b35))
+
+
+### Bug Fixes
+
+* **deps:** update aws-sdk-go-v2 monorepo ([#331](https://github.com/tektum/procella/issues/331)) ([7c5a73e](https://github.com/tektum/procella/commit/7c5a73e32c8dd614661db2009b5ddff1bed84348))
+
 ## [0.9.0](https://github.com/tektum/procella/compare/procella-v0.8.1...procella-v0.9.0) (2026-11-07)
 
 
