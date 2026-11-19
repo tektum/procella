@@ -5,11 +5,20 @@
   ],
   "schedule": ["at any time"],
   "prConcurrentLimit": 5,
+  "automerge": true,
+  "automergeType": "pr",
+  "automergeStrategy": "squash",
+  "platformAutomerge": true,
   "lockFileMaintenance": {
     "enabled": true,
     "schedule": ["before 4am on monday"]
   },
   "packageRules": [
+    {
+      "description": "Major updates stay manual",
+      "matchUpdateTypes": ["major"],
+      "automerge": false
+    },
     {
       "description": "tygo go.mod owned by self-hosted Renovate (typegen postUpgradeTasks — see .github/renovate-global.js)",
       "matchFileNames": ["packages/types/tygo/**"],
