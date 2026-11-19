@@ -3,39 +3,81 @@
   "extends": [
     "config:recommended"
   ],
-  "schedule": ["at any time"],
+  "schedule": [
+    "at any time"
+  ],
   "prConcurrentLimit": 5,
+  "automerge": true,
+  "automergeType": "pr",
+  "automergeStrategy": "squash",
+  "platformAutomerge": true,
   "lockFileMaintenance": {
     "enabled": true,
-    "schedule": ["before 4am on monday"]
+    "schedule": [
+      "before 4am on monday"
+    ],
+    "automerge": false
   },
   "packageRules": [
     {
+      "description": "0.x minor bumps can be breaking; keep manual",
+      "matchCurrentVersion": "/^0\\./",
+      "matchUpdateTypes": [
+        "minor"
+      ],
+      "automerge": false
+    },
+    {
+      "description": "Major updates stay manual",
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "automerge": false
+    },
+    {
       "description": "tygo go.mod owned by self-hosted Renovate (typegen postUpgradeTasks — see .github/renovate-global.js)",
-      "matchFileNames": ["packages/types/tygo/**"],
+      "matchFileNames": [
+        "packages/types/tygo/**"
+      ],
       "enabled": false
     },
     {
-      "matchPackageNames": ["astro", "@astrojs/starlight", "zod"],
+      "matchPackageNames": [
+        "astro",
+        "@astrojs/starlight",
+        "zod"
+      ],
       "groupName": "astro + starlight + zod"
     },
     {
-      "matchPackageNames": ["vite", "@vitejs/plugin-react"],
+      "matchPackageNames": [
+        "vite",
+        "@vitejs/plugin-react"
+      ],
       "groupName": "vite + plugin-react"
     },
     {
-      "matchPackageNames": ["/^oven(-sh)?\\/bun$/"],
+      "matchPackageNames": [
+        "/^oven(-sh)?\\/bun$/"
+      ],
       "groupName": "bun"
     },
     {
-      "matchPackageNames": ["@trpc/server", "@trpc/client", "@trpc/react-query"],
+      "matchPackageNames": [
+        "@trpc/server",
+        "@trpc/client",
+        "@trpc/react-query"
+      ],
       "groupName": "trpc"
     },
     {
       "description": "OpenTelemetry JS packages share core/sdk majors; partial bumps duplicate sdk-metrics and break MeterProvider types",
-      "matchPackageNames": ["@opentelemetry/**"],
+      "matchPackageNames": [
+        "@opentelemetry/**"
+      ],
       "groupName": "opentelemetry",
       "separateMajorMinor": false
     }
-  ]
+  ],
+  "minimumReleaseAge": "3 days"
 }
