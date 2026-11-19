@@ -29,6 +29,7 @@ The tested contract covers the CLI workflows most self-hosted backends need:
 - preview, update, refresh, destroy, cancellation, leases, and event batches
 - state import, export, versioned export, and capability-gated direct stack-output reads
 - config secret encryption/decryption, including batch crypto on supported clients
+- stack-managed ESC environments (`pulumi stack init --esc-config`, experimental in the CLI)
 - full, verbatim, and optionally delta checkpoint uploads
 - update history used by the supported CLI workflow
 

@@ -10,6 +10,12 @@ import {
 	updates,
 	webhookOutbox,
 } from "@procella/db";
+import {
+	deleteManagedEnvironment,
+	MANAGED_ENVIRONMENT_PLACEHOLDER,
+	PostgresEscService,
+	UnimplementedEvaluatorClient,
+} from "@procella/esc";
 import { PostgresStacksService, type StackInfo } from "@procella/stacks";
 import { PostgresWebhooksService } from "@procella/webhooks";
 import {
@@ -55,6 +61,21 @@ describe("PostgresStacksService — integration", () => {
 			const info2 = await stacks.createStack("tenant-1", "org-1", "proj-1", "staging");
 			expect(info2.projectName).toBe("proj-1");
 			expect(info2.stackName).toBe("staging");
+		});
+
+		test("persists a managed environment name and returns it from reads", async () => {
+			const created = await stacks.createStack("tenant-1", "org-1", "app", "dev", undefined, {
+				managedEnvironment: { name: "app/dev", create: async () => ({ id: crypto.randomUUID() }) },
+			});
+			expect(created.managedEnvironment).toBe("app/dev");
+			expect((await stacks.getStack("tenant-1", "org-1", "app", "dev")).managedEnvironment).toBe(
+				"app/dev",
+			);
+			const [listed] = await stacks.listStacks("tenant-1", undefined, "app");
+			expect(listed?.managedEnvironment).toBe("app/dev");
+
+			await stacks.createStack("tenant-1", "org-1", "app", "plain");
+			expect((await stacks.getStack("tenant-1", "org-1", "app", "plain")).managedEnvironment).toBeNull();
 		});
 
 		test("throws StackAlreadyExistsError on duplicate", async () => {
@@ -780,5 +801,100 @@ describe("PostgresStacksService — integration", () => {
 				stacks.getStackById_systemOnly("00000000-0000-0000-0000-000000000000"),
 			).rejects.toThrow(StackNotFoundByIdError);
 		});
+	});
+});
+
+describe("managed ESC environments — atomic with the stack (integration)", () => {
+	let esc: PostgresEscService;
+	beforeAll(() => {
+		esc = new PostgresEscService({
+			db,
+			evaluator: new UnimplementedEvaluatorClient(),
+			encryptionKeyHex: "22".repeat(32),
+		});
+	});
+
+	const createManaged = (stack: string) =>
+		stacks.createStack("tenant-1", "org-1", "app", stack, undefined, {
+			managedEnvironment: {
+				name: `app/${stack}`,
+				create: (tx) =>
+					esc.createEnvironment(
+						"tenant-1",
+						{ projectName: "app", name: stack, yamlBody: MANAGED_ENVIRONMENT_PLACEHOLDER },
+						"u",
+						{ tx },
+					),
+			},
+		});
+	const deleteManaged = (stack: string) =>
+		stacks.deleteStack("tenant-1", "org-1", "app", stack, false, {
+			withinTransaction: (tx, owned) => deleteManagedEnvironment(esc, "tenant-1", owned, { tx }),
+		});
+	const ownedId = async (stack: string) => {
+		const [row] = await db
+			.select({ id: stackRows.managedEnvironmentId })
+			.from(stackRows)
+			.where(eq(stackRows.name, stack));
+		return row?.id ?? null;
+	};
+
+	test("creates the stack and its environment together, recording the environment ID", async () => {
+		await createManaged("dev");
+		const env = await esc.getEnvironment("tenant-1", "app", "dev");
+		expect((await stacks.getStack("tenant-1", "org-1", "app", "dev")).managedEnvironment).toBe("app/dev");
+		expect(env?.yamlBody).toBe(MANAGED_ENVIRONMENT_PLACEHOLDER);
+		expect(await ownedId("dev")).toBe(env?.id ?? "missing");
+	});
+
+	test("an existing environment rolls back the stack", async () => {
+		await esc.createEnvironment("tenant-1", { projectName: "app", name: "dev", yamlBody: "values: {}\n" }, "u");
+
+		await expect(createManaged("dev")).rejects.toBeInstanceOf(ConflictError);
+		await expect(stacks.getStack("tenant-1", "org-1", "app", "dev")).rejects.toBeInstanceOf(
+			StackNotFoundError,
+		);
+		// The pre-existing environment is untouched.
+		expect((await esc.getEnvironment("tenant-1", "app", "dev"))?.yamlBody).toBe("values: {}\n");
+	});
+
+	test("deletes the owned environment in the stack's deletion transaction", async () => {
+		await createManaged("dev");
+
+		await deleteManaged("dev");
+
+		await expect(stacks.getStack("tenant-1", "org-1", "app", "dev")).rejects.toBeInstanceOf(
+			StackNotFoundError,
+		);
+		expect(await esc.getEnvironment("tenant-1", "app", "dev")).toBeNull();
+	});
+
+	test("does not delete a same-named environment re-created after the owned one was deleted", async () => {
+		await createManaged("dev");
+		await esc.deleteEnvironment("tenant-1", "app", "dev");
+		await esc.createEnvironment("tenant-1", { projectName: "app", name: "dev", yamlBody: "values: {x: 1}\n" }, "u");
+
+		await deleteManaged("dev");
+
+		await expect(stacks.getStack("tenant-1", "org-1", "app", "dev")).rejects.toBeInstanceOf(
+			StackNotFoundError,
+		);
+		expect((await esc.getEnvironment("tenant-1", "app", "dev"))?.yamlBody).toBe("values: {x: 1}\n");
+	});
+
+	test("a failing hook aborts deletion and keeps both rows", async () => {
+		await createManaged("dev");
+
+		await expect(
+			stacks.deleteStack("tenant-1", "org-1", "app", "dev", false, {
+				withinTransaction: async (tx, owned) => {
+					await deleteManagedEnvironment(esc, "tenant-1", owned, { tx });
+					throw new Error("abort");
+				},
+			}),
+		).rejects.toThrow("abort");
+
+		expect((await stacks.getStack("tenant-1", "org-1", "app", "dev")).managedEnvironment).toBe("app/dev");
+		expect(await esc.getEnvironment("tenant-1", "app", "dev")).not.toBeNull();
 	});
 });

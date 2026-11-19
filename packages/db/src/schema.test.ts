@@ -303,7 +303,7 @@ describe("@procella/db schema", () => {
 	});
 
 	describe("migration journal", () => {
-		test("keeps portfolio migrations 0020 through 0024 in order", async () => {
+		test("keeps portfolio migrations 0020 through 0025 in order", async () => {
 			const journal = (await Bun.file(
 				new URL("../drizzle/meta/_journal.json", import.meta.url),
 			).json()) as { entries: Array<{ idx: number; tag: string }> };
@@ -313,9 +313,10 @@ describe("@procella/db schema", () => {
 				{ idx: 22, tag: "0022_single_use_subscription_tickets" },
 				{ idx: 23, tag: "0023_confirmed_github_outbound_connections" },
 				{ idx: 24, tag: "0024_multi_repository_github_actions" },
+				{ idx: 25, tag: "0025_managed_esc_environments" },
 			];
 
-			expect(journal.entries.slice(-5)).toEqual(
+			expect(journal.entries.slice(-expected.length)).toEqual(
 				expected.map(({ idx, tag }) => expect.objectContaining({ idx, tag })),
 			);
 			for (const { tag } of expected) {

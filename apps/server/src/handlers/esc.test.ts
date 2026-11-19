@@ -103,6 +103,9 @@ function mockEscService(overrides?: Partial<EscService>): EscService {
 		discardDraft: mock(async () => {}),
 		validateYaml: mock(async () => mockValidation),
 		gcSweep: mock(async () => ({ closedCount: 0 })),
+		encryptSecrets: mock(async (_t: string, _p: string, _e: string, plaintexts: Uint8Array[]) =>
+			plaintexts.map(() => "ciphertext"),
+		),
 		...overrides,
 	};
 }

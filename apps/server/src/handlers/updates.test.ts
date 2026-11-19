@@ -116,6 +116,7 @@ describe("updateHandlers", () => {
 			undefined,
 			validCaller,
 			{ "ci.pr.number": "42" },
+			undefined,
 		);
 	});
 
@@ -138,6 +139,7 @@ describe("updateHandlers", () => {
 			undefined,
 			undefined,
 			validCaller,
+			undefined,
 			undefined,
 		);
 	});

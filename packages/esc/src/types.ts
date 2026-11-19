@@ -1,5 +1,7 @@
 // @procella/esc — Domain types for environments, revisions, and sessions.
 
+import type { Database } from "@procella/db";
+
 export interface EscProject {
 	id: string;
 	tenantId: string;
@@ -41,6 +43,17 @@ export interface EscSession {
 	openedAt: Date;
 	expiresAt: Date;
 	closedAt: Date | null;
+}
+
+/** Options for ESC writes that must commit atomically with a caller's transaction. */
+export interface EscWriteOptions {
+	/** Outer transaction; the write runs in a savepoint inside it. */
+	tx?: Database;
+	/**
+	 * deleteEnvironment only: delete only if the live environment has this ID. A different
+	 * environment with the same name (e.g. re-created after a soft delete) counts as not found.
+	 */
+	expectedId?: string;
 }
 
 export interface CreateEnvironmentInput {
@@ -118,6 +131,14 @@ export interface EscDraft {
  * plaintext for everything (including secrets); the `secrets` array lists
  * the JSON paths flagged sensitive so clients can mask them at render time.
  */
+/** Selects what `openSession` evaluates. Defaults to the environment's current revision. */
+export interface OpenSessionOptions {
+	/** Published revision number to evaluate. */
+	revision?: number;
+	/** Open draft (change request) to evaluate instead of a published revision. */
+	draftId?: string;
+}
+
 export interface OpenSessionResult {
 	sessionId: string;
 	values: Record<string, unknown>;

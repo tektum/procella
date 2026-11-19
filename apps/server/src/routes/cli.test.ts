@@ -163,6 +163,8 @@ function mockEscService(): EscService {
 		openSession: async () => ({}),
 		getSession: async () => null,
 		gcSweep: async () => ({ closedCount: 0 }),
+		encryptSecrets: async (_t: string, _p: string, _e: string, plaintexts: Uint8Array[]) =>
+			plaintexts.map(() => "ciphertext"),
 		listRevisionTags: async () => [],
 		tagRevision: async () => {},
 		untagRevision: async () => {},

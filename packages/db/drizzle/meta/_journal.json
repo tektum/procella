@@ -176,6 +176,13 @@
       "when": 1788998400000,
       "tag": "0024_multi_repository_github_actions",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1789084800000,
+      "tag": "0025_managed_esc_environments",
+      "breakpoints": true
     }
   ]
 }

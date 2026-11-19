@@ -1,6 +1,7 @@
 // @procella/api — stacks tRPC procedures (list, detail, resources, resource).
 
 import { checkpoints, updateEvents, updates } from "@procella/db";
+import { deleteManagedEnvironment } from "@procella/esc";
 import type { DeploymentV3, ResourceV3 } from "@procella/types";
 import { and, desc, eq, max, sql } from "drizzle-orm";
 import { z } from "zod/v4";
@@ -268,12 +269,17 @@ export const stacksRouter = router({
 	delete: adminProcedure
 		.input(stackInput.extend({ force: z.boolean().optional() }))
 		.mutation(async ({ ctx, input }) => {
+			// The managed environment is deleted in the stack's deletion transaction.
 			await ctx.stacks.deleteStack(
 				ctx.caller.tenantId,
 				input.org,
 				input.project,
 				input.stack,
 				input.force,
+				{
+					withinTransaction: (tx, owned) =>
+						deleteManagedEnvironment(ctx.esc, ctx.caller.tenantId, owned, { tx }),
+				},
 			);
 		}),
 

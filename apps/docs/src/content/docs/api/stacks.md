@@ -22,9 +22,12 @@ Creates a new stack. Auto-creates the organization and project if they don't exi
 **Request body**:
 ```json
 {
-  "stackName": "dev"
+  "stackName": "dev",
+  "createManagedEnvironment": false
 }
 ```
+
+`createManagedEnvironment` (optional) is sent by `pulumi stack init --esc-config` (experimental). Procella then also creates the ESC environment `{project}/{stack}` with the CLI's placeholder definition (`values: {pulumiConfig: {}}`) and returns its name as `managedEnvironment`. The stack's configuration lives in that environment; see [Stack-managed ESC environments](#stack-managed-esc-environments).
 
 **Response** (200):
 ```json
@@ -34,12 +37,15 @@ Creates a new stack. Auto-creates the organization and project if they don't exi
   "projectName": "project",
   "stackName": "dev",
   "tags": {},
+  "managedEnvironment": "project/dev",
   "version": 0
 }
 ```
 
+`managedEnvironment` is present only for managed stacks.
+
 **Errors**:
-- `409 Conflict` — stack already exists
+- `409 Conflict` — stack already exists, or (for a managed stack) the ESC environment `{project}/{stack}` already exists. The stack and environment are created in one transaction, so in that case nothing is created.
 
 ## Check Project Exists
 
@@ -73,13 +79,15 @@ Returns stack metadata.
 }
 ```
 
+Managed stacks also include `managedEnvironment` (`"{project}/{stack}"`). The name is kept even if the environment was deleted separately, and it does not change when the stack is renamed.
+
 ## Delete Stack
 
 ```
 DELETE /api/stacks/{org}/{project}/{stack}
 ```
 
-Deletes a stack and all associated data (updates, events, checkpoints) via cascade.
+Deletes a stack and all associated data (updates, events, checkpoints) via cascade. For a managed stack, the ESC environment it created is deleted in the same transaction. The stack records that environment's ID, so an environment that was deleted separately, or a new environment later created under the same name, is left alone. Any other failure aborts the stack deletion.
 
 **Required role**: `admin`
 
@@ -166,6 +174,24 @@ Adds or removes tags on a stack. Tags are key-value pairs stored as JSONB.
 ```
 
 **Response** (204): No content
+
+## Stack-managed ESC environments
+
+Pulumi CLI v3.276.0 and newer can keep a stack's configuration in an ESC environment that the stack manages (`pulumi stack init --esc-config`, behind `PULUMI_EXPERIMENTAL`). The definition lives under `environment:` in `Pulumi.<stack>.yaml`; before each operation the CLI compares it with the published environment and either opens that revision or creates a draft and opens the draft.
+
+Procella serves the routes this flow uses:
+
+| Route | Purpose |
+|---|---|
+| `GET /api/esc/environments/{org}/{project}/{env}` | Published definition with `ETag` and `Pulumi-ESC-Revision` headers |
+| `POST /api/esc/environments/{org}/{project}/{env}/versions/{version}/open` | Open a specific published revision (number or tag) |
+| `POST /api/esc/environments/{org}/{project}/{env}/drafts` | Create a draft from the local definition |
+| `POST /api/esc/environments/{org}/{project}/{env}/drafts/{id}/open?revision=0` | Open a draft. Drafts are not versioned, so only revision `0` is accepted |
+| `POST /api/esc/environments/{org}/{project}/{env}/encrypt-secrets` | Encrypt `pulumi config set --secret` values into `fn::secret: {ciphertext: ...}` (at most 100 values, 64 KiB each, 1 MiB per request) |
+
+The update request's `environment` field (`baseRevision`, `changeRequestID`, `draftRevision`) records which revision or draft the update evaluated. Procella stores it on the update.
+
+Secret ciphertexts use the `escx` envelope from `github.com/pulumi/esc`, encrypted with AES-256-GCM under a per-tenant key derived from `PROCELLA_ENCRYPTION_KEY`. The ESC evaluator decrypts them when an environment is opened. Rotating `PROCELLA_ENCRYPTION_KEY` makes existing ciphertexts unreadable.
 
 ## Common Headers
 

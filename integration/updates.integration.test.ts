@@ -75,6 +75,28 @@ describe("PostgresUpdatesService — integration", () => {
 			expect(result.updateID).toBeTruthy();
 		});
 
+		test("persists the managed environment pin", async () => {
+			const stack = await seedStack();
+			const managedEnvironment = { baseRevision: 3, changeRequestID: "cr-1", draftRevision: 0 };
+			const pinned = await updatesService.createUpdate(
+				stack.id,
+				"preview",
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				{ managedEnvironment },
+			);
+			const [pinnedRow] = await db.select().from(updates).where(eq(updates.id, pinned.updateID));
+			expect(pinnedRow?.managedEnvironment).toEqual(managedEnvironment);
+
+			await updatesService.startUpdate(pinned.updateID, {});
+			await updatesService.completeUpdate(pinned.updateID, { status: "succeeded" });
+			const plain = await updatesService.createUpdate(stack.id, "preview");
+			const [plainRow] = await db.select().from(updates).where(eq(updates.id, plain.updateID));
+			expect(plainRow?.managedEnvironment).toBeNull();
+		});
+
 		test("persists update environment through completion", async () => {
 			const stack = await seedStack();
 			const environment = {

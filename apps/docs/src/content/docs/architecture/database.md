@@ -43,6 +43,8 @@ The core entity. Each stack belongs to a project and tracks its current active u
 | `name` | `TEXT` | `NOT NULL` |
 | `tags` | `JSONB` | `NOT NULL DEFAULT '{}'` |
 | `activeUpdateId` | `UUID` | Nullable — set when an update is running |
+| `managedEnvironment` | `TEXT` | Nullable — `{project}/{stack}` ESC environment the stack manages |
+| `managedEnvironmentId` | `UUID` | Nullable — ID of that environment; deletion only removes this one |
 | `createdAt` | `TIMESTAMP` | `NOT NULL DEFAULT now()` |
 | `updatedAt` | `TIMESTAMP` | `NOT NULL DEFAULT now()` |
 | | | `UNIQUE (projectId, name)` |
@@ -70,6 +72,7 @@ Tracks every operation performed on a stack (update, preview, refresh, destroy, 
 | `updatedAt` | `TIMESTAMP` | `NOT NULL DEFAULT now()` |
 | `config` | `JSONB` | `NOT NULL DEFAULT '{}'` — stack config |
 | `program` | `JSONB` | `NOT NULL DEFAULT '{}'` — program metadata |
+| `managedEnvironment` | `JSONB` | Nullable — managed ESC environment revision/draft the update evaluated |
 
 **Index**: `idx_updates_active` — **Partial unique** on `(stackId) WHERE status IN ('not started', 'requested', 'running')` — prevents concurrent updates on the same stack.
 

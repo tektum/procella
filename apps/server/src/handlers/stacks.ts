@@ -1,5 +1,10 @@
 // @procella/server — Stack CRUD handlers.
 
+import {
+	deleteManagedEnvironment,
+	type EscService,
+	MANAGED_ENVIRONMENT_PLACEHOLDER,
+} from "@procella/esc";
 import type { StackInfo, StacksService } from "@procella/stacks";
 import type { Stack, StackRenameRequest, StackSummary } from "@procella/types";
 import { BadRequestError } from "@procella/types";
@@ -11,7 +16,7 @@ import { param } from "./params.js";
 // Stack Handlers
 // ============================================================================
 
-export function stackHandlers(stacks: StacksService) {
+export function stackHandlers(stacks: StacksService, esc?: EscService) {
 	return {
 		/** POST /api/stacks/:org/:project/:stack OR POST /api/stacks/:org/:project (stack in body) */
 		createStack: async (c: Context<Env>) => {
@@ -19,14 +24,52 @@ export function stackHandlers(stacks: StacksService) {
 			const org = param(c, "org");
 			const project = param(c, "project");
 			const body = await c.req.json().catch(() => ({}));
-			const typedBody = body as { stackName?: string; tags?: Record<string, string> };
+			const typedBody = body as {
+				stackName?: string;
+				tags?: Record<string, string>;
+				createManagedEnvironment?: boolean;
+			};
 			// Stack name can come from URL param or request body
 			const stack = c.req.param("stack") ?? typedBody.stackName ?? "";
 			if (!stack) {
 				throw new BadRequestError("Missing stack name in URL or body");
 			}
-			const result = await stacks.createStack(caller.tenantId, org, project, stack, typedBody.tags);
+			if (typedBody.createManagedEnvironment !== true) {
+				const result = await stacks.createStack(
+					caller.tenantId,
+					org,
+					project,
+					stack,
+					typedBody.tags,
+				);
+				return c.json(mapToStack(result, caller.orgSlug));
+			}
 
+			if (!esc) {
+				throw new BadRequestError("ESC-managed environments are not supported by this server");
+			}
+			// The stack manages ESC environment <project>/<stack>. Both are created in one
+			// transaction: if the environment cannot be created (e.g. it already exists, 409),
+			// no stack row is committed.
+			const result = await stacks.createStack(
+				caller.tenantId,
+				org,
+				project,
+				stack,
+				typedBody.tags,
+				{
+					managedEnvironment: {
+						name: `${project}/${stack}`,
+						create: (tx) =>
+							esc.createEnvironment(
+								caller.tenantId,
+								{ projectName: project, name: stack, yamlBody: MANAGED_ENVIRONMENT_PLACEHOLDER },
+								caller.userId,
+								{ tx },
+							),
+					},
+				},
+			);
 			return c.json(mapToStack(result, caller.orgSlug));
 		},
 
@@ -45,7 +88,15 @@ export function stackHandlers(stacks: StacksService) {
 			const project = param(c, "project");
 			const stack = param(c, "stack");
 			const force = c.req.query("force") === "true";
-			await stacks.deleteStack(caller.tenantId, org, project, stack, force);
+			// A managed stack's environment is deleted in the stack's deletion transaction, using
+			// the locked row's metadata, so only the environment this stack owns is removed.
+			await stacks.deleteStack(caller.tenantId, org, project, stack, force, {
+				withinTransaction: async (tx, owned) => {
+					if (esc) {
+						await deleteManagedEnvironment(esc, caller.tenantId, owned, { tx });
+					}
+				},
+			});
 			return c.body(null, 204);
 		},
 
@@ -129,6 +180,7 @@ function mapToStack(info: StackInfo, orgSlug?: string): Stack {
 		stackName: info.stackName,
 		tags: info.tags,
 		activeUpdate: info.activeUpdateId ?? "",
+		...(info.managedEnvironment ? { managedEnvironment: info.managedEnvironment } : {}),
 		version: 0,
 	} as Stack;
 }

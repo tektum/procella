@@ -36,6 +36,17 @@ export interface UpdateWebhookContext {
 	stack: string;
 }
 
+/** Managed ESC environment revision or draft an update was evaluated against. */
+export interface ManagedEnvironmentPin {
+	baseRevision: number;
+	changeRequestID?: string;
+	draftRevision: number;
+}
+
+export interface CreateUpdateOptions {
+	managedEnvironment?: ManagedEnvironmentPin;
+}
+
 export interface UpdatesService {
 	createUpdate(
 		stackId: string,
@@ -44,6 +55,7 @@ export interface UpdatesService {
 		program?: unknown,
 		caller?: Caller,
 		environment?: Record<string, string>,
+		options?: CreateUpdateOptions,
 	): Promise<UpdateProgramResponse>;
 
 	startUpdate(updateId: string, request: StartUpdateRequest): Promise<StartUpdateResponse>;
