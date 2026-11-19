@@ -25,4 +25,8 @@ describe("renovate automerge policy", () => {
 		expect(rule?.matchUpdateTypes).toEqual(["minor"]);
 		expect(rule?.automerge).toBe(false);
 	});
+
+	test("lock file maintenance stays manual (Bun re-resolves everything, cooldown does not apply)", () => {
+		expect(config.lockFileMaintenance.automerge).toBe(false);
+	});
 });
