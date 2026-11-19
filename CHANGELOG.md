@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.1](https://github.com/tektum/procella/compare/procella-v0.10.0...procella-v0.10.1) (2026-11-19)
+
+
+### Bug Fixes
+
+* **deps:** update aws-sdk-go-v2 monorepo ([#363](https://github.com/tektum/procella/issues/363)) ([0de1aaa](https://github.com/tektum/procella/commit/0de1aaa010d52e49eaf6b0c70b1dba8f79ca9d76))
+
 ## [0.10.0](https://github.com/tektum/procella/compare/procella-v0.9.0...procella-v0.10.0) (2026-11-19)
 
 
