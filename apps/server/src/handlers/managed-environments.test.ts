@@ -428,6 +428,19 @@ describe("ESC routes used by managed stacks", () => {
 		expect(esc.encryptSecrets).not.toHaveBeenCalled();
 	});
 
+	test("encrypt-secrets enforces the 64 KiB per-secret limit on decoded bytes", async () => {
+		const url = "/esc/environments/my-org/app/dev/encrypt-secrets";
+		// 65,536 and 65,538 bytes both encode to 87,384 base64 characters.
+		const atLimit = Buffer.alloc(64 * 1024, 1).toString("base64");
+		const overLimit = Buffer.alloc(64 * 1024 + 2, 1).toString("base64");
+		expect(overLimit.length).toBe(atLimit.length);
+
+		expect((await post(escApp(escMock()), url, { plaintexts: [atLimit] })).status).toBe(200);
+		const esc = escMock();
+		expect((await post(escApp(esc), url, { plaintexts: [overLimit] })).status).toBe(400);
+		expect(esc.encryptSecrets).not.toHaveBeenCalled();
+	});
+
 	test("encrypt-secrets accepts up to 1 MiB in total and rejects larger or longer batches", async () => {
 		const chunk = Buffer.alloc(64 * 1024, 1).toString("base64");
 		const url = "/esc/environments/my-org/app/dev/encrypt-secrets";

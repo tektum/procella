@@ -32,7 +32,13 @@ const MAX_ESC_SECRETS_TOTAL_BYTES = 1024 * 1024;
 const encryptSecretsSchema = z
 	.object({
 		plaintexts: z
-			.array(z.base64().max(base64Length(MAX_ESC_SECRET_PLAINTEXT_BYTES)))
+			.array(
+				z
+					.base64()
+					.max(base64Length(MAX_ESC_SECRET_PLAINTEXT_BYTES))
+					// The length check above admits up to 2 extra bytes; enforce the decoded size.
+					.refine((p) => Buffer.byteLength(p, "base64") <= MAX_ESC_SECRET_PLAINTEXT_BYTES),
+			)
 			.min(1)
 			.max(MAX_ESC_SECRETS_PER_REQUEST)
 			.refine(
